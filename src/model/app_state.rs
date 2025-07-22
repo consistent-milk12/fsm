@@ -1,0 +1,198 @@
+//! src/model/app_state.rs
+//! ============================================================================
+//! # AppState: Advanced, Power-User-Oriented Application State
+//!
+//! `AppState` unifies all persistent and transient state for the terminal file
+//! manager. Its design is optimized for power users, async workflows, and advanced
+//! batch/file operations. This state struct makes it easy to support:
+//! - Multiple concurrent tasks (search, copy, batch delete/rename)
+//! - Undo/redo for destructive operations
+//! - Multi-selection and mark/stage workflows
+//! - Plugins and extensibility
+//! - UI overlays, detailed history/status reporting, and responsive TUI
+//!
+//! ## Highlights
+//! - Shares core handles (cache, config) as `Arc` for async/background use
+//! - Clean sub-state for filesystem, UI, tasks, plugin registry, and history
+//! - Robust message/status/error management
+//! - Extensible for plugins, user scripting, and power tools
+//!
+//! ## Example Usage
+//! ```rust,ignore
+//! let mut app = AppState::new(
+//!     Arc::new(Config::load().await?),
+//!     Arc::new(ObjectInfoCache::new(10000, Duration::from_secs(1800))),
+//!     FSState::new(home_dir),
+//!     UIState::default(),
+//! );
+//! app.mark_entry(5);
+//! app.run_batch_delete();
+//! ```
+
+use crate::cache::cache_manager::ObjectInfoCache;
+use crate::config::config::Config;
+use crate::model::fs_state::FSState;
+use crate::model::ui_state::UIState;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::Arc;
+use std::time::SystemTime;
+
+/// Represents a pending or running asynchronous task (search, copy, delete, etc.).
+#[derive(Debug, Clone)]
+pub struct TaskInfo {
+    pub task_id: u64,
+    pub description: String,
+    pub started_at: SystemTime,
+    pub is_completed: bool,
+    pub result: Option<String>, // Could be success message, error, etc.
+                                // More fields: task type, progress, cancellation handle...
+}
+
+/// Core application state struct, designed for fast, extensible power-user features.
+pub struct AppState {
+    /// Persistent user config (theme, keymap, cache settings, UI defaults, etc.).
+    pub config: Arc<Config>,
+
+    /// Async, high-performance cache for ObjectInfo (file/dir metadata).
+    pub cache: Arc<ObjectInfoCache>,
+
+    /// Filesystem state (current directory, loaded entries, focus, etc.).
+    pub fs: FSState,
+
+    /// UI and interaction state (selection, overlays, mode, input buffer, etc.).
+    pub ui: UIState,
+
+    /// Marked (multi-selected) entries for batch operations.
+    pub marked: HashSet<String>, // store canonical paths as keys
+
+    /// Undo/redo history stack for file operations.
+    pub history: VecDeque<AppHistoryEvent>,
+
+    /// List of currently running/pending async tasks.
+    pub tasks: HashMap<u64, TaskInfo>,
+
+    /// Plugins registered (and optionally loaded) for extensions.
+    pub plugins: HashMap<String, PluginInfo>,
+
+    /// Last error for user feedback or status overlays.
+    pub last_error: Option<String>,
+
+    /// Last info/status message for the user.
+    pub last_status: Option<String>,
+
+    /// Start time of the application (for stats/logs).
+    pub started_at: SystemTime,
+}
+
+/// Events representing a reversible operation for undo/redo/history.
+#[derive(Debug, Clone)]
+pub enum AppHistoryEvent {
+    Delete { paths: Vec<String> },
+    Move { from: String, to: String },
+    Rename { from: String, to: String },
+    Copy { from: String, to: String },
+    // Add more as needed (plugin hooks, batch ops, etc.)
+}
+
+/// Info about a registered plugin.
+#[derive(Debug, Clone)]
+pub struct PluginInfo {
+    pub name: String,
+    pub description: String,
+    pub loaded: bool,
+    // Optionally: plugin type, API version, path, config, etc.
+}
+
+impl AppState {
+    /// Construct a new, ready-to-use AppState.
+    pub fn new(config: Arc<Config>, cache: Arc<ObjectInfoCache>, fs: FSState, ui: UIState) -> Self {
+        AppState {
+            config,
+            cache,
+            fs,
+            ui,
+            marked: HashSet::new(),
+            history: VecDeque::with_capacity(128),
+            tasks: HashMap::new(),
+            plugins: HashMap::new(),
+            last_error: None,
+            last_status: None,
+            started_at: SystemTime::now(),
+        }
+    }
+
+    /// Mark a file or directory by its canonical path for batch operations.
+    pub fn mark_entry(&mut self, path: impl Into<String>) {
+        self.marked.insert(path.into());
+    }
+
+    /// Unmark a previously marked entry.
+    pub fn unmark_entry(&mut self, path: &str) {
+        self.marked.remove(path);
+    }
+
+    /// Clear all marked entries.
+    pub fn clear_marks(&mut self) {
+        self.marked.clear();
+    }
+
+    /// Add a reversible event to the history stack (for undo/redo).
+    pub fn push_history(&mut self, event: AppHistoryEvent) {
+        self.history.push_back(event);
+        if self.history.len() > 128 {
+            self.history.pop_front();
+        }
+    }
+
+    /// Register a plugin for later use.
+    pub fn register_plugin(&mut self, info: PluginInfo) {
+        self.plugins.insert(info.name.clone(), info);
+    }
+
+    /// Add or update a running/pending async task.
+    pub fn add_task(&mut self, task: TaskInfo) {
+        self.tasks.insert(task.task_id, task);
+    }
+
+    /// Update task completion/result.
+    pub fn complete_task(&mut self, task_id: u64, result: Option<String>) {
+        if let Some(task) = self.tasks.get_mut(&task_id) {
+            task.is_completed = true;
+            task.result = result;
+        }
+    }
+
+    /// Set the latest error message (display in UI).
+    pub fn set_error(&mut self, msg: impl Into<String>) {
+        self.last_error = Some(msg.into());
+    }
+
+    /// Set the latest info/status message (display in UI).
+    pub fn set_status(&mut self, msg: impl Into<String>) {
+        self.last_status = Some(msg.into());
+    }
+
+    /// Clear error and status messages.
+    pub fn clear_msgs(&mut self) {
+        self.last_error = None;
+        self.last_status = None;
+    }
+}
+
+impl std::fmt::Debug for AppState {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.debug_struct("AppState")
+            .field("config", &"Config")
+            .field("cache", &"ObjectInfoCache")
+            .field("fs", &self.fs)
+            .field("ui", &self.ui)
+            .field("marked", &self.marked)
+            .field("history", &self.history)
+            .field("tasks", &self.tasks)
+            .field("plugins", &self.plugins)
+            .field("last_error", &self.last_error)
+            .field("last_status", &self.last_status)
+            .field("started_at", &self.started_at)
+            .finish()
+    }
+}
