@@ -2,98 +2,117 @@
 //! ============================================================================
 //! # ObjectTable: Advanced Filesystem Table Component
 //!
-//! Uses ratatui's latest Table API. Displays name, type, item count, size, and last modified.
-//! Includes a flexible ObjectType enum for easy extension and formatting.
+//! Renders a live directory table using PaneState entries.
+//! - Fully async-updatable, selection-aware
+//! - Handles directories, symlinks, files, and custom types
+//! - Shows keymap in the footer, all using ratatui v0.25+
+//! - Visual cues for type, selection, and focus
 
+use crate::model::app_state::AppState;
 use crate::model::fs_state::{ObjectType, PaneState};
-use crate::{fs::object_info::ObjectInfo, model::app_state::AppState};
 
-use ratatui::widgets::TableState;
 use ratatui::{
     Frame,
     layout::{Constraint, Rect},
-    style::{Style, Stylize},
-    widgets::{Block, Row, Table},
+    style::{Color, Modifier, Style},
+    widgets::{Block, Cell, Row, Table, TableState},
 };
 
-/// ObjectTable: draws a table with full metadata using AppState/FSState.
 pub struct ObjectTable;
 
 impl ObjectTable {
     pub fn render(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
         let pane: &PaneState = &app.fs.panes[app.fs.active_pane];
 
-        // Header row
-        let header: Row<'_> = Row::new(vec!["Name", "Ext", "Items", "Size", "Last Mod."])
-            .style(Style::new().bold())
-            .bottom_margin(1);
+        // Table columns: Name, Type, Items, Size, Modified
+        let header: Row<'_> = Row::new(vec!["Name", "Type", "Items", "Size", "Last Modified"])
+            .style(
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            );
 
-        // Keymap footer row
+        // Keymap footer, always visible for power users
         let keymap: String = [
             "[F1] Help",
             "[q] Quit",
-            "[←/→] Switch Pane",
-            "[↑/↓] Navigate",
+            "[←/→] Pane",
+            "[↑/↓] Nav",
             "[Enter] Open",
             "[d] Delete",
             "[r] Rename",
             "[/] Search",
         ]
         .join("   ");
-        let footer: Row<'_> = Row::new(vec![keymap])
-            .style(Style::new().italic())
-            .bottom_margin(0);
 
-        // Table rows: handle directories, files, symlinks, etc.
-        let rows: Vec<Row> = pane
-            .entries
-            .iter()
-            .map(|obj: &ObjectInfo| {
-                let obj_type: String = ObjectType::object_type(obj).to_string();
+        let footer: Row<'_> = Row::new(vec![keymap]).style(
+            Style::default()
+                .fg(Color::Gray)
+                .add_modifier(Modifier::ITALIC),
+        );
 
-                let items: String = if obj.is_dir {
-                    obj.items_count.to_string()
-                } else {
-                    String::new()
-                };
+        // Render each entry (ObjectInfo) as a table row
+        let rows = pane.entries.iter().enumerate().map(|(_idx, obj)| {
+            // Visual cues for directories, symlinks, etc.
+            let style: Style = if obj.is_dir {
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else if obj.is_symlink {
+                Style::default().fg(Color::Magenta)
+            } else {
+                Style::default()
+            };
 
-                Row::new(vec![
-                    obj.name.clone(),
-                    obj_type,
-                    items,
-                    obj.size_human(),
-                    obj.modified.to_string(),
-                ])
-            })
-            .collect();
+            let obj_type: String = ObjectType::object_type(obj).to_string();
+            let items: String = if obj.is_dir {
+                obj.items_count.to_string()
+            } else {
+                String::new()
+            };
 
-        // Column widths
+            Row::new(vec![
+                Cell::from(obj.name.clone()).style(style),
+                Cell::from(obj_type),
+                Cell::from(items),
+                Cell::from(obj.size_human()),
+                Cell::from(obj.modified.to_string()),
+            ])
+        });
+
+        // Table column widths
         let widths: [Constraint; 5] = [
             Constraint::Percentage(35), // Name
-            Constraint::Length(7),      // Ext/type
-            Constraint::Length(7),      // Items
+            Constraint::Length(8),      // Type
+            Constraint::Length(6),      // Items
             Constraint::Percentage(15), // Size
-            Constraint::Percentage(25), // Last Mod.
+            Constraint::Percentage(25), // Modified
         ];
 
-        // Build table
-        let table: Table<'_> = Table::new(rows, widths)
-            .column_spacing(1)
-            .style(Style::new())
-            .header(header)
-            .footer(footer)
-            .block(Block::new().title("Objects"))
-            .row_highlight_style(Style::new().reversed())
-            .column_highlight_style(Style::new().red())
-            .cell_highlight_style(Style::new().blue())
-            .highlight_symbol(">> ");
-
-        // Table selection
-        let mut state: TableState = pane.table_state.clone();
+        let mut table_state: TableState = pane.table_state.clone();
+        // Keep selection in sync with UIState (for navigation)
         if let Some(selected) = app.ui.selected {
-            state.select(Some(selected));
+            table_state.select(Some(selected));
+        } else {
+            table_state.select(None);
         }
 
-        frame.render_stateful_widget(table, area, &mut state);
+        let table: Table<'_> = Table::new(rows, widths)
+            .header(header)
+            .footer(footer)
+            .block(Block::default().title(format!(
+                " {} — {} entries ",
+                pane.cwd.display(),
+                pane.entries.len()
+            )))
+            .row_highlight_style(
+                Style::default()
+                    .bg(Color::DarkGray)
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .column_spacing(1);
+
+        frame.render_stateful_widget(table, area, &mut table_state);
     }
 }

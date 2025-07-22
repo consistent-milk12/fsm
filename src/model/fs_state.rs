@@ -78,6 +78,18 @@ impl PaneState {
             table_state: TableState::default(),
         }
     }
+
+    /// Update the entry list and reset selection for new directory.
+    pub fn set_entries(&mut self, entries: Vec<ObjectInfo>) {
+        self.entries = entries;
+        self.selected = Some(0);
+        self.table_state.select(Some(0));
+    }
+
+    /// Get currently selected entry (if any).
+    pub fn selected_entry(&self) -> Option<&ObjectInfo> {
+        self.selected.and_then(|idx: usize| self.entries.get(idx))
+    }
 }
 
 /// Persistent, advanced FS state for the app/session.
@@ -131,6 +143,7 @@ impl ObjectType {
 }
 
 impl FSState {
+    /// Construct FS state with one pane in the given directory.
     pub fn new(cwd: PathBuf) -> Self {
         Self {
             panes: vec![PaneState::new(cwd)],
@@ -141,12 +154,24 @@ impl FSState {
         }
     }
 
+    /// Get the currently active pane as mutable.
+    pub fn active_pane_mut(&mut self) -> &mut PaneState {
+        &mut self.panes[self.active_pane]
+    }
+
+    /// Get the currently active pane as immutable.
+    pub fn active_pane(&self) -> &PaneState {
+        &self.panes[self.active_pane]
+    }
+
+    /// Switch focus to a different pane.
     pub fn set_active_pane(&mut self, idx: usize) {
         if idx < self.panes.len() {
             self.active_pane = idx;
         }
     }
 
+    /// Add a path to recents (evicts oldest if over 32).
     pub fn add_recent_dir(&mut self, path: PathBuf) {
         if self.recent_dirs.len() == 32 {
             self.recent_dirs.pop_front();
@@ -161,8 +186,6 @@ impl FSState {
     pub fn remove_favorite(&mut self, path: &PathBuf) {
         self.favorite_dirs.remove(path);
     }
-
-    // More: sorting, filtering, pane management, etc.
 }
 
 impl Default for FSState {

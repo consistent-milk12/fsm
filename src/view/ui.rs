@@ -5,14 +5,27 @@
 //! Uses the simplified `Frame<'_>` API (no backend generic).
 //! Each draw cycle refreshes file list, status, and overlays.
 
-use crate::model::app_state::AppState;
-use crate::model::ui_state::UIOverlay;
-use crate::view::components::object_table::ObjectTable;
+//! src/view/ui.rs
+//! ============================================================================
+//! # View: TUI Render Orchestrator (ratatui v0.24+)
+//!
+//! Uses the simplified `Frame<'_>` API (no backend generic).
+//! Each draw cycle refreshes file list, status, and overlays.
 
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
     widgets::Clear,
+};
+
+// --- Core application state and overlay enum ---
+use crate::AppState;
+use crate::model::ui_state::UIOverlay;
+
+// --- All UI components (modal overlays and widgets) ---
+use crate::view::components::{
+    help_overlay::HelpOverlay, loading_overlay::LoadingOverlay, object_table::ObjectTable,
+    prompt_bar::PromptBar, search_overlay::SearchOverlay, status_bar::StatusBar,
 };
 
 pub struct View;
@@ -36,13 +49,17 @@ impl View {
         if let Some(area) = Self::overlay_area(app.ui.overlay, frame.area()) {
             // Optional: Clear background behind overlay
             frame.render_widget(Clear, area);
+
             match app.ui.overlay {
-                UIOverlay::Help => HelpOverLay::render(frame, app, area),
+                UIOverlay::Help => HelpOverlay::render(frame, app, area),
                 UIOverlay::Search => SearchOverlay::render(frame, app, area),
                 UIOverlay::Loading => LoadingOverlay::render(frame, app, area),
                 UIOverlay::Prompt => PromptBar::render(frame, app, area),
                 UIOverlay::Status => StatusBar::render(frame, app, area),
                 UIOverlay::None => {}
+                UIOverlay::Batch => todo!(),
+                UIOverlay::Scripting => todo!(),
+                UIOverlay::CommandPalette => todo!(),
             }
         }
     }

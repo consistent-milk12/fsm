@@ -1,22 +1,19 @@
-//! src/ui/help_overlay.rs
-//! -----------------------------------------------------------------------------
-//! HelpOverlay: Modal overlay for all keybindings and usage tips.
-//! Uses ratatui v0.25+ idioms and visual polish.
-//!
-
 use ratatui::{
-    prelude::*,
+    Frame,
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, Clear, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, Paragraph},
 };
+
+use crate::AppState;
 
 pub struct HelpOverlay;
 
+/// Renders the help overlay centered in the given area.
 impl HelpOverlay {
-    /// Renders the help overlay as a modal, centered in the terminal.
-    pub fn render(f: &mut Frame<'_>, area: Rect) {
-        // Example keybindings; ideally pull from config or static struct
+    pub fn render(frame: &mut Frame<'_>, _app: &AppState, area: Rect) {
+        // Construct help text (this should ideally be dynamic)
         let help_text = vec![
             Line::from(Span::styled(
                 "File Manager — Help",
@@ -54,6 +51,13 @@ impl HelpOverlay {
             Line::from("Press Esc or ? to close this help."),
         ];
 
+        // Center overlay (usually 70% width, 80% height)
+        let overlay_area = Self::centered_rect(70, 80, area);
+
+        // Clear area before drawing modal
+        frame.render_widget(Clear, overlay_area);
+
+        // Main help text widget
         let help_paragraph = Paragraph::new(Text::from(help_text))
             .block(
                 Block::default()
@@ -63,39 +67,31 @@ impl HelpOverlay {
                     .border_style(Style::default().fg(Color::LightBlue)),
             )
             .alignment(Alignment::Left)
-            .wrap(Wrap { trim: true });
+            .wrap(ratatui::widgets::Wrap { trim: true });
 
-        // Center the overlay
-        let overlay_area = Self::centered_rect(70, 80, area); // 70% width, 80% height
-        f.render_widget(Clear, overlay_area); // Clear beneath overlay
-        f.render_widget(help_paragraph, overlay_area);
+        // Render to the frame
+        frame.render_widget(help_paragraph, overlay_area);
     }
 
-    /// Centers a rect of percent width/height in area
-    pub fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
-        let popup_layout = Layout::default()
+    /// Returns a centered rectangle of given width/height percentages inside area.
+    fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
+        let vertical = Layout::default()
             .direction(Direction::Vertical)
-            .constraints(
-                [
-                    Constraint::Percentage((100 - percent_y) / 2),
-                    Constraint::Percentage(percent_y),
-                    Constraint::Percentage((100 - percent_y) / 2),
-                ]
-                .as_ref(),
-            )
+            .constraints([
+                Constraint::Percentage((100 - percent_y) / 2),
+                Constraint::Percentage(percent_y),
+                Constraint::Percentage((100 - percent_y) / 2),
+            ])
             .split(area);
 
         let horizontal = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints(
-                [
-                    Constraint::Percentage((100 - percent_x) / 2),
-                    Constraint::Percentage(percent_x),
-                    Constraint::Percentage((100 - percent_x) / 2),
-                ]
-                .as_ref(),
-            )
-            .split(popup_layout[1]);
+            .constraints([
+                Constraint::Percentage((100 - percent_x) / 2),
+                Constraint::Percentage(percent_x),
+                Constraint::Percentage((100 - percent_x) / 2),
+            ])
+            .split(vertical[1]);
 
         horizontal[1]
     }
