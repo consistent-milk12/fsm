@@ -3,7 +3,7 @@
 //! # Size Task: Background Directory Size Calculation
 //!
 //! This module provides a background task for calculating the recursive size
-//! and item count of directories without blocking the UI.
+//! and direct item count of directories without blocking the UI.
 
 use crate::controller::actions::Action;
 use crate::fs::object_info::ObjectInfo;
@@ -12,7 +12,9 @@ use tokio::sync::mpsc;
 use tracing::{error, info};
 use walkdir::WalkDir;
 
-/// Spawns a Tokio task to calculate the recursive size and item count for a directory.
+/// Spawns a Tokio task to calculate the recursive size and direct item count for a directory.
+/// Size is calculated recursively (all files in subdirectories), but item count only
+/// includes direct children (files + folders in the immediate directory).
 ///
 /// Once calculated, it sends an `Action::UpdateObjectInfo` to the main event loop
 /// to update the UI.
@@ -40,6 +42,7 @@ pub fn calculate_size_task(
             let mut items_count: usize = 0;
 
             let tmp: PathBuf = path.clone();
+            // Calculate recursive size for files, but only count direct children
             for entry in WalkDir::new(&tmp)
                 .min_depth(1)
                 .into_iter()
@@ -50,8 +53,15 @@ pub fn calculate_size_task(
                         total_size += metadata.len();
                     }
                 }
-                items_count += 1;
             }
+
+            // Count only direct children (files + directories)
+            if let Ok(entries) = std::fs::read_dir(&tmp) {
+                for _entry in entries.filter_map(Result::ok) {
+                    items_count += 1;
+                }
+            }
+
             (total_size, items_count)
         })
         .await;
