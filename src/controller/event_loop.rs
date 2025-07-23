@@ -6,7 +6,7 @@
 //! - Mutates AppState/UIState, signals UI redraw via redraw flag.
 //! - Never calls UI rendering directly; fully decoupled for immediate-mode TUI.
 
-use crate::controller::actions::Action;
+use crate::controller::actions::{Action, InputPromptType};
 use crate::fs::dir_scanner::ScanUpdate;
 use crate::fs::object_info::ObjectInfo;
 use crate::model::app_state::AppState;
@@ -265,16 +265,12 @@ impl Controller {
                                     let app: MutexGuard<'_, AppState> = self.app.lock().await;
 
                                     // If we have recursive search results, open the selected one
-                                    if !app.filename_search_results.is_empty() {
-                                        if let Some(selected_idx) = app.ui.selected {
-                                            if let Some(selected_entry) =
-                                                app.filename_search_results.get(selected_idx)
-                                            {
-                                                return Action::OpenFile(
-                                                    selected_entry.path.clone(),
-                                                );
-                                            }
-                                        }
+                                    if !app.filename_search_results.is_empty()
+                                        && let Some(selected_idx) = app.ui.selected
+                                        && let Some(selected_entry) =
+                                            app.filename_search_results.get(selected_idx)
+                                    {
+                                        return Action::OpenFile(selected_entry.path.clone());
                                     }
 
                                     // If no recursive results but we have a search term, trigger search
@@ -472,6 +468,29 @@ impl Controller {
                             }
                         }
 
+                        UIOverlay::Prompt => match key_event.code {
+                            KeyCode::Char(c) => {
+                                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
+                                app.ui.input.push(c);
+                                Action::NoOp
+                            }
+                            KeyCode::Backspace => {
+                                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
+                                app.ui.input.pop();
+                                Action::NoOp
+                            }
+                            KeyCode::Enter => {
+                                let app: MutexGuard<'_, AppState> = self.app.lock().await;
+                                let input = app.ui.input.trim().to_string();
+                                if !input.is_empty() {
+                                    Action::SubmitInputPrompt(input)
+                                } else {
+                                    Action::CloseOverlay
+                                }
+                            }
+                            _ => Action::NoOp,
+                        },
+
                         UIOverlay::SearchResults => {
                             match key_event.code {
                                 KeyCode::Backspace => Action::CloseOverlay,
@@ -514,9 +533,13 @@ impl Controller {
 
                         (KeyCode::Char('d'), KeyModifiers::NONE) => Action::Delete,
 
-                        (KeyCode::Char('n'), KeyModifiers::NONE) => Action::CreateFile,
+                        (KeyCode::Char('n'), KeyModifiers::NONE) => {
+                            Action::ShowInputPrompt(InputPromptType::CreateFile)
+                        }
 
-                        (KeyCode::Char('f'), KeyModifiers::NONE) => Action::CreateDirectory,
+                        (KeyCode::Char('f'), KeyModifiers::NONE) => {
+                            Action::ShowInputPrompt(InputPromptType::CreateDirectory)
+                        }
 
                         (KeyCode::Char('s'), KeyModifiers::NONE) => {
                             Action::Sort("name_asc".to_string())
@@ -666,13 +689,13 @@ impl Controller {
             }
 
             Action::ToggleShowHidden => {
-                let mut app = self.app.lock().await;
+                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
                 app.ui.toggle_show_hidden();
                 app.redraw = true;
             }
 
             Action::TaskResult(task_result) => {
-                let mut app = self.app.lock().await;
+                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
 
                 // If a loading overlay is active, update its fields.
                 if let Some(ref mut loading) = app.ui.loading {
@@ -680,7 +703,7 @@ impl Controller {
                         loading.progress = Some(progress);
                     }
                     if let Some(ref item) = task_result.current_item {
-                        loading.current_item = Some(item.clone().into());
+                        loading.current_item = Some(item.clone());
                     }
                     if let Some(done) = task_result.completed {
                         loading.completed = Some(done);
@@ -696,14 +719,13 @@ impl Controller {
                 }
 
                 // On completion (progress == 1.0), hide overlay.
-                if let Some(p) = task_result.progress {
-                    if (p - 1.0).abs() < f64::EPSILON {
-                        app.ui.loading = None;
+                if let Some(p) = task_result.progress
+                    && (p - 1.0).abs() < f64::EPSILON {
+                    app.ui.loading = None;
 
-                        // Optionally close overlay if UIOverlay::Loading
-                        if app.ui.overlay == UIOverlay::Loading {
-                            app.ui.overlay = UIOverlay::None;
-                        }
+                    // Optionally close overlay if UIOverlay::Loading
+                    if app.ui.overlay == UIOverlay::Loading {
+                        app.ui.overlay = UIOverlay::None;
                     }
                 }
 
@@ -932,7 +954,7 @@ impl Controller {
                             current_pane.is_loading = false;
                             current_pane.is_incremental_loading = false;
 
-                            let err_msg = format!("Error scanning directory: {}", e);
+                            let err_msg: String = format!("Error scanning directory: {e}");
                             current_pane.last_error = Some(err_msg.clone());
                             app.set_error(err_msg);
                             app.redraw = true;
@@ -946,6 +968,33 @@ impl Controller {
                 // Handle auto-dismiss notifications
                 if app.ui.update_notification() {
                     app.redraw = true;
+                }
+            }
+
+            Action::ShowInputPrompt(prompt_type) => {
+                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
+                app.ui.show_input_prompt(prompt_type);
+                app.redraw = true;
+            }
+
+            Action::SubmitInputPrompt(input) => {
+                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
+                let prompt_type: Option<InputPromptType> = app.ui.input_prompt_type;
+                app.ui.hide_input_prompt();
+
+                match prompt_type {
+                    Some(InputPromptType::CreateFile) => {
+                        drop(app);
+                        Box::pin(self.dispatch_action(Action::CreateFileWithName(input))).await;
+                    }
+                    Some(InputPromptType::CreateDirectory) => {
+                        drop(app);
+                        Box::pin(self.dispatch_action(Action::CreateDirectoryWithName(input)))
+                            .await;
+                    }
+                    None => {
+                        app.redraw = true;
+                    }
                 }
             }
 
