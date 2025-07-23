@@ -93,11 +93,11 @@ impl ContentSearchOverlay {
         }
 
         // Check if we have raw search results first (preferred)
-        if let Some(ref raw_results) = app.raw_search_results {
-            if !raw_results.lines.is_empty() {
-                Self::render_raw_results(frame, app, area);
-                return;
-            }
+        if let Some(ref raw_results) = app.raw_search_results
+            && !raw_results.lines.is_empty()
+        {
+            Self::render_raw_results(frame, app, area);
+            return;
         }
 
         // Check if we have rich search results, then fallback to simple results
