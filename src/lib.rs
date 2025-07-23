@@ -13,10 +13,7 @@ pub mod cache {
 }
 
 /// --- Configuration: app settings, keymap, themes, etc. ---
-pub mod config {
-    pub mod config;
-    pub mod keymap;
-}
+pub mod config;
 
 /// --- Controller/event loop (main async event handling) ---
 pub mod controller {
