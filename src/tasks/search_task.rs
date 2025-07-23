@@ -38,7 +38,7 @@ impl RawSearchResult {
                 // Skip ANSI escape sequence
                 if chars.next() == Some('[') {
                     // Skip until we find the end character (usually 'm', but could be others)
-                    while let Some(next_char) = chars.next() {
+                    for next_char in chars.by_ref() {
                         if next_char.is_ascii_alphabetic() {
                             break;
                         }
@@ -168,7 +168,7 @@ pub fn search_task(
             // Status code 1 means no matches found, which is not an error
             let _ = task_tx.send(TaskResult::error(
                 task_id,
-                format!("ripgrep failed with status: {}", status),
+                format!("ripgrep failed with status: {status}"),
             ));
             return;
         }
@@ -178,7 +178,7 @@ pub fn search_task(
         // Report completion to task loop
         let _ = task_tx.send(TaskResult::ok(
             task_id,
-            format!("found {} line(s) matching pattern", match_count),
+            format!("found {match_count} line(s) matching pattern"),
         ));
 
         // Send raw results to UI
