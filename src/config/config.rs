@@ -25,34 +25,26 @@ use std::time::Duration;
 use tracing::{info, warn};
 
 /// App theme (color scheme) selector.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Theme {
+    #[default]
     Default,
     Light,
     Dark,
     Solarized,
     Custom(String),
 }
-impl Default for Theme {
-    fn default() -> Self {
-        Theme::Default
-    }
-}
 
 /// Keyboard shortcut preset (can be user-extended).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Keymap {
     Vim,
     Emacs,
+    #[default]
     Standard,
     Custom(String),
-}
-impl Default for Keymap {
-    fn default() -> Self {
-        Keymap::Standard
-    }
 }
 
 /// Main configuration struct for the application.
