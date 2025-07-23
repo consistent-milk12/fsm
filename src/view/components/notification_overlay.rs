@@ -44,7 +44,7 @@ impl NotificationOverlay {
 
             let block = Block::default()
                 .borders(Borders::ALL)
-                .title(format!(" {} {} ", icon, title))
+                .title(format!(" {icon} {title} "))
                 .title_style(border_style.bold())
                 .border_style(border_style)
                 .style(Style::default().bg(theme::BACKGROUND));
