@@ -43,6 +43,7 @@ pub mod view {
         pub mod filename_search_overlay;
         pub mod help_overlay;
         pub use help_overlay::HelpOverlay;
+        pub mod input_prompt_overlay;
         pub mod loading_overlay;
         pub mod notification_overlay;
         pub mod object_table;
