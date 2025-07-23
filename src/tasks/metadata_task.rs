@@ -74,7 +74,7 @@ pub fn batch_load_metadata_task(
             count += 1;
 
             // Yield control periodically to avoid blocking
-            if count % batch_size == 0 {
+            if count.is_multiple_of(batch_size) {
                 tokio::task::yield_now().await;
             }
         }
