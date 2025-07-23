@@ -9,8 +9,9 @@
 //! - Extensible for new overlays/plugins (search, scripting, batch, etc.)
 //! - Optimized for immediate-mode TUI, multi-pane and batch ops
 
-use crate::model::command_palette::CommandPaletteState;
 use std::collections::HashSet;
+
+use crate::model::command_palette::{Command, CommandAction, CommandPaletteState};
 
 // UI modes for keyboard-driven workflows, selections, and plugins
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,12 +30,39 @@ pub enum UIOverlay {
     None,
     Help,
     Search,
+    FileNameSearch,
+    ContentSearch,
+    SearchResults,
     Loading,
     Status,
     Prompt,
     Batch,
     Scripting,
     CommandPalette,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchType {
+    /// Search for file and folder names (fast, local)
+    FileName,
+    /// Search for content within files using ripgrep (slower, recursive)
+    ContentGrep,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotificationLevel {
+    Info,
+    Warning,
+    Error,
+    Success,
+}
+
+#[derive(Debug, Clone)]
+pub struct Notification {
+    pub message: String,
+    pub level: NotificationLevel,
+    pub timestamp: std::time::Instant,
+    pub auto_dismiss_ms: Option<u64>,
 }
 
 // Detailed loading state for async/batch operations
@@ -82,6 +110,8 @@ pub struct UIState {
     pub command_palette: CommandPaletteState,
     /// Current loading overlay state (if active).
     pub loading: Option<LoadingState>,
+    /// Current notification (if any).
+    pub notification: Option<Notification>,
 }
 
 impl UIState {
@@ -99,8 +129,30 @@ impl UIState {
             theme: "default".to_string(),
             active_pane: 0,
             recent_actions: Vec::with_capacity(16),
-            command_palette: CommandPaletteState::default(),
+            command_palette: CommandPaletteState::new(vec![
+                Command {
+                    title: "Open Config".to_string(),
+                    action: CommandAction::OpenConfig,
+                },
+                Command {
+                    title: "Reload Directory".to_string(),
+                    action: CommandAction::Reload,
+                },
+                Command {
+                    title: "New File".to_string(),
+                    action: CommandAction::NewFile,
+                },
+                Command {
+                    title: "New Folder".to_string(),
+                    action: CommandAction::NewFolder,
+                },
+                Command {
+                    title: "Search File Content".to_string(),
+                    action: CommandAction::SearchContent,
+                },
+            ]),
             loading: None,
+            notification: None,
         }
     }
 
@@ -131,9 +183,9 @@ impl UIState {
 
     pub fn move_selection_down<T>(&mut self, entries: &[T]) {
         if !entries.is_empty() {
-            let new_selected = self.selected.map_or(0, |s| {
-                s.saturating_add(1).min(entries.len() - 1)
-            });
+            let new_selected = self
+                .selected
+                .map_or(0, |s| s.saturating_add(1).min(entries.len() - 1));
             self.selected = Some(new_selected);
         }
     }
@@ -157,8 +209,81 @@ impl UIState {
             _ => UIOverlay::CommandPalette,
         };
     }
+
+    pub fn toggle_filename_search_overlay(&mut self) {
+        self.overlay = match self.overlay {
+            UIOverlay::FileNameSearch => UIOverlay::None,
+            _ => UIOverlay::FileNameSearch,
+        };
+        if self.overlay == UIOverlay::FileNameSearch {
+            self.input.clear();
+        }
+    }
+
+    pub fn toggle_content_search_overlay(&mut self) {
+        self.overlay = match self.overlay {
+            UIOverlay::ContentSearch => UIOverlay::None,
+            _ => UIOverlay::ContentSearch,
+        };
+        if self.overlay == UIOverlay::ContentSearch {
+            self.input.clear();
+        }
+    }
     pub fn close_all_overlays(&mut self) {
         self.overlay = UIOverlay::None;
+    }
+
+    /// Show a notification with auto-dismiss
+    pub fn show_notification(
+        &mut self,
+        message: String,
+        level: NotificationLevel,
+        auto_dismiss_ms: Option<u64>,
+    ) {
+        self.notification = Some(Notification {
+            message,
+            level,
+            timestamp: std::time::Instant::now(),
+            auto_dismiss_ms,
+        });
+    }
+
+    /// Show an info notification
+    pub fn show_info(&mut self, message: String) {
+        self.show_notification(message, NotificationLevel::Info, Some(3000));
+    }
+
+    /// Show a warning notification  
+    pub fn show_warning(&mut self, message: String) {
+        self.show_notification(message, NotificationLevel::Warning, Some(5000));
+    }
+
+    /// Show an error notification
+    pub fn show_error(&mut self, message: String) {
+        self.show_notification(message, NotificationLevel::Error, None); // No auto-dismiss for errors
+    }
+
+    /// Show a success notification
+    pub fn show_success(&mut self, message: String) {
+        self.show_notification(message, NotificationLevel::Success, Some(2000));
+    }
+
+    /// Dismiss the current notification
+    pub fn dismiss_notification(&mut self) {
+        self.notification = None;
+    }
+
+    /// Check if notification should auto-dismiss and do so if needed
+    pub fn update_notification(&mut self) -> bool {
+        if let Some(notification) = &self.notification {
+            if let Some(auto_dismiss_ms) = notification.auto_dismiss_ms {
+                if notification.timestamp.elapsed().as_millis() > auto_dismiss_ms as u128 {
+                    self.notification = None;
+                    return true; // Notification was dismissed
+                }
+            }
+        }
+        false
     }
 
     // --- Input/query ---
