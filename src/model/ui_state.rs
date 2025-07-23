@@ -11,6 +11,7 @@
 
 use std::collections::HashSet;
 
+use crate::controller::actions::InputPromptType;
 use crate::model::command_palette::{Command, CommandAction, CommandPaletteState};
 
 // UI modes for keyboard-driven workflows, selections, and plugins
@@ -112,6 +113,8 @@ pub struct UIState {
     pub loading: Option<LoadingState>,
     /// Current notification (if any).
     pub notification: Option<Notification>,
+    /// Type of input prompt currently active.
+    pub input_prompt_type: Option<InputPromptType>,
 }
 
 impl UIState {
@@ -153,6 +156,7 @@ impl UIState {
             ]),
             loading: None,
             notification: None,
+            input_prompt_type: None,
         }
     }
 
@@ -298,6 +302,20 @@ impl UIState {
             }
         }
         false
+    }
+
+    /// Show input prompt for the given type
+    pub fn show_input_prompt(&mut self, prompt_type: InputPromptType) {
+        self.input_prompt_type = Some(prompt_type);
+        self.overlay = UIOverlay::Prompt;
+        self.input.clear();
+    }
+
+    /// Hide input prompt
+    pub fn hide_input_prompt(&mut self) {
+        self.input_prompt_type = None;
+        self.overlay = UIOverlay::None;
+        self.input.clear();
     }
 
     // --- Input/query ---
