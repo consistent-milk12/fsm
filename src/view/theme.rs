@@ -10,7 +10,7 @@ use ratatui::style::Color;
 
 pub const BACKGROUND: Color = Color::Rgb(30, 30, 46); // Base
 pub const CURRENT_LINE: Color = Color::Rgb(69, 71, 90); // Surface1
-pub const FOREGROUND: Color = Color::Rgb(205, 214, 244); // Text
+pub const FOREGROUND: Color = Color::Rgb(81, 224, 81); // #51E051
 pub const COMMENT: Color = Color::Rgb(127, 132, 156); // Overlay1
 pub const CYAN: Color = Color::Rgb(137, 220, 235); // Sky
 pub const GREEN: Color = Color::Rgb(166, 227, 161); // Green
