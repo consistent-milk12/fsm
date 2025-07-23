@@ -48,10 +48,10 @@ pub fn calculate_size_task(
                 .into_iter()
                 .filter_map(Result::ok)
             {
-                if let Ok(metadata) = entry.metadata() {
-                    if metadata.is_file() {
-                        total_size += metadata.len();
-                    }
+                if let Ok(metadata) = entry.metadata()
+                    && metadata.is_file()
+                {
+                    total_size += metadata.len();
                 }
             }
 
