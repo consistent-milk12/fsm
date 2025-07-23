@@ -2,7 +2,6 @@
 
 #[derive(Debug, Clone)]
 pub struct CommandPaletteState {
-    pub visible: bool,
     pub input: String,
     pub filtered: Vec<Command>,
     pub all_commands: Vec<Command>,
@@ -12,7 +11,6 @@ pub struct CommandPaletteState {
 impl CommandPaletteState {
     pub fn new(commands: Vec<Command>) -> Self {
         Self {
-            visible: false,
             input: String::new(),
             filtered: commands.clone(),
             all_commands: commands,
@@ -46,6 +44,7 @@ pub enum CommandAction {
     Reload,
     NewFile,
     NewFolder,
+    SearchContent,
     // ...extend with more actions or plugins
     Custom(String),
 }
