@@ -122,6 +122,22 @@ impl UIState {
         self.visual_range = Some((start, end));
     }
 
+    pub fn move_selection_up<T>(&mut self, entries: &[T]) {
+        if !entries.is_empty() {
+            let new_selected = self.selected.map_or(0, |s| s.saturating_sub(1));
+            self.selected = Some(new_selected);
+        }
+    }
+
+    pub fn move_selection_down<T>(&mut self, entries: &[T]) {
+        if !entries.is_empty() {
+            let new_selected = self.selected.map_or(0, |s| {
+                s.saturating_add(1).min(entries.len() - 1)
+            });
+            self.selected = Some(new_selected);
+        }
+    }
+
     // --- Modes/overlay management ---
     pub fn set_mode(&mut self, mode: UIMode) {
         self.mode = mode;

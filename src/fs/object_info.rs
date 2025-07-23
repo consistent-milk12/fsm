@@ -11,7 +11,6 @@ use std::ffi::OsStr;
 use std::fs::{FileType, Metadata};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::fs::ReadDir;
 
 /// Enum for object type, matching the table logic.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -77,17 +76,8 @@ impl ObjectInfo {
             ObjectType::File
         };
 
-        // Count items if directory (non-blocking only for small dirs)
-        let items_count: usize = if is_dir {
-            let mut count: usize = 0;
-            let mut entries: ReadDir = fs::read_dir(path).await?;
-            while entries.next_entry().await?.is_some() {
-                count += 1;
-            }
-            count
-        } else {
-            0
-        };
+        // Item count for directories is calculated in a background task.
+        let items_count: usize = 0;
 
         // File size
         let size: u64 = if is_dir { 0 } else { metadata.len() };

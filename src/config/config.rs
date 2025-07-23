@@ -22,6 +22,7 @@ use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::Duration;
+use tracing::{info, warn};
 
 /// App theme (color scheme) selector.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -86,23 +87,29 @@ impl Config {
     /// The config is expected at `$XDG_CONFIG_HOME/FileManager/config.toml`
     /// (Linux), or equivalent on Windows/macOS.
     pub async fn load() -> anyhow::Result<Self> {
-        let path: PathBuf = Self::config_path()?;
+        let path = Self::config_path()?;
         if path.exists() {
-            let text: String = tokio::fs::read_to_string(&path).await?;
+            info!("Loading config from {}", path.display());
+            let text = tokio::fs::read_to_string(&path).await?;
             let cfg: Config = toml::from_str(&text)?;
             Ok(cfg)
         } else {
+            warn!(
+                "No config file found at {}, using default configuration.",
+                path.display()
+            );
             Ok(Config::default())
         }
     }
 
     /// Saves config to TOML file at the XDG-compliant app config dir.
     pub async fn save(&self) -> anyhow::Result<()> {
-        let path: PathBuf = Self::config_path()?;
+        let path = Self::config_path()?;
+        info!("Saving config to {}", path.display());
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
-        let toml_str: String = toml::to_string_pretty(self)?;
+        let toml_str = toml::to_string_pretty(self)?;
         tokio::fs::write(&path, toml_str).await?;
         Ok(())
     }
@@ -110,7 +117,7 @@ impl Config {
     /// Returns the canonical config file path using `directories::ProjectDirs`.
     pub fn config_path() -> anyhow::Result<PathBuf> {
         // Replace these identifiers to your app's actual organization/name if needed:
-        let proj_dirs: ProjectDirs = ProjectDirs::from("org", "example", "FileManager")
+        let proj_dirs = ProjectDirs::from("org", "example", "FileManager")
             .ok_or_else(|| anyhow::anyhow!("Could not determine config directory."))?;
         Ok(proj_dirs.config_dir().join("config.toml"))
     }

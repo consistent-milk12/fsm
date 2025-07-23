@@ -6,7 +6,9 @@
 //! internal events that the application can respond to. This provides a single,
 //! clear interface for the `Controller` to process.
 
+use crate::fs::object_info::ObjectInfo;
 use crossterm::event::{KeyEvent, MouseEvent};
+use std::path::PathBuf;
 
 /// Represents a high-level action that the application can perform.
 /// This abstracts away raw terminal events into meaningful commands.
@@ -32,6 +34,19 @@ pub enum Action {
     Tick,
     /// A result from a background task.
     TaskResult(crate::controller::event_loop::TaskResult),
+    /// Move selection up.
+    MoveSelectionUp,
+    /// Move selection down.
+    MoveSelectionDown,
+    /// Enter selected directory or open file.
+    EnterSelected,
+    /// Go to parent directory.
+    GoToParent,
+    /// Updates an ObjectInfo in the state (e.g., from a background task).
+    UpdateObjectInfo {
+        parent_dir: PathBuf,
+        info: ObjectInfo,
+    },
     // Add more actions as the application grows, e.g.:
     // ChangeDirectory(PathBuf),
     // SelectEntry,

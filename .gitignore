@@ -1,1 +1,5 @@
 /target
+/backup
+/Cargo.lock
+/logs
+/ 

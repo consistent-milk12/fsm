@@ -9,10 +9,11 @@
 use crate::controller::actions::Action;
 use crate::model::app_state::AppState;
 use crate::model::ui_state::{LoadingState, UIOverlay};
-use crossterm::event::{self, Event as TermEvent, KeyCode, KeyModifiers};
+use crossterm::event::{Event as TermEvent, EventStream, KeyCode, KeyModifiers};
+use futures::StreamExt;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::mpsc;
+use tracing::debug;
 
 /// Result from a background async task.
 #[derive(Debug, Clone, PartialEq)]
@@ -28,42 +29,43 @@ pub struct TaskResult {
 
 pub struct Controller {
     pub app: Arc<tokio::sync::Mutex<AppState>>,
-    pub task_rx: mpsc::UnboundedReceiver<TaskResult>,
+    task_rx: mpsc::UnboundedReceiver<TaskResult>,
+    event_stream: EventStream,
+    action_rx: mpsc::UnboundedReceiver<Action>,
 }
 
 impl Controller {
     pub fn new(
         app: Arc<tokio::sync::Mutex<AppState>>,
         task_rx: mpsc::UnboundedReceiver<TaskResult>,
+        action_rx: mpsc::UnboundedReceiver<Action>,
     ) -> Self {
-        Self { app, task_rx }
+        Self {
+            app,
+            task_rx,
+            event_stream: EventStream::new(),
+            action_rx,
+        }
     }
 
-    /// Main event polling entry: handles both user/terminal and background task events.
-    pub async fn poll_events(&mut self) -> Option<Action> {
-        // Poll for terminal events
-        if let Some(event) = self.next_terminal_event().await {
-            return Some(self.handle_terminal_event(event));
+    /// Asynchronously returns the next action, waiting for user input or background task results.
+    pub async fn next_action(&mut self) -> Option<Action> {
+        tokio::select! {
+            Some(Ok(event)) = self.event_stream.next() => {
+                let action = self.handle_terminal_event(event);
+                debug!("Received terminal event: {:?}", action);
+                Some(action)
+            }
+            Some(task_result) = self.task_rx.recv() => {
+                debug!("Received task result: {:?}", task_result);
+                Some(Action::TaskResult(task_result))
+            }
+            Some(action) = self.action_rx.recv() => {
+                debug!("Received action: {:?}", action);
+                Some(action)
+            }
+            else => None,
         }
-
-        // Poll for background task results
-        if let Ok(task_result) = self.task_rx.try_recv() {
-            return Some(Action::TaskResult(task_result));
-        }
-
-        None
-    }
-
-    /// Polls asynchronously for the next terminal event.
-    async fn next_terminal_event(&self) -> Option<TermEvent> {
-        tokio::task::spawn_blocking(|| {
-            event::poll(Duration::from_millis(50))
-                .ok()
-                .and_then(|ready| if ready { event::read().ok() } else { None })
-        })
-        .await
-        .ok()
-        .flatten()
     }
 
     /// Maps a raw terminal event to a high-level application Action.
@@ -79,6 +81,11 @@ impl Controller {
                 (KeyCode::Char('l'), KeyModifiers::CONTROL) => Action::SimulateLoading,
                 (KeyCode::Esc, _) => Action::Quit, // Esc can also close overlays, but for now, quit
                 (KeyCode::Char('.'), KeyModifiers::CONTROL) => Action::ToggleShowHidden,
+                (KeyCode::Up, _) => Action::MoveSelectionUp,
+                (KeyCode::Down, _) => Action::MoveSelectionDown,
+                (KeyCode::Enter, _) => Action::EnterSelected,
+                (KeyCode::Backspace, _) => Action::GoToParent,
+                (KeyCode::Char('q'), _) => Action::Quit,
                 _ => Action::Key(key_event), // Pass through unhandled key events
             },
             TermEvent::Mouse(mouse_event) => Action::Mouse(mouse_event),
@@ -89,20 +96,23 @@ impl Controller {
 
     /// Dispatches an action to update the application state.
     pub async fn dispatch_action(&self, action: Action) {
-        let mut app = self.app.lock().await;
+        debug!("Dispatching action: {:?}", action);
         match action {
             Action::Quit => {
                 // Handled in main loop for graceful shutdown
             }
             Action::ToggleHelp => {
+                let mut app = self.app.lock().await;
                 app.ui.toggle_help_overlay();
                 app.redraw = true;
             }
             Action::ToggleCommandPalette => {
+                let mut app = self.app.lock().await;
                 app.ui.toggle_command_palette();
                 app.redraw = true;
             }
             Action::SimulateLoading => {
+                let mut app = self.app.lock().await;
                 app.ui.loading = Some(LoadingState {
                     message: "Simulated loading...".into(),
                     progress: None,
@@ -115,10 +125,12 @@ impl Controller {
                 app.redraw = true;
             }
             Action::ToggleShowHidden => {
+                let mut app = self.app.lock().await;
                 app.ui.toggle_show_hidden();
                 app.redraw = true;
             }
             Action::TaskResult(task_result) => {
+                let mut app = self.app.lock().await;
                 // If a loading overlay is active, update its fields.
                 if let Some(ref mut loading) = app.ui.loading {
                     if let Some(progress) = task_result.progress {
@@ -160,10 +172,35 @@ impl Controller {
                 );
                 app.redraw = true;
             }
+            Action::MoveSelectionUp => {
+                let mut app = self.app.lock().await;
+                let entries = app.fs.active_pane().entries.clone();
+                app.ui.move_selection_up(&entries);
+                app.redraw = true;
+            }
+            Action::MoveSelectionDown => {
+                let mut app = self.app.lock().await;
+                let entries = app.fs.active_pane().entries.clone();
+                app.ui.move_selection_down(&entries);
+                app.redraw = true;
+            }
+            Action::EnterSelected => {
+                let mut app = self.app.lock().await;
+                app.enter_selected_directory().await;
+                app.redraw = true;
+            }
+            Action::GoToParent => {
+                let mut app = self.app.lock().await;
+                app.go_to_parent_directory().await;
+                app.redraw = true;
+            }
+            Action::UpdateObjectInfo { parent_dir, info } => {
+                let mut app = self.app.lock().await;
+                app.update_object_info(parent_dir, info);
+                app.redraw = true;
+            }
             Action::Key(_) | Action::Mouse(_) | Action::Resize(..) | Action::Tick => {
-                // These actions might not directly change AppState, but could trigger redraws
-                // or be handled by other parts of the system (e.g., UI components).
-                // Ensure redraw is set for any interaction.
+                let mut app = self.app.lock().await;
                 app.redraw = true;
             }
         }

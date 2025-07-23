@@ -8,7 +8,7 @@ anyhow = "1.0.98"
 async-process = "2.4.0"
 bytesize = "2.0.1"
 chrono = { version = "0.4.41", features = ["serde"] }
-crossterm = "0.29.0"
+crossterm = { version = "0.29.0", features = ["event-stream"] }
 directories = "6.0.0"
 futures = "0.3.31"
 humantime-serde = "1.1.1"

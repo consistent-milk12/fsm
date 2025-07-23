@@ -42,16 +42,8 @@ impl Logger {
             .with_ansi(false)
             .with_filter(EnvFilter::from_default_env().add_directive("info".parse().unwrap()));
 
-        // optional stderr layer for live debugging
-        let stderr_layer = fmt::layer()
-            .event_format(SeqFileMod)
-            .with_writer(std::io::stderr)
-            .with_ansi(true)
-            .with_filter(EnvFilter::from_default_env().add_directive("info".parse().unwrap()));
-
         tracing_subscriber::registry()
             .with(file_layer)
-            .with(stderr_layer)
             .init();
     }
 }

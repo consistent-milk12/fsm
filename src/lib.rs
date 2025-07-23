@@ -34,6 +34,8 @@ pub mod model {
 
 /// --- UI rendering: all view logic and components ---
 pub mod view {
+    pub mod theme;
+    pub mod icons;
     pub mod ui; // main UI orchestrator
     pub mod components {
         pub mod command_palette;

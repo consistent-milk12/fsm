@@ -7,36 +7,52 @@
 //! - Themed, immediate-mode, power-user friendly
 
 use crate::AppState;
+use crate::view::theme;
 use ratatui::{
     Frame,
-    layout::Rect,
-    style::{Color, Modifier, Style},
-    text::{Line, Span, Text},
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
+    style::{Style, Stylize},
+    text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
 };
 
 pub struct StatusBar;
 
 impl StatusBar {
-    /// Render the status bar at the given area.
     pub fn render(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
+        let status_block = Block::default()
+            .borders(Borders::TOP)
+            .border_style(Style::default().fg(theme::COMMENT));
+        frame.render_widget(status_block, area);
+
         let (msg, style) = if let Some(ref err) = app.last_error {
             (
-                format!("Error: {err}"),
-                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                format!("🔥 Error: {err}"),
+                Style::default().fg(theme::RED).bold(),
             )
         } else if let Some(ref status) = app.last_status {
-            (status.clone(), Style::default().fg(Color::LightGreen))
+            (status.clone(), Style::default().fg(theme::GREEN))
         } else {
-            ("Ready".to_string(), Style::default().fg(Color::Gray))
+            ("Ready".to_string(), Style::default().fg(theme::COMMENT))
         };
 
-        let text = Text::from(Line::from(Span::styled(msg, style)));
+        let chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .margin(0)
+            .split(area);
 
-        let para = Paragraph::new(text)
-            .block(Block::default().borders(Borders::NONE))
-            .alignment(ratatui::layout::Alignment::Left);
+        let left_para = Paragraph::new(Line::from(Span::styled(format!(" {msg} "), style)))
+            .alignment(Alignment::Left);
 
-        frame.render_widget(para, area);
+        let right_text = format!("{} items ", app.fs.active_pane().entries.len());
+        let right_para = Paragraph::new(Line::from(Span::styled(
+            right_text,
+            Style::default().fg(theme::PURPLE),
+        )))
+        .alignment(Alignment::Right);
+
+        frame.render_widget(left_para, chunks[0]);
+        frame.render_widget(right_para, chunks[1]);
     }
 }

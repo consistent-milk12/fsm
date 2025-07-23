@@ -6,49 +6,44 @@
 //! - Uses UIState's input buffer
 //! - Always centered, visually distinct, themable
 
+use crate::view::theme;
 use crate::AppState;
 use ratatui::{
-    Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
-    style::{Color, Style},
+    style::Style,
     text::{Span, Text},
     widgets::{Block, Borders, Clear, Paragraph},
+    Frame,
 };
 
 pub struct PromptBar;
 
 impl PromptBar {
-    /// Renders the prompt bar as a modal overlay, centered on the screen.
     pub fn render(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
-        // Use app.ui.input as the prompt buffer
         let prompt_text = &app.ui.input;
-        // Optionally: Display a context message (from overlay or mode)
         let prompt_label = match app.ui.overlay {
-            // You can expand these cases for more overlays/modes
             crate::model::ui_state::UIOverlay::Prompt => "Command:",
             crate::model::ui_state::UIOverlay::Search => "Search:",
             _ => "Input:",
         };
 
-        // Centered overlay area (40% width, 12% height is typical for prompt)
         let overlay_area = Self::centered_rect(40, 12, area);
         frame.render_widget(Clear, overlay_area);
 
-        // Main input field widget
         let paragraph = Paragraph::new(Text::from(Span::raw(prompt_text)))
             .block(
                 Block::default()
                     .title(prompt_label)
                     .title_alignment(Alignment::Left)
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::Cyan)),
+                    .border_style(Style::default().fg(theme::PURPLE))
+                    .style(Style::default().bg(theme::BACKGROUND).fg(theme::FOREGROUND)),
             )
             .alignment(Alignment::Left);
 
         frame.render_widget(paragraph, overlay_area);
     }
 
-    /// Centers a rectangle of given width/height percentages within the area.
     fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
         let vertical = Layout::default()
             .direction(Direction::Vertical)
