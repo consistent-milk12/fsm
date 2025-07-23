@@ -95,10 +95,12 @@ impl Config {
             Ok(cfg)
         } else {
             warn!(
-                "No config file found at {}, using default configuration.",
+                "No config file found at {}, using default configuration. Creating it now.",
                 path.display()
             );
-            Ok(Config::default())
+            let default_config = Config::default();
+            default_config.save().await?;
+            Ok(default_config)
         }
     }
 
