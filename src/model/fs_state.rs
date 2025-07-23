@@ -23,6 +23,20 @@ pub enum EntrySort {
     Custom(String), // for plugin/user
 }
 
+impl ToString for EntrySort {
+    fn to_string(&self) -> String {
+        match self {
+            EntrySort::NameAsc => "name_asc".to_string(),
+            EntrySort::NameDesc => "name_desc".to_string(),
+            EntrySort::SizeAsc => "size_asc".to_string(),
+            EntrySort::SizeDesc => "size_desc".to_string(),
+            EntrySort::ModifiedAsc => "modified_asc".to_string(),
+            EntrySort::ModifiedDesc => "modified_desc".to_string(),
+            EntrySort::Custom(s) => s.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EntryFilter {
     All,
@@ -31,6 +45,19 @@ pub enum EntryFilter {
     Extension(String),
     Pattern(String),
     Custom(String), // plugin/user script
+}
+
+impl ToString for EntryFilter {
+    fn to_string(&self) -> String {
+        match self {
+            EntryFilter::All => "all".to_string(),
+            EntryFilter::FilesOnly => "files_only".to_string(),
+            EntryFilter::DirsOnly => "dirs_only".to_string(),
+            EntryFilter::Extension(s) => s.clone(),
+            EntryFilter::Pattern(s) => s.clone(),
+            EntryFilter::Custom(s) => s.clone(),
+        }
+    }
 }
 
 /// Single pane state (e.g., for dual/multi-pane UI)
@@ -62,6 +89,21 @@ pub struct PaneState {
 
     /// Table state for ratatui Table widget (selection, scroll).
     pub table_state: TableState,
+
+    /// Virtual scrolling offset (first visible row)
+    pub scroll_offset: usize,
+
+    /// Number of visible rows in the viewport
+    pub viewport_height: usize,
+
+    /// Incremental loading state
+    pub incremental_entries: Vec<ObjectInfo>,
+
+    /// Whether we're currently in incremental loading mode
+    pub is_incremental_loading: bool,
+
+    /// Total expected entries (if known)
+    pub expected_entries: Option<usize>,
 }
 
 impl PaneState {
@@ -76,6 +118,11 @@ impl PaneState {
             sort: EntrySort::NameAsc,
             filter: EntryFilter::All,
             table_state: TableState::default(),
+            scroll_offset: 0,
+            viewport_height: 20, // Default viewport height
+            incremental_entries: Vec::new(),
+            is_incremental_loading: false,
+            expected_entries: None,
         }
     }
 
@@ -89,6 +136,175 @@ impl PaneState {
     /// Get currently selected entry (if any).
     pub fn selected_entry(&self) -> Option<&ObjectInfo> {
         self.selected.and_then(|idx: usize| self.entries.get(idx))
+    }
+
+    /// Update viewport height when terminal size changes
+    pub fn set_viewport_height(&mut self, height: usize) {
+        self.viewport_height = height.saturating_sub(3); // Account for header and border
+        self.adjust_scroll();
+    }
+
+    /// Get visible entries for virtual scrolling
+    pub fn visible_entries(&self) -> &[ObjectInfo] {
+        let start = self.scroll_offset;
+        let end = (start + self.viewport_height).min(self.entries.len());
+        &self.entries[start..end]
+    }
+
+    /// Move selection up and adjust scroll if needed
+    pub fn move_selection_up(&mut self) {
+        if let Some(selected) = self.selected {
+            if selected > 0 {
+                self.selected = Some(selected - 1);
+                self.adjust_scroll();
+                self.table_state
+                    .select(Some(selected - 1 - self.scroll_offset));
+            }
+        }
+    }
+
+    /// Move selection down and adjust scroll if needed
+    pub fn move_selection_down(&mut self) {
+        if let Some(selected) = self.selected {
+            if selected + 1 < self.entries.len() {
+                self.selected = Some(selected + 1);
+                self.adjust_scroll();
+                self.table_state
+                    .select(Some(selected + 1 - self.scroll_offset));
+            }
+        }
+    }
+
+    /// Adjust scroll offset to keep selection visible
+    fn adjust_scroll(&mut self) {
+        if let Some(selected) = self.selected {
+            // If selection is above viewport, scroll up
+            if selected < self.scroll_offset {
+                self.scroll_offset = selected;
+            }
+            // If selection is below viewport, scroll down
+            else if selected >= self.scroll_offset + self.viewport_height {
+                self.scroll_offset = selected.saturating_sub(self.viewport_height - 1);
+            }
+        }
+    }
+
+    /// Jump to top of list
+    pub fn select_first(&mut self) {
+        if !self.entries.is_empty() {
+            self.selected = Some(0);
+            self.scroll_offset = 0;
+            self.table_state.select(Some(0));
+        }
+    }
+
+    /// Jump to bottom of list
+    pub fn select_last(&mut self) {
+        if !self.entries.is_empty() {
+            let last_idx = self.entries.len() - 1;
+            self.selected = Some(last_idx);
+            self.scroll_offset = last_idx.saturating_sub(self.viewport_height - 1);
+            self.table_state.select(Some(last_idx - self.scroll_offset));
+        }
+    }
+
+    /// Page up (move selection up by viewport height)
+    pub fn page_up(&mut self) {
+        if let Some(selected) = self.selected {
+            let new_selected = selected.saturating_sub(self.viewport_height);
+            self.selected = Some(new_selected);
+            self.adjust_scroll();
+            self.table_state
+                .select(Some(new_selected - self.scroll_offset));
+        }
+    }
+
+    /// Page down (move selection down by viewport height)
+    pub fn page_down(&mut self) {
+        if let Some(selected) = self.selected {
+            let new_selected = (selected + self.viewport_height).min(self.entries.len() - 1);
+            self.selected = Some(new_selected);
+            self.adjust_scroll();
+            self.table_state
+                .select(Some(new_selected - self.scroll_offset));
+        }
+    }
+
+    /// Start incremental loading mode
+    pub fn start_incremental_loading(&mut self) {
+        self.is_incremental_loading = true;
+        self.incremental_entries.clear();
+        self.expected_entries = None;
+        self.is_loading = true;
+    }
+
+    /// Add an entry during incremental loading
+    pub fn add_incremental_entry(&mut self, entry: ObjectInfo) {
+        if self.is_incremental_loading {
+            self.incremental_entries.push(entry);
+            // Update displayed entries with current incremental state
+            self.entries = self.incremental_entries.clone();
+            // Sort incrementally (basic sorting for now)
+            self.sort_entries();
+        }
+    }
+
+    /// Complete incremental loading with final sorted entries
+    pub fn complete_incremental_loading(&mut self, final_entries: Vec<ObjectInfo>) {
+        self.is_incremental_loading = false;
+        self.is_loading = false;
+        self.entries = final_entries;
+        self.incremental_entries.clear();
+
+        // Reset selection to first item if we have entries
+        if !self.entries.is_empty() {
+            self.selected = Some(0);
+            self.scroll_offset = 0;
+            self.table_state.select(Some(0));
+        }
+    }
+
+    /// Sort entries in place based on current sort mode
+    pub fn sort_entries(&mut self) {
+        match self.sort {
+            EntrySort::NameAsc => {
+                self.entries.sort_by(|a, b| {
+                    if a.is_dir && !b.is_dir {
+                        std::cmp::Ordering::Less
+                    } else if !a.is_dir && b.is_dir {
+                        std::cmp::Ordering::Greater
+                    } else {
+                        a.name.cmp(&b.name)
+                    }
+                });
+            }
+            EntrySort::NameDesc => {
+                self.entries.sort_by(|a, b| {
+                    if a.is_dir && !b.is_dir {
+                        std::cmp::Ordering::Less
+                    } else if !a.is_dir && b.is_dir {
+                        std::cmp::Ordering::Greater
+                    } else {
+                        b.name.cmp(&a.name)
+                    }
+                });
+            }
+            EntrySort::SizeAsc => {
+                self.entries.sort_by(|a, b| a.size.cmp(&b.size));
+            }
+            EntrySort::SizeDesc => {
+                self.entries.sort_by(|a, b| b.size.cmp(&a.size));
+            }
+            EntrySort::ModifiedAsc => {
+                self.entries.sort_by(|a, b| a.modified.cmp(&b.modified));
+            }
+            EntrySort::ModifiedDesc => {
+                self.entries.sort_by(|a, b| b.modified.cmp(&a.modified));
+            }
+            EntrySort::Custom(_) => {
+                // For custom sorting, keep current order for now
+            }
+        }
     }
 }
 
