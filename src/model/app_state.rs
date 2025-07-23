@@ -18,7 +18,7 @@
 //! - Extensible for plugins, user scripting, and power tools
 
 use crate::cache::cache_manager::ObjectInfoCache;
-use crate::config::config::Config;
+use crate::config::Config;
 use crate::controller::actions::Action;
 use crate::controller::event_loop::TaskResult;
 use crate::fs::dir_scanner;
@@ -288,28 +288,17 @@ impl AppState {
     pub async fn enter_selected_directory(&mut self) {
         let active_pane: PaneState = self.fs.active_pane().clone();
 
-        if let Some(selected_idx) = self.ui.selected {
-            if let Some(selected_entry) = active_pane.entries.get(selected_idx) {
-                if selected_entry.is_dir {
-                    info!(
-                        "Entering selected directory: {}",
-                        selected_entry.path.display()
-                    );
-
-                    self.enter_directory(selected_entry.path.clone()).await;
-                } else {
-                    // Open file with external editor
-                    info!("Opening selected file: {}", selected_entry.path.display());
-
-                    self.open_file_with_editor(selected_entry.path.clone())
-                        .await;
-
-                    self.set_status(format!("Opened file: {}", selected_entry.name));
-                }
+        if let Some(selected_idx) = self.ui.selected
+            && let Some(selected_entry) = active_pane.entries.get(selected_idx)
+        {
+            let path: &PathBuf = &selected_entry.path;
+            if path.is_file() {
+                self.open_file_with_editor(path.clone()).await;
+            } else if path.is_dir() {
+                self.enter_directory(path.clone()).await;
+            } else {
+                self.set_error(format!("Cannot open: {}", path.display()));
             }
-        } else {
-            warn!("No entry selected to enter.");
-            self.set_status("No entry selected.");
         }
 
         self.redraw = true;
@@ -352,22 +341,22 @@ impl AppState {
     pub async fn delete_entry(&mut self) {
         let active_pane: PaneState = self.fs.active_pane().clone();
 
-        if let Some(selected_idx) = self.ui.selected {
-            if let Some(selected_entry) = active_pane.entries.get(selected_idx) {
-                let path: &PathBuf = &selected_entry.path;
+        if let Some(selected_idx) = self.ui.selected
+            && let Some(selected_entry) = active_pane.entries.get(selected_idx)
+        {
+            let path: &PathBuf = &selected_entry.path;
 
-                let result: Result<(), Error> = if selected_entry.is_dir {
-                    tokio::fs::remove_dir_all(path).await
-                } else {
-                    tokio::fs::remove_file(path).await
-                };
+            let result: Result<(), Error> = if selected_entry.is_dir {
+                tokio::fs::remove_dir_all(path).await
+            } else {
+                tokio::fs::remove_file(path).await
+            };
 
-                if let Err(e) = result {
-                    self.set_error(format!("Failed to delete {}: {}", path.display(), e));
-                } else {
-                    self.show_success(format!("Deleted {}", path.display()));
-                    self.reload_directory().await;
-                }
+            if let Err(e) = result {
+                self.set_error(format!("Failed to delete {}: {}", path.display(), e));
+            } else {
+                self.show_success(format!("Deleted {}", path.display()));
+                self.reload_directory().await;
             }
         }
     }
@@ -492,19 +481,19 @@ impl AppState {
 
     /// Updates an ObjectInfo in the active pane with new data from a background task.
     pub fn update_object_info(&mut self, parent_dir: PathBuf, info: ObjectInfo) {
-        if let Some(pane) = self.fs.panes.iter_mut().find(|p| p.cwd == parent_dir) {
-            if let Some(entry) = pane.entries.iter_mut().find(|e| e.path == info.path) {
-                entry.size = info.size;
-                entry.items_count = info.items_count;
-                entry.modified = info.modified;
-                entry.metadata_loaded = info.metadata_loaded;
-                debug!(
-                    "Updating object info for {}: modified = {}",
-                    info.path.display(),
-                    info.modified.format("%Y-%m-%d")
-                );
-                self.redraw = true;
-            }
+        if let Some(pane) = self.fs.panes.iter_mut().find(|p| p.cwd == parent_dir)
+            && let Some(entry) = pane.entries.iter_mut().find(|e| e.path == info.path)
+        {
+            entry.size = info.size;
+            entry.items_count = info.items_count;
+            entry.modified = info.modified;
+            entry.metadata_loaded = info.metadata_loaded;
+            debug!(
+                "Updating object info for {}: modified = {}",
+                info.path.display(),
+                info.modified.format("%Y-%m-%d")
+            );
+            self.redraw = true;
         }
     }
 
