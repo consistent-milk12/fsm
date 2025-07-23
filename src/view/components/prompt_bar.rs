@@ -6,14 +6,14 @@
 //! - Uses UIState's input buffer
 //! - Always centered, visually distinct, themable
 
-use crate::view::theme;
 use crate::AppState;
+use crate::view::theme;
 use ratatui::{
+    Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::Style,
     text::{Span, Text},
     widgets::{Block, Borders, Clear, Paragraph},
-    Frame,
 };
 
 pub struct PromptBar;
