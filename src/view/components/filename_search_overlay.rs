@@ -155,7 +155,7 @@ impl FileNameSearchOverlay {
                 };
 
                 // Highlight matching parts
-                let display_text = format!("{} {}", icon, display_name);
+                let display_text = format!("{icon} {display_name}");
 
                 ListItem::new(display_text).style(if entry.is_dir {
                     Style::default().fg(theme::CYAN)
