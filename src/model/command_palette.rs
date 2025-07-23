@@ -24,8 +24,8 @@ impl CommandPaletteState {
         self.filtered = self
             .all_commands
             .iter()
-            .cloned()
             .filter(|cmd| cmd.title.to_lowercase().contains(&q))
+            .cloned()
             .collect();
         self.selected = 0;
     }
