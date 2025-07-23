@@ -339,84 +339,71 @@ impl Controller {
                                     let app: MutexGuard<'_, AppState> = self.app.lock().await;
 
                                     // Handle Shift+Enter for raw search results
-                                    if key_event.modifiers.contains(KeyModifiers::SHIFT) {
-                                        if let Some(ref raw_results) = app.raw_search_results {
-                                            if let Some(selected_idx) = app.ui.selected {
-                                                if let Some(selected_line) =
-                                                    raw_results.lines.get(selected_idx)
-                                                {
-                                                    if let Some((file_path, _line_num)) =
-                                                        RawSearchResult::parse_file_info_with_base(
-                                                            selected_line,
-                                                            &raw_results.base_directory,
-                                                        )
-                                                    {
-                                                        return Action::OpenFile(file_path);
-                                                    }
-                                                }
-                                            }
-                                        }
+                                    if key_event.modifiers.contains(KeyModifiers::SHIFT)
+                                        && let Some(ref raw_results) = app.raw_search_results
+                                        && let Some(selected_idx) = app.ui.selected
+                                        && let Some(selected_line) =
+                                            raw_results.lines.get(selected_idx)
+                                        && let Some((file_path, _line_num)) =
+                                            RawSearchResult::parse_file_info_with_base(
+                                                selected_line,
+                                                &raw_results.base_directory,
+                                            )
+                                    {
+                                        return Action::OpenFile(file_path);
+                                    }
 
+                                    if key_event.modifiers.contains(KeyModifiers::SHIFT) {
                                         return Action::NoOp;
                                     }
 
                                     // Regular Enter - check for existing results first
                                     // If we have raw search results and a selection, open the file
-                                    if let Some(ref raw_results) = app.raw_search_results {
-                                        if !raw_results.lines.is_empty() {
-                                            if let Some(selected_idx) = app.ui.selected {
-                                                if let Some(selected_line) =
-                                                    raw_results.lines.get(selected_idx)
-                                                {
-                                                    if let Some((file_path, _line_num)) =
-                                                        RawSearchResult::parse_file_info_with_base(
-                                                            selected_line,
-                                                            &raw_results.base_directory,
-                                                        )
-                                                    {
-                                                        return Action::OpenFile(file_path);
-                                                    }
-                                                }
-                                            }
-
-                                            // If we have results but couldn't parse, just return NoOp
-                                            return Action::NoOp;
-                                        }
+                                    if let Some(ref raw_results) = app.raw_search_results
+                                        && !raw_results.lines.is_empty()
+                                        && let Some(selected_idx) = app.ui.selected
+                                        && let Some(selected_line) =
+                                            raw_results.lines.get(selected_idx)
+                                        && let Some((file_path, _line_num)) =
+                                            RawSearchResult::parse_file_info_with_base(
+                                                selected_line,
+                                                &raw_results.base_directory,
+                                            )
+                                    {
+                                        return Action::OpenFile(file_path);
+                                    } else if let Some(ref raw_results) = app.raw_search_results
+                                        && !raw_results.lines.is_empty()
+                                    {
+                                        // If we have results but couldn't parse, just return NoOp
+                                        return Action::NoOp;
                                     }
 
                                     // If we have rich search results and a selection, try to parse and open the file
-                                    if !app.rich_search_results.is_empty() {
-                                        if let Some(selected_idx) = app.ui.selected {
-                                            if let Some(selected_line) =
-                                                app.rich_search_results.get(selected_idx)
-                                            {
-                                                // For rich search results, we need to get the base directory from app state
-                                                let base_dir: PathBuf =
-                                                    app.fs.active_pane().cwd.clone();
+                                    if !app.rich_search_results.is_empty()
+                                        && let Some(selected_idx) = app.ui.selected
+                                        && let Some(selected_line) =
+                                            app.rich_search_results.get(selected_idx)
+                                    {
+                                        // For rich search results, we need to get the base directory from app state
+                                        let base_dir: PathBuf = app.fs.active_pane().cwd.clone();
 
-                                                if let Some((file_path, _line_num)) =
-                                                    RawSearchResult::parse_file_info_with_base(
-                                                        selected_line,
-                                                        &base_dir,
-                                                    )
-                                                {
-                                                    return Action::OpenFile(file_path);
-                                                }
-                                            }
+                                        if let Some((file_path, _line_num)) =
+                                            RawSearchResult::parse_file_info_with_base(
+                                                selected_line,
+                                                &base_dir,
+                                            )
+                                        {
+                                            return Action::OpenFile(file_path);
                                         }
                                     }
 
                                     // If we have simple search results and a selection, open the file
-                                    if !app.search_results.is_empty() {
-                                        if let Some(selected_idx) = app.ui.selected {
-                                            if let Some(selected_result) =
-                                                app.search_results.get(selected_idx)
-                                            {
-                                                return Action::OpenFile(
-                                                    selected_result.path.clone(),
-                                                );
-                                            }
-                                        }
+                                    if !app.search_results.is_empty()
+                                        && let Some(selected_idx) = app.ui.selected
+                                        && let Some(selected_result) =
+                                            app.search_results.get(selected_idx)
+                                    {
+                                        return Action::OpenFile(selected_result.path.clone());
                                     }
 
                                     // Otherwise, perform search
@@ -720,7 +707,8 @@ impl Controller {
 
                 // On completion (progress == 1.0), hide overlay.
                 if let Some(p) = task_result.progress
-                    && (p - 1.0).abs() < f64::EPSILON {
+                    && (p - 1.0).abs() < f64::EPSILON
+                {
                     app.ui.loading = None;
 
                     // Optionally close overlay if UIOverlay::Loading
