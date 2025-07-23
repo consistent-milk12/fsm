@@ -31,7 +31,7 @@ impl LoadingOverlay {
         }
 
         if let (Some(done), Some(total)) = (loading.completed, loading.total) {
-            lines.push(Line::from(format!("Completed: {}/{}", done, total)));
+            lines.push(Line::from(format!("Completed: {done}/{total}")));
         }
 
         lines.push(Line::from(""));
