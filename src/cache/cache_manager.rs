@@ -283,8 +283,7 @@ impl ObjectInfoCache {
                 CacheEntry::Success(info) => return Ok(info),
                 CacheEntry::Failed => {
                     return Err(CacheError::LoaderFailed(format!(
-                        "Previous load failed for key: {}",
-                        key
+                        "Previous load failed for key: {key}"
                     ))
                     .into());
                 }
@@ -321,7 +320,7 @@ impl ObjectInfoCache {
         match result {
             Ok(CacheEntry::Success(info)) => Ok(info),
             Ok(CacheEntry::Failed) => {
-                Err(CacheError::LoaderFailed(format!("Load failed for key: {}", key)).into())
+                Err(CacheError::LoaderFailed(format!("Load failed for key: {key}")).into())
             }
             Err(e) => Err(AppError::Other(e.to_string())),
         }
