@@ -1,6 +1,6 @@
 use std::{
     fs,
-    path::Path,
+    path::{Path, PathBuf},
     sync::OnceLock,
     sync::atomic::{AtomicUsize, Ordering},
 };
@@ -28,6 +28,8 @@ impl Logger {
         fs::create_dir_all(log_dir).expect("cannot create logs dir");
 
         SEQ.get_or_init(|| AtomicUsize::new(1));
+        PROJECT_ROOT
+            .get_or_init(|| std::env::current_dir().expect("Failed to get current directory"));
 
         // daily rolling file appender → logs/app-YYYY-MM-DD.log
         let file: RollingFileAppender = daily("logs", "app");
@@ -40,15 +42,14 @@ impl Logger {
             .event_format(SeqFileMod) // our compact formatter
             .with_writer(file) // write to file
             .with_ansi(false)
-            .with_filter(EnvFilter::from_default_env().add_directive("info".parse().unwrap()));
+            .with_filter(EnvFilter::from_default_env().add_directive("debug".parse().unwrap()));
 
-        tracing_subscriber::registry()
-            .with(file_layer)
-            .init();
+        tracing_subscriber::registry().with(file_layer).init();
     }
 }
 
 static SEQ: OnceLock<AtomicUsize> = OnceLock::new();
+static PROJECT_ROOT: OnceLock<PathBuf> = OnceLock::new();
 
 /// Custom formatter: `[SEQ] LEVEL [file:line mod::path] message`
 struct SeqFileMod;
@@ -71,13 +72,24 @@ where
             .fetch_add(1, Ordering::Relaxed);
 
         let meta: &'static Metadata<'static> = ev.metadata();
+        let file_path_str = meta.file().unwrap_or("??");
+        let file_path = Path::new(file_path_str);
+
+        let display_path = if let Some(root) = PROJECT_ROOT.get() {
+            file_path
+                .strip_prefix(root)
+                .unwrap_or(file_path)
+                .to_string_lossy()
+        } else {
+            file_path.to_string_lossy()
+        };
+
         write!(
             w,
-            "{seq:06} {:5} [{}:{} {}] ",
+            "{seq:06} {:5} [{}:{}] ",
             meta.level(),
-            meta.file().unwrap_or("??"),
+            display_path,
             meta.line().unwrap_or(0),
-            meta.module_path().unwrap_or("???"),
         )?;
 
         // write all key‑value pairs for this event (usually just the message)
