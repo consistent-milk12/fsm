@@ -10,6 +10,13 @@ use crate::fs::object_info::ObjectInfo;
 use crossterm::event::{KeyEvent, MouseEvent};
 use std::path::PathBuf;
 
+/// Type of input prompt to show
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputPromptType {
+    CreateFile,
+    CreateDirectory,
+}
+
 /// Represents a high-level action that the application can perform.
 /// This abstracts away raw terminal events into meaningful commands.
 #[derive(Debug, Clone)]
@@ -135,4 +142,8 @@ pub enum Action {
 
     /// Open a file with external editor.
     OpenFile(PathBuf),
+    /// Show input prompt for file/directory creation.
+    ShowInputPrompt(InputPromptType),
+    /// Submit input prompt with user input.
+    SubmitInputPrompt(String),
 }
