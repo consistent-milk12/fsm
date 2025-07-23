@@ -16,8 +16,8 @@ use crate::AppState;
 use crate::model::ui_state::UIOverlay;
 use crate::view::components::{
     content_search_overlay::ContentSearchOverlay, filename_search_overlay::FileNameSearchOverlay,
-    help_overlay::HelpOverlay, loading_overlay::LoadingOverlay,
-    notification_overlay::NotificationOverlay, object_table::ObjectTable, prompt_bar::PromptBar,
+    help_overlay::HelpOverlay, input_prompt_overlay::InputPromptOverlay, loading_overlay::LoadingOverlay,
+    notification_overlay::NotificationOverlay, object_table::ObjectTable,
     search_overlay::SearchOverlay, search_results_overlay::SearchResultsOverlay,
     status_bar::StatusBar,
 };
@@ -56,7 +56,7 @@ impl View {
                 UIOverlay::ContentSearch => ContentSearchOverlay::render(frame, app, overlay_area),
                 UIOverlay::SearchResults => SearchResultsOverlay::render(frame, app, overlay_area),
                 UIOverlay::Loading => LoadingOverlay::render(frame, app, overlay_area),
-                UIOverlay::Prompt => PromptBar::render(frame, app, overlay_area),
+                UIOverlay::Prompt => InputPromptOverlay::render(frame, app, overlay_area),
                 _ => {}
             }
         }
