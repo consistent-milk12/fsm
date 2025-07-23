@@ -4,7 +4,7 @@ version = "1.0.0"
 edition = "2024"
 
 [dependencies]
-tokio-util = { version = "0.7.11", features = ["codec", "io"] }
+tokio-util = { version = "0.7.15", features = ["codec", "io"] }
 ansi-to-tui = "7.0.0"
 anyhow = "1.0.98"
 async-process = "2.4.0"
