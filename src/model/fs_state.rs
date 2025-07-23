@@ -155,25 +155,25 @@ impl PaneState {
 
     /// Move selection up and adjust scroll if needed
     pub fn move_selection_up(&mut self) {
-        if let Some(selected) = self.selected {
-            if selected > 0 {
-                self.selected = Some(selected - 1);
-                self.adjust_scroll();
-                self.table_state
-                    .select(Some(selected - 1 - self.scroll_offset));
-            }
+        if let Some(selected) = self.selected
+            && selected > 0
+        {
+            self.selected = Some(selected - 1);
+            self.adjust_scroll();
+            self.table_state
+                .select(Some(selected - 1 - self.scroll_offset));
         }
     }
 
     /// Move selection down and adjust scroll if needed
     pub fn move_selection_down(&mut self) {
-        if let Some(selected) = self.selected {
-            if selected + 1 < self.entries.len() {
-                self.selected = Some(selected + 1);
-                self.adjust_scroll();
-                self.table_state
-                    .select(Some(selected + 1 - self.scroll_offset));
-            }
+        if let Some(selected) = self.selected
+            && selected + 1 < self.entries.len()
+        {
+            self.selected = Some(selected + 1);
+            self.adjust_scroll();
+            self.table_state
+                .select(Some(selected + 1 - self.scroll_offset));
         }
     }
 
