@@ -304,7 +304,7 @@ impl AppState {
                     self.open_file_with_editor(selected_entry.path.clone())
                         .await;
 
-                    self.set_status(&format!("Opened file: {}", selected_entry.name));
+                    self.set_status(format!("Opened file: {}", selected_entry.name));
                 }
             }
         } else {
@@ -323,7 +323,7 @@ impl AppState {
             cmd.arg(&path_str);
             match cmd.spawn() {
                 Ok(_) => Ok(path_str),
-                Err(e) => Err(format!("Failed to open file with code: {}", e)),
+                Err(e) => Err(format!("Failed to open file with code: {e}")),
             }
         })
         .await;
@@ -344,7 +344,7 @@ impl AppState {
             }
 
             Err(e) => {
-                self.set_error(format!("Task failed: {}", e));
+                self.set_error(format!("Task failed: {e}"));
             }
         }
     }
@@ -377,7 +377,7 @@ impl AppState {
         let new_file_path: PathBuf = active_pane.cwd.join("new_file.txt");
 
         if let Err(e) = tokio::fs::File::create(&new_file_path).await {
-            self.set_error(format!("Failed to create file: {}", e));
+            self.set_error(format!("Failed to create file: {e}"));
         } else {
             self.show_success(format!("Created file: {}", new_file_path.display()));
             self.reload_directory().await;
@@ -389,7 +389,7 @@ impl AppState {
         let new_dir_path: PathBuf = active_pane.cwd.join("new_directory");
 
         if let Err(e) = tokio::fs::create_dir(&new_dir_path).await {
-            self.set_error(format!("Failed to create directory: {}", e));
+            self.set_error(format!("Failed to create directory: {e}"));
         } else {
             self.show_success(format!("Created directory: {}", new_dir_path.display()));
             self.reload_directory().await;
@@ -401,9 +401,9 @@ impl AppState {
         let new_file_path: PathBuf = active_pane.cwd.join(&name);
 
         if let Err(e) = tokio::fs::File::create(&new_file_path).await {
-            self.set_error(format!("Failed to create file '{}': {}", name, e));
+            self.set_error(format!("Failed to create file '{name}': {e}"));
         } else {
-            self.show_success(format!("Created file: {}", name));
+            self.show_success(format!("Created file: {name}"));
             self.reload_directory().await;
         }
     }
@@ -412,9 +412,9 @@ impl AppState {
         let active_pane = self.fs.active_pane().clone();
         let new_dir_path = active_pane.cwd.join(&name);
         if let Err(e) = tokio::fs::create_dir(&new_dir_path).await {
-            self.set_error(format!("Failed to create directory '{}': {}", name, e));
+            self.set_error(format!("Failed to create directory '{name}': {e}"));
         } else {
-            self.show_success(format!("Created directory: {}", name));
+            self.show_success(format!("Created directory: {name}"));
             self.reload_directory().await;
         }
     }
@@ -431,7 +431,7 @@ impl AppState {
         let task_id = self.tasks.len() as u64;
         let task = TaskInfo {
             task_id,
-            description: format!("Filename search for '{}'", pattern),
+            description: format!("Filename search for '{pattern}'"),
             started_at: Instant::now(),
             is_completed: false,
             result: None,
@@ -470,7 +470,7 @@ impl AppState {
         let task_id = self.tasks.len() as u64;
         let task = TaskInfo {
             task_id,
-            description: format!("Content search for '{}'", pattern),
+            description: format!("Content search for '{pattern}'"),
             started_at: Instant::now(),
             is_completed: false,
             result: None,
