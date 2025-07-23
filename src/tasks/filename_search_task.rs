@@ -48,7 +48,7 @@ pub fn filename_search_task(
             match Command::new("find")
                 .arg(&search_path)
                 .arg("-iname")
-                .arg(&format!("*{}*", pattern))
+                .arg(format!("*{pattern}*"))
                 .kill_on_drop(true)
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null())
