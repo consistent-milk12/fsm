@@ -97,16 +97,14 @@ impl ObjectTable {
                 obj.size_human()
             };
 
-            let row = Row::new(vec![
+            Row::new(vec![
                 Cell::from(format!("{icon} {}", obj.name)),
                 Cell::from(type_str.to_string()),
                 Cell::from(items_str),
                 Cell::from(size_str),
                 Cell::from(obj.modified.format("%d/%m/%Y %I:%M:%S %p").to_string()),
             ])
-            .style(style);
-
-            row
+            .style(style)
         });
 
         let widths = [
@@ -169,7 +167,7 @@ impl ObjectTable {
     /// Renders the vim-style command line for command input
     fn render_command_line(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
         let input = &app.ui.command_palette.input;
-        let command_text = format!(":{}", input);
+        let command_text = format!(":{input}");
 
         let command_line = Paragraph::new(command_text).style(
             Style::default()
@@ -184,7 +182,7 @@ impl ObjectTable {
     /// Renders the footer bar with hotkey information using dark purple theme
     fn render_footer(frame: &mut Frame<'_>, area: Rect) {
         // Create hotkey spans with dark purple styling
-        let hotkeys = vec![
+        let hotkeys = [
             ("n", "New File"),
             ("f", "New Folder"),
             ("/", "File Search"),
@@ -206,7 +204,7 @@ impl ObjectTable {
 
             // Key in bold purple
             spans.push(Span::styled(
-                format!("{}", key),
+                key.to_string(),
                 Style::default()
                     .fg(theme::PURPLE)
                     .add_modifier(Modifier::BOLD),
@@ -214,7 +212,7 @@ impl ObjectTable {
 
             // Description in dimmed purple
             spans.push(Span::styled(
-                format!(" {}", desc),
+                format!(" {desc}"),
                 Style::default()
                     .fg(theme::PURPLE)
                     .add_modifier(Modifier::DIM),
