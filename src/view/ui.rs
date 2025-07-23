@@ -16,10 +16,10 @@ use crate::AppState;
 use crate::model::ui_state::UIOverlay;
 use crate::view::components::{
     content_search_overlay::ContentSearchOverlay, filename_search_overlay::FileNameSearchOverlay,
-    help_overlay::HelpOverlay, input_prompt_overlay::InputPromptOverlay, loading_overlay::LoadingOverlay,
-    notification_overlay::NotificationOverlay, object_table::ObjectTable,
-    search_overlay::SearchOverlay, search_results_overlay::SearchResultsOverlay,
-    status_bar::StatusBar,
+    help_overlay::HelpOverlay, input_prompt_overlay::InputPromptOverlay,
+    loading_overlay::LoadingOverlay, notification_overlay::NotificationOverlay,
+    object_table::ObjectTable, search_overlay::SearchOverlay,
+    search_results_overlay::SearchResultsOverlay, status_bar::StatusBar,
 };
 
 use ratatui::{
