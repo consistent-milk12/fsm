@@ -27,7 +27,7 @@ use tracing::{error, info, warn};
 use fsm::{
     Logger,
     cache::cache_manager::ObjectInfoCache,
-    config::config::Config,
+    config::Config,
     controller::{
         actions::Action,
         event_loop::{Controller, TaskResult},
