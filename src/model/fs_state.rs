@@ -23,17 +23,18 @@ pub enum EntrySort {
     Custom(String), // for plugin/user
 }
 
-impl ToString for EntrySort {
-    fn to_string(&self) -> String {
-        match self {
-            EntrySort::NameAsc => "name_asc".to_string(),
-            EntrySort::NameDesc => "name_desc".to_string(),
-            EntrySort::SizeAsc => "size_asc".to_string(),
-            EntrySort::SizeDesc => "size_desc".to_string(),
-            EntrySort::ModifiedAsc => "modified_asc".to_string(),
-            EntrySort::ModifiedDesc => "modified_desc".to_string(),
-            EntrySort::Custom(s) => s.clone(),
-        }
+impl std::fmt::Display for EntrySort {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            EntrySort::NameAsc => "name_asc",
+            EntrySort::NameDesc => "name_desc",
+            EntrySort::SizeAsc => "size_asc",
+            EntrySort::SizeDesc => "size_desc",
+            EntrySort::ModifiedAsc => "modified_asc",
+            EntrySort::ModifiedDesc => "modified_desc",
+            EntrySort::Custom(s) => s,
+        };
+        write!(f, "{s}")
     }
 }
 
@@ -47,16 +48,17 @@ pub enum EntryFilter {
     Custom(String), // plugin/user script
 }
 
-impl ToString for EntryFilter {
-    fn to_string(&self) -> String {
-        match self {
-            EntryFilter::All => "all".to_string(),
-            EntryFilter::FilesOnly => "files_only".to_string(),
-            EntryFilter::DirsOnly => "dirs_only".to_string(),
-            EntryFilter::Extension(s) => s.clone(),
-            EntryFilter::Pattern(s) => s.clone(),
-            EntryFilter::Custom(s) => s.clone(),
-        }
+impl std::fmt::Display for EntryFilter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            EntryFilter::All => "all",
+            EntryFilter::FilesOnly => "files_only",
+            EntryFilter::DirsOnly => "dirs_only",
+            EntryFilter::Extension(s) => s,
+            EntryFilter::Pattern(s) => s,
+            EntryFilter::Custom(s) => s,
+        };
+        write!(f, "{s}")
     }
 }
 
@@ -345,7 +347,7 @@ impl std::fmt::Display for ObjectType {
 
 impl ObjectType {
     // You may want to move this logic to ObjectInfo itself, but shown here for clarity.
-    pub fn object_type(obj: &crate::fs::object_info::ObjectInfo) -> ObjectType {
+    pub fn from_object_info(obj: &crate::fs::object_info::ObjectInfo) -> ObjectType {
         if obj.is_dir {
             ObjectType::Dir
         } else if obj.is_symlink {
