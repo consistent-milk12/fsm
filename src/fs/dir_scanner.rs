@@ -93,7 +93,7 @@ pub async fn scan_dir_streaming_with_background_metadata(
     let handle = tokio::spawn(async move {
         let mut entries: Vec<ObjectInfo> = Vec::new();
         let mut light_entries: Vec<LightObjectInfo> = Vec::new();
-        let mut processed = 0;
+        let mut processed: u64 = 0;
 
         let read_dir_result = fs::read_dir(&path).await;
         let mut read_dir = match read_dir_result {
@@ -146,7 +146,7 @@ pub async fn scan_dir_streaming_with_background_metadata(
                     processed += 1;
 
                     // Yield control periodically for responsiveness
-                    if processed % batch_size == 0 {
+                    if processed.is_multiple_of(batch_size as u64) {
                         tokio::task::yield_now().await;
                     }
                 }
@@ -200,7 +200,7 @@ pub async fn scan_dir_streaming(
 
     let handle = tokio::spawn(async move {
         let mut entries: Vec<ObjectInfo> = Vec::new();
-        let mut processed = 0;
+        let mut processed: u64 = 0;
 
         let read_dir_result = fs::read_dir(&path).await;
         let mut read_dir = match read_dir_result {
@@ -243,7 +243,7 @@ pub async fn scan_dir_streaming(
                     processed += 1;
 
                     // Yield control periodically for responsiveness
-                    if processed % batch_size == 0 {
+                    if processed.is_multiple_of(batch_size as u64) {
                         tokio::task::yield_now().await;
                     }
                 }
