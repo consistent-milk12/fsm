@@ -25,13 +25,13 @@ use crate::fs::dir_scanner;
 use crate::fs::object_info::ObjectInfo;
 use crate::model::fs_state::FSState;
 use crate::model::ui_state::UIState;
-use crate::tasks::size_task;
+
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::mpsc;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 /// Represents a pending or running asynchronous task (search, copy, delete, etc.).
 #[derive(Debug, Clone)]
@@ -65,6 +65,11 @@ pub struct AppState {
     pub last_error: Option<String>,
     pub last_status: Option<String>,
     pub started_at: Instant,
+    pub search_results: Vec<ObjectInfo>,
+    pub filename_search_results: Vec<ObjectInfo>,
+    pub rich_search_results: Vec<String>,
+    pub raw_search_results: Option<crate::tasks::search_task::RawSearchResult>,
+    pub raw_search_selected: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -110,6 +115,11 @@ impl AppState {
             last_error: None,
             last_status: None,
             started_at: Instant::now(),
+            search_results: Vec::new(),
+            filename_search_results: Vec::new(),
+            rich_search_results: Vec::new(),
+            raw_search_results: None,
+            raw_search_selected: 0,
         }
     }
 
@@ -167,7 +177,8 @@ impl AppState {
     pub fn set_error(&mut self, msg: impl Into<String>) {
         let msg_str = msg.into();
         error!("Setting error: {}", msg_str);
-        self.last_error = Some(msg_str);
+        self.last_error = Some(msg_str.clone());
+        self.ui.show_error(msg_str);
         self.redraw = true;
     }
 
@@ -175,7 +186,24 @@ impl AppState {
     pub fn set_status(&mut self, msg: impl Into<String>) {
         let msg_str = msg.into();
         info!("Setting status: {}", msg_str);
-        self.last_status = Some(msg_str);
+        self.last_status = Some(msg_str.clone());
+        self.ui.show_info(msg_str);
+        self.redraw = true;
+    }
+
+    /// Show a success notification
+    pub fn show_success(&mut self, msg: impl Into<String>) {
+        let success_msg = msg.into();
+        self.ui.show_success(success_msg.clone());
+        info!("Success: {}", success_msg);
+        self.redraw = true;
+    }
+
+    /// Show a warning notification
+    pub fn show_warning(&mut self, msg: impl Into<String>) {
+        let warning_msg = msg.into();
+        self.ui.show_warning(warning_msg.clone());
+        warn!("Warning: {}", warning_msg);
         self.redraw = true;
     }
 
@@ -203,34 +231,8 @@ impl AppState {
         current_pane.is_loading = true;
         self.redraw = true;
 
-        let result = dir_scanner::scan_dir(&canonical_path, self.ui.show_hidden).await;
-        current_pane.is_loading = false;
-
-        match result {
-            Ok(entries) => {
-                let parent_path = canonical_path.clone();
-                for entry in &entries {
-                    if entry.is_dir {
-                        size_task::calculate_size_task(
-                            parent_path.clone(),
-                            entry.clone(),
-                            self.action_tx.clone(),
-                        );
-                    }
-                }
-                current_pane.set_entries(entries);
-                current_pane.last_error = None;
-                self.fs.add_recent_dir(canonical_path);
-            }
-            Err(e) => {
-                current_pane.entries.clear();
-                current_pane.selected = None;
-                let err_msg = format!("Failed to read directory: {}", e);
-                current_pane.last_error = Some(err_msg.clone());
-                self.set_error(err_msg);
-            }
-        }
-        self.redraw = true;
+        // Use streaming directory scan for better responsiveness
+        self.enter_directory_streaming(canonical_path).await;
     }
 
     /// Go to the parent directory of the current active pane.
@@ -246,18 +248,56 @@ impl AppState {
         self.redraw = true;
     }
 
+    pub async fn reload_directory(&mut self) {
+        let current_dir = self.fs.active_pane().cwd.clone();
+        self.enter_directory(current_dir).await;
+    }
+
+    /// Enter directory using streaming scan for better responsiveness
+    async fn enter_directory_streaming(&mut self, path: PathBuf) {
+        let current_pane = self.fs.active_pane_mut();
+        current_pane.start_incremental_loading();
+
+        let (mut rx, _handle) = dir_scanner::scan_dir_streaming_with_background_metadata(
+            path.clone(),
+            self.ui.show_hidden,
+            10, // Batch size for yielding
+            self.action_tx.clone(),
+        )
+        .await;
+
+        // Spawn task to handle streaming updates
+        let action_tx = self.action_tx.clone();
+        let scan_path = path.clone();
+        tokio::spawn(async move {
+            while let Some(update) = rx.recv().await {
+                let _ = action_tx.send(Action::DirectoryScanUpdate {
+                    path: scan_path.clone(),
+                    update,
+                });
+            }
+        });
+
+        self.redraw = true;
+    }
+
     /// Enter the currently selected directory or open the file.
     pub async fn enter_selected_directory(&mut self) {
         let active_pane = self.fs.active_pane().clone();
         if let Some(selected_idx) = self.ui.selected {
             if let Some(selected_entry) = active_pane.entries.get(selected_idx) {
                 if selected_entry.is_dir {
-                    info!("Entering selected directory: {}", selected_entry.path.display());
+                    info!(
+                        "Entering selected directory: {}",
+                        selected_entry.path.display()
+                    );
                     self.enter_directory(selected_entry.path.clone()).await;
                 } else {
-                    // TODO: Implement file opening logic
+                    // Open file with external editor
                     info!("Opening selected file: {}", selected_entry.path.display());
-                    self.set_status(&format!("Opening file: {}", selected_entry.name));
+                    self.open_file_with_editor(selected_entry.path.clone())
+                        .await;
+                    self.set_status(&format!("Opened file: {}", selected_entry.name));
                 }
             }
         } else {
@@ -267,15 +307,198 @@ impl AppState {
         self.redraw = true;
     }
 
+    /// Open a file with external editor (VS Code)
+    pub async fn open_file_with_editor(&mut self, file_path: std::path::PathBuf) {
+        let path_str = file_path.to_string_lossy().to_string();
+        let open_result = tokio::spawn(async move {
+            let mut cmd = tokio::process::Command::new("code");
+            cmd.arg(&path_str);
+            match cmd.spawn() {
+                Ok(_) => Ok(path_str),
+                Err(e) => Err(format!("Failed to open file with code: {}", e)),
+            }
+        })
+        .await;
+
+        match open_result {
+            Ok(Ok(path)) => {
+                self.show_success(format!(
+                    "Opened {} in VS Code",
+                    std::path::Path::new(&path)
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("file")
+                ));
+            }
+            Ok(Err(e)) => {
+                self.set_error(e);
+            }
+            Err(e) => {
+                self.set_error(format!("Task failed: {}", e));
+            }
+        }
+    }
+
+    pub async fn delete_entry(&mut self) {
+        let active_pane = self.fs.active_pane().clone();
+        if let Some(selected_idx) = self.ui.selected {
+            if let Some(selected_entry) = active_pane.entries.get(selected_idx) {
+                let path = &selected_entry.path;
+                let result = if selected_entry.is_dir {
+                    tokio::fs::remove_dir_all(path).await
+                } else {
+                    tokio::fs::remove_file(path).await
+                };
+
+                if let Err(e) = result {
+                    self.set_error(format!("Failed to delete {}: {}", path.display(), e));
+                } else {
+                    self.show_success(format!("Deleted {}", path.display()));
+                    self.reload_directory().await;
+                }
+            }
+        }
+    }
+
+    pub async fn create_file(&mut self) {
+        let active_pane = self.fs.active_pane().clone();
+        let new_file_path = active_pane.cwd.join("new_file.txt");
+        if let Err(e) = tokio::fs::File::create(&new_file_path).await {
+            self.set_error(format!("Failed to create file: {}", e));
+        } else {
+            self.show_success(format!("Created file: {}", new_file_path.display()));
+            self.reload_directory().await;
+        }
+    }
+
+    pub async fn create_directory(&mut self) {
+        let active_pane = self.fs.active_pane().clone();
+        let new_dir_path = active_pane.cwd.join("new_directory");
+        if let Err(e) = tokio::fs::create_dir(&new_dir_path).await {
+            self.set_error(format!("Failed to create directory: {}", e));
+        } else {
+            self.show_success(format!("Created directory: {}", new_dir_path.display()));
+            self.reload_directory().await;
+        }
+    }
+
+    /// Perform a file name search (recursive, background task)
+    pub fn filename_search(&mut self, pattern: String) {
+        if pattern.trim().is_empty() {
+            return;
+        }
+
+        // Clear previous results and start new search
+        self.filename_search_results.clear();
+
+        let task_id = self.tasks.len() as u64;
+        let task = TaskInfo {
+            task_id,
+            description: format!("Filename search for '{}'", pattern),
+            started_at: Instant::now(),
+            is_completed: false,
+            result: None,
+            progress: None,
+            current_item: None,
+            completed: None,
+            total: None,
+            message: None,
+        };
+        self.tasks.insert(task_id, task);
+
+        // Start background filename search task
+        let current_dir = self.fs.active_pane().cwd.clone();
+        crate::tasks::filename_search_task::filename_search_task(
+            task_id,
+            pattern,
+            current_dir,
+            self.task_tx.clone(),
+            self.action_tx.clone(),
+        );
+
+        self.redraw = true;
+    }
+
+    /// Start a content search using ripgrep
+    pub fn start_content_search(&mut self, pattern: String) {
+        if pattern.trim().is_empty() {
+            return;
+        }
+
+        self.search_results.clear();
+        self.rich_search_results.clear();
+        self.ui.last_query = Some(pattern.clone());
+
+        // Keep the ContentSearch overlay active and show search state
+        let task_id = self.tasks.len() as u64;
+        let task = TaskInfo {
+            task_id,
+            description: format!("Content search for '{}'", pattern),
+            started_at: Instant::now(),
+            is_completed: false,
+            result: None,
+            progress: None,
+            current_item: None,
+            completed: None,
+            total: None,
+            message: None,
+        };
+        self.add_task(task);
+
+        // Start ripgrep search task
+        let path = self.fs.active_pane().cwd.clone();
+        let task_tx = self.task_tx.clone();
+        let action_tx = self.action_tx.clone();
+
+        crate::tasks::search_task::search_task(task_id, pattern, path, task_tx, action_tx);
+    }
+
     /// Updates an ObjectInfo in the active pane with new data from a background task.
     pub fn update_object_info(&mut self, parent_dir: PathBuf, info: ObjectInfo) {
         if let Some(pane) = self.fs.panes.iter_mut().find(|p| p.cwd == parent_dir) {
             if let Some(entry) = pane.entries.iter_mut().find(|e| e.path == info.path) {
                 entry.size = info.size;
                 entry.items_count = info.items_count;
+                entry.modified = info.modified;
+                entry.metadata_loaded = info.metadata_loaded;
+                debug!(
+                    "Updating object info for {}: modified = {}",
+                    info.path.display(),
+                    info.modified.format("%Y-%m-%d")
+                );
                 self.redraw = true;
             }
         }
+    }
+
+    pub fn sort_entries(&mut self, sort_criteria: &str) {
+        let active_pane = self.fs.active_pane_mut();
+        match sort_criteria {
+            "name_asc" => active_pane.entries.sort_by(|a, b| a.name.cmp(&b.name)),
+            "name_desc" => active_pane.entries.sort_by(|a, b| b.name.cmp(&a.name)),
+            "size_asc" => active_pane.entries.sort_by(|a, b| a.size.cmp(&b.size)),
+            "size_desc" => active_pane.entries.sort_by(|a, b| b.size.cmp(&a.size)),
+            "modified_asc" => active_pane
+                .entries
+                .sort_by(|a, b| a.modified.cmp(&b.modified)),
+            "modified_desc" => active_pane
+                .entries
+                .sort_by(|a, b| b.modified.cmp(&a.modified)),
+            _ => {}
+        }
+        self.redraw = true;
+    }
+
+    pub fn filter_entries(&mut self, filter_criteria: &str) {
+        let active_pane = self.fs.active_pane_mut();
+        // This is a placeholder for a more complex filtering implementation.
+        // For now, we'll just filter by a simple string contains.
+        let entries = active_pane.entries.clone();
+        active_pane.entries = entries
+            .into_iter()
+            .filter(|entry| entry.name.contains(filter_criteria))
+            .collect();
+        self.redraw = true;
     }
 }
 
