@@ -293,13 +293,12 @@ impl UIState {
 
     /// Check if notification should auto-dismiss and do so if needed
     pub fn update_notification(&mut self) -> bool {
-        if let Some(notification) = &self.notification {
-            if let Some(auto_dismiss_ms) = notification.auto_dismiss_ms {
-                if notification.timestamp.elapsed().as_millis() > auto_dismiss_ms as u128 {
-                    self.notification = None;
-                    return true; // Notification was dismissed
-                }
-            }
+        if let Some(notification) = &self.notification
+            && let Some(auto_dismiss_ms) = notification.auto_dismiss_ms
+            && notification.timestamp.elapsed().as_millis() > auto_dismiss_ms as u128
+        {
+            self.notification = None;
+            return true; // Notification was dismissed
         }
         false
     }
