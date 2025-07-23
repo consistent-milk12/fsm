@@ -1,11 +1,11 @@
-use crate::view::theme;
 use crate::AppState;
+use crate::view::theme;
 use ratatui::{
+    Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span, Text},
     widgets::{Block, Borders, Clear, Paragraph},
-    Frame,
 };
 
 pub struct HelpOverlay;
@@ -20,7 +20,10 @@ impl HelpOverlay {
                     .add_modifier(Modifier::BOLD),
             )),
             Line::from(""),
-            Line::from(Span::styled("Navigation:", Style::default().fg(theme::PURPLE))),
+            Line::from(Span::styled(
+                "Navigation:",
+                Style::default().fg(theme::PURPLE),
+            )),
             Line::from("  Up/Down       Move selection"),
             Line::from("  Left/Right    Switch pane"),
             Line::from("  Enter         Open/Enter directory"),
@@ -47,7 +50,10 @@ impl HelpOverlay {
             Line::from("  : or Ctrl+P   Command palette"),
             Line::from("  /             Filter/search"),
             Line::from(""),
-            Line::from(Span::styled("UI/General:", Style::default().fg(theme::PURPLE))),
+            Line::from(Span::styled(
+                "UI/General:",
+                Style::default().fg(theme::PURPLE),
+            )),
             Line::from("  t             Toggle theme"),
             Line::from("  h or ?        Show/hide help"),
             Line::from("  q             Quit"),
