@@ -23,13 +23,15 @@ use crate::controller::actions::Action;
 use crate::controller::event_loop::TaskResult;
 use crate::fs::dir_scanner;
 use crate::fs::object_info::ObjectInfo;
-use crate::model::fs_state::FSState;
+use crate::model::fs_state::{FSState, PaneState};
 use crate::model::ui_state::UIState;
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::io::Error;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
+use tokio::process::Command;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
@@ -267,8 +269,9 @@ impl AppState {
         .await;
 
         // Spawn task to handle streaming updates
-        let action_tx = self.action_tx.clone();
-        let scan_path = path.clone();
+        let action_tx: mpsc::UnboundedSender<Action> = self.action_tx.clone();
+        let scan_path: PathBuf = path.clone();
+
         tokio::spawn(async move {
             while let Some(update) = rx.recv().await {
                 let _ = action_tx.send(Action::DirectoryScanUpdate {
@@ -283,7 +286,8 @@ impl AppState {
 
     /// Enter the currently selected directory or open the file.
     pub async fn enter_selected_directory(&mut self) {
-        let active_pane = self.fs.active_pane().clone();
+        let active_pane: PaneState = self.fs.active_pane().clone();
+
         if let Some(selected_idx) = self.ui.selected {
             if let Some(selected_entry) = active_pane.entries.get(selected_idx) {
                 if selected_entry.is_dir {
@@ -291,12 +295,15 @@ impl AppState {
                         "Entering selected directory: {}",
                         selected_entry.path.display()
                     );
+
                     self.enter_directory(selected_entry.path.clone()).await;
                 } else {
                     // Open file with external editor
                     info!("Opening selected file: {}", selected_entry.path.display());
+
                     self.open_file_with_editor(selected_entry.path.clone())
                         .await;
+
                     self.set_status(&format!("Opened file: {}", selected_entry.name));
                 }
             }
@@ -304,6 +311,7 @@ impl AppState {
             warn!("No entry selected to enter.");
             self.set_status("No entry selected.");
         }
+
         self.redraw = true;
     }
 
@@ -311,7 +319,7 @@ impl AppState {
     pub async fn open_file_with_editor(&mut self, file_path: std::path::PathBuf) {
         let path_str = file_path.to_string_lossy().to_string();
         let open_result = tokio::spawn(async move {
-            let mut cmd = tokio::process::Command::new("code");
+            let mut cmd: Command = Command::new("code");
             cmd.arg(&path_str);
             match cmd.spawn() {
                 Ok(_) => Ok(path_str),
@@ -330,9 +338,11 @@ impl AppState {
                         .unwrap_or("file")
                 ));
             }
+
             Ok(Err(e)) => {
                 self.set_error(e);
             }
+
             Err(e) => {
                 self.set_error(format!("Task failed: {}", e));
             }
@@ -340,11 +350,13 @@ impl AppState {
     }
 
     pub async fn delete_entry(&mut self) {
-        let active_pane = self.fs.active_pane().clone();
+        let active_pane: PaneState = self.fs.active_pane().clone();
+
         if let Some(selected_idx) = self.ui.selected {
             if let Some(selected_entry) = active_pane.entries.get(selected_idx) {
-                let path = &selected_entry.path;
-                let result = if selected_entry.is_dir {
+                let path: &PathBuf = &selected_entry.path;
+
+                let result: Result<(), Error> = if selected_entry.is_dir {
                     tokio::fs::remove_dir_all(path).await
                 } else {
                     tokio::fs::remove_file(path).await
@@ -361,8 +373,9 @@ impl AppState {
     }
 
     pub async fn create_file(&mut self) {
-        let active_pane = self.fs.active_pane().clone();
-        let new_file_path = active_pane.cwd.join("new_file.txt");
+        let active_pane: PaneState = self.fs.active_pane().clone();
+        let new_file_path: PathBuf = active_pane.cwd.join("new_file.txt");
+
         if let Err(e) = tokio::fs::File::create(&new_file_path).await {
             self.set_error(format!("Failed to create file: {}", e));
         } else {
@@ -372,12 +385,36 @@ impl AppState {
     }
 
     pub async fn create_directory(&mut self) {
-        let active_pane = self.fs.active_pane().clone();
-        let new_dir_path = active_pane.cwd.join("new_directory");
+        let active_pane: PaneState = self.fs.active_pane().clone();
+        let new_dir_path: PathBuf = active_pane.cwd.join("new_directory");
+
         if let Err(e) = tokio::fs::create_dir(&new_dir_path).await {
             self.set_error(format!("Failed to create directory: {}", e));
         } else {
             self.show_success(format!("Created directory: {}", new_dir_path.display()));
+            self.reload_directory().await;
+        }
+    }
+
+    pub async fn create_file_with_name(&mut self, name: String) {
+        let active_pane: PaneState = self.fs.active_pane().clone();
+        let new_file_path: PathBuf = active_pane.cwd.join(&name);
+
+        if let Err(e) = tokio::fs::File::create(&new_file_path).await {
+            self.set_error(format!("Failed to create file '{}': {}", name, e));
+        } else {
+            self.show_success(format!("Created file: {}", name));
+            self.reload_directory().await;
+        }
+    }
+
+    pub async fn create_directory_with_name(&mut self, name: String) {
+        let active_pane = self.fs.active_pane().clone();
+        let new_dir_path = active_pane.cwd.join(&name);
+        if let Err(e) = tokio::fs::create_dir(&new_dir_path).await {
+            self.set_error(format!("Failed to create directory '{}': {}", name, e));
+        } else {
+            self.show_success(format!("Created directory: {}", name));
             self.reload_directory().await;
         }
     }

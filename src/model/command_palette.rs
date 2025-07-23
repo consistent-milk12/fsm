@@ -29,6 +29,60 @@ impl CommandPaletteState {
             .collect();
         self.selected = 0;
     }
+
+    /// Parse the current input for command with arguments (e.g., "nf filename.txt")
+    pub fn parse_command(&self) -> Option<CommandAction> {
+        let input = self.input.trim();
+        if input.is_empty() {
+            return None;
+        }
+
+        let parts: Vec<&str> = input.split_whitespace().collect();
+        if parts.is_empty() {
+            return None;
+        }
+
+        let cmd = parts[0];
+        match cmd {
+            "nf" | "newfile" => {
+                if parts.len() > 1 {
+                    Some(CommandAction::NewFileWithName(parts[1..].join(" ")))
+                } else {
+                    Some(CommandAction::NewFile)
+                }
+            }
+
+            "nd" | "newfolder" | "mkdir" => {
+                if parts.len() > 1 {
+                    Some(CommandAction::NewFolderWithName(parts[1..].join(" ")))
+                } else {
+                    Some(CommandAction::NewFolder)
+                }
+            }
+
+            "reload" | "r" => Some(CommandAction::Reload),
+
+            "search" | "grep" => {
+                if parts.len() > 1 {
+                    Some(CommandAction::SearchContentWithPattern(
+                        parts[1..].join(" "),
+                    ))
+                } else {
+                    Some(CommandAction::SearchContent)
+                }
+            }
+
+            "config" => Some(CommandAction::OpenConfig),
+
+            _ => {
+                // Try to match existing commands by title
+                self.all_commands
+                    .iter()
+                    .find(|c| c.title.to_lowercase().contains(&input.to_lowercase()))
+                    .map(|c| c.action.clone())
+            }
+        }
+    }
 }
 
 /// A user-invokable command.
@@ -44,7 +98,10 @@ pub enum CommandAction {
     Reload,
     NewFile,
     NewFolder,
+    NewFileWithName(String),
+    NewFolderWithName(String),
     SearchContent,
+    SearchContentWithPattern(String),
     // ...extend with more actions or plugins
     Custom(String),
 }

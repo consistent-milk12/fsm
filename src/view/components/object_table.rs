@@ -24,17 +24,31 @@ pub struct ObjectTable;
 
 impl ObjectTable {
     pub fn render(frame: &mut Frame<'_>, app: &mut AppState, area: Rect) {
-        // Split the area into table and footer
-        let layout = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
+        // Split the area into table, command line (if active), and footer
+        let constraints = if app.ui.is_in_command_mode() {
+            vec![
+                Constraint::Fill(1),   // Table area
+                Constraint::Length(1), // Command line area
+                Constraint::Length(1), // Footer area
+            ]
+        } else {
+            vec![
                 Constraint::Fill(1),   // Table area
                 Constraint::Length(1), // Footer area
-            ])
+            ]
+        };
+
+        let layout = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints(constraints)
             .split(area);
 
         let table_area = layout[0];
-        let footer_area = layout[1];
+        let (command_area, footer_area) = if app.ui.is_in_command_mode() {
+            (Some(layout[1]), layout[2])
+        } else {
+            (None, layout[1])
+        };
 
         let pane = &mut app.fs.panes[app.fs.active_pane];
 
@@ -139,12 +153,32 @@ impl ObjectTable {
 
         frame.render_stateful_widget(table, table_area, &mut table_state);
 
+        // Render command line if in command mode
+        if let Some(cmd_area) = command_area {
+            Self::render_command_line(frame, app, cmd_area);
+        }
+
         // Render footer with hotkeys
         Self::render_footer(frame, footer_area);
 
         // Update the pane's table state
         let pane = &mut app.fs.panes[app.fs.active_pane];
         pane.table_state = table_state;
+    }
+
+    /// Renders the vim-style command line for command input
+    fn render_command_line(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
+        let input = &app.ui.command_palette.input;
+        let command_text = format!(":{}", input);
+
+        let command_line = Paragraph::new(command_text).style(
+            Style::default()
+                .bg(theme::BACKGROUND)
+                .fg(theme::PURPLE)
+                .add_modifier(Modifier::BOLD),
+        );
+
+        frame.render_widget(command_line, area);
     }
 
     /// Renders the footer bar with hotkey information using dark purple theme

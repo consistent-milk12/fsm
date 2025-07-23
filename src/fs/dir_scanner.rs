@@ -10,6 +10,7 @@ use crate::fs::object_info::{LightObjectInfo, ObjectInfo};
 use std::path::{Path, PathBuf};
 use tokio::fs;
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 
 /// Scans the given directory asynchronously and returns a sorted list of `ObjectInfo`.
 ///
@@ -22,6 +23,7 @@ pub async fn scan_dir(path: &Path, show_hidden: bool) -> Result<Vec<ObjectInfo>,
 
     while let Some(entry) = read_dir.next_entry().await? {
         let entry_path: PathBuf = entry.path();
+
         let file_name: &str = entry_path
             .file_name()
             .and_then(|s: &std::ffi::OsStr| s.to_str())
@@ -33,6 +35,7 @@ pub async fn scan_dir(path: &Path, show_hidden: bool) -> Result<Vec<ObjectInfo>,
 
         match ObjectInfo::from_path(&entry_path).await {
             Ok(info) => entries.push(info),
+
             Err(e) => {
                 // Log the error but continue processing other entries
                 tracing::warn!("Failed to get ObjectInfo for {:?}: {}", entry_path, e);
@@ -41,7 +44,7 @@ pub async fn scan_dir(path: &Path, show_hidden: bool) -> Result<Vec<ObjectInfo>,
     }
 
     // Sort entries: directories first, then alphabetically by name
-    entries.sort_by(|a, b| {
+    entries.sort_by(|a: &ObjectInfo, b: &ObjectInfo| {
         if a.is_dir && !b.is_dir {
             std::cmp::Ordering::Less
         } else if !a.is_dir && b.is_dir {
@@ -83,7 +86,7 @@ pub async fn scan_dir_streaming_with_background_metadata(
     action_tx: mpsc::UnboundedSender<crate::controller::actions::Action>,
 ) -> (
     mpsc::UnboundedReceiver<ScanUpdate>,
-    tokio::task::JoinHandle<Result<Vec<ObjectInfo>, AppError>>,
+    JoinHandle<Result<Vec<ObjectInfo>, AppError>>,
 ) {
     let (tx, rx) = mpsc::unbounded_channel();
 

@@ -15,11 +15,11 @@
 use crate::AppState;
 use crate::model::ui_state::UIOverlay;
 use crate::view::components::{
-    command_palette::CommandPalette, content_search_overlay::ContentSearchOverlay,
-    filename_search_overlay::FileNameSearchOverlay, help_overlay::HelpOverlay,
-    loading_overlay::LoadingOverlay, notification_overlay::NotificationOverlay,
-    object_table::ObjectTable, prompt_bar::PromptBar, search_overlay::SearchOverlay,
-    search_results_overlay::SearchResultsOverlay, status_bar::StatusBar,
+    content_search_overlay::ContentSearchOverlay, filename_search_overlay::FileNameSearchOverlay,
+    help_overlay::HelpOverlay, loading_overlay::LoadingOverlay,
+    notification_overlay::NotificationOverlay, object_table::ObjectTable, prompt_bar::PromptBar,
+    search_overlay::SearchOverlay, search_results_overlay::SearchResultsOverlay,
+    status_bar::StatusBar,
 };
 
 use ratatui::{
@@ -57,7 +57,6 @@ impl View {
                 UIOverlay::SearchResults => SearchResultsOverlay::render(frame, app, overlay_area),
                 UIOverlay::Loading => LoadingOverlay::render(frame, app, overlay_area),
                 UIOverlay::Prompt => PromptBar::render(frame, app, overlay_area),
-                UIOverlay::CommandPalette => CommandPalette::render(frame, app, overlay_area),
                 _ => {}
             }
         }

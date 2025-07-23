@@ -20,6 +20,7 @@ pub enum UIMode {
     Visual, // for multi-select/range
     Search,
     Prompt,
+    Command,   // vim-style command input mode
     Scripting, // for scripting/plugins
     BatchOp,   // show/cancel batch operation
 }
@@ -38,7 +39,6 @@ pub enum UIOverlay {
     Prompt,
     Batch,
     Scripting,
-    CommandPalette,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -203,11 +203,25 @@ impl UIState {
             _ => UIOverlay::Help,
         };
     }
-    pub fn toggle_command_palette(&mut self) {
-        self.overlay = match self.overlay {
-            UIOverlay::CommandPalette => UIOverlay::None,
-            _ => UIOverlay::CommandPalette,
-        };
+
+    /// Enter vim-style command mode
+    pub fn enter_command_mode(&mut self) {
+        self.mode = UIMode::Command;
+        self.input.clear();
+        self.command_palette.input.clear();
+        self.command_palette.update_filter();
+    }
+
+    /// Exit command mode and return to browse mode
+    pub fn exit_command_mode(&mut self) {
+        self.mode = UIMode::Browse;
+        self.input.clear();
+        self.command_palette.input.clear();
+    }
+
+    /// Check if currently in command input mode
+    pub fn is_in_command_mode(&self) -> bool {
+        self.mode == UIMode::Command
     }
 
     pub fn toggle_filename_search_overlay(&mut self) {
