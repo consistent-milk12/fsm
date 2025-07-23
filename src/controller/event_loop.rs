@@ -16,7 +16,6 @@ use crate::model::ui_state::{LoadingState, UIMode, UIOverlay};
 use crate::tasks::search_task::RawSearchResult;
 use crossterm::event::{Event as TermEvent, EventStream, KeyCode, KeyModifiers};
 use futures::StreamExt;
-use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::process::Command;
 use tokio::sync::{Mutex, MutexGuard, mpsc};
@@ -55,10 +54,22 @@ impl Controller {
         }
     }
 
+    /// Helper method to calculate the current result count based on available search results
+    fn current_result_count(app: &AppState) -> usize {
+        if let Some(ref raw_results) = app.raw_search_results {
+            raw_results.lines.len()
+        } else if !app.rich_search_results.is_empty() {
+            app.rich_search_results.len()
+        } else {
+            app.search_results.len()
+        }
+    }
+
     /// Asynchronously returns the next action, waiting for user input or background task results.
     pub async fn next_action(&mut self) -> Option<Action> {
         tokio::select! {
             Some(Ok(event)) = self.event_stream.next() =>{
+                debug!("Raw terminal event received: {:?}", event);
                 let action = self.handle_terminal_event(event).await;
 
                 debug!("Received terminal event: {:?}", action);
@@ -270,7 +281,7 @@ impl Controller {
                                         && let Some(selected_entry) =
                                             app.filename_search_results.get(selected_idx)
                                     {
-                                        return Action::OpenFile(selected_entry.path.clone());
+                                        return Action::OpenFile(selected_entry.path.clone(), None);
                                     }
 
                                     // If no recursive results but we have a search term, trigger search
@@ -308,17 +319,20 @@ impl Controller {
                                 _ => Action::NoOp,
                             }
                         }
+
                         UIOverlay::ContentSearch => {
                             match key_event.code {
                                 KeyCode::Char(c) => {
                                     let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
                                     app.ui.input.push(c);
 
-                                    // Clear previous results when typing
+                                    // Reset results *and* selection
                                     app.search_results.clear();
                                     app.rich_search_results.clear();
                                     app.raw_search_results = None;
                                     app.ui.last_query = None;
+                                    app.ui.selected = None;
+                                    app.redraw = true;
                                     Action::NoOp
                                 }
 
@@ -326,128 +340,138 @@ impl Controller {
                                     let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
                                     app.ui.input.pop();
 
-                                    // Clear previous results when backspacing
+                                    // Same reset logic
                                     app.search_results.clear();
                                     app.rich_search_results.clear();
                                     app.raw_search_results = None;
                                     app.ui.last_query = None;
-
+                                    app.ui.selected = None;
+                                    app.redraw = true;
                                     Action::NoOp
                                 }
 
                                 KeyCode::Enter => {
                                     let app: MutexGuard<'_, AppState> = self.app.lock().await;
 
-                                    // Handle Shift+Enter for raw search results
-                                    if key_event.modifiers.contains(KeyModifiers::SHIFT)
-                                        && let Some(ref raw_results) = app.raw_search_results
-                                        && let Some(selected_idx) = app.ui.selected
-                                        && let Some(selected_line) =
-                                            raw_results.lines.get(selected_idx)
-                                        && let Some((file_path, _line_num)) =
-                                            RawSearchResult::parse_file_info_with_base(
-                                                selected_line,
-                                                &raw_results.base_directory,
-                                            )
+                                    // ---------- RAW SEARCH RESULTS ----------
+                                    if let (Some(raw), Some(idx)) =
+                                        (&app.raw_search_results, app.ui.selected)
+                                        && let Some(line) = raw.lines.get(idx)
                                     {
-                                        return Action::OpenFile(file_path);
-                                    }
+                                        debug!("RAW: Processing line at index {}: '{}'", idx, line);
+                                        debug!("RAW: Base directory: {:?}", raw.base_directory);
 
-                                    if key_event.modifiers.contains(KeyModifiers::SHIFT) {
-                                        return Action::NoOp;
-                                    }
+                                        // Use stateful parsing for --heading format
+                                        let mut current_file = None;
 
-                                    // Regular Enter - check for existing results first
-                                    // If we have raw search results and a selection, open the file
-                                    if let Some(ref raw_results) = app.raw_search_results
-                                        && !raw_results.lines.is_empty()
-                                        && let Some(selected_idx) = app.ui.selected
-                                        && let Some(selected_line) =
-                                            raw_results.lines.get(selected_idx)
-                                        && let Some((file_path, _line_num)) =
-                                            RawSearchResult::parse_file_info_with_base(
-                                                selected_line,
-                                                &raw_results.base_directory,
-                                            )
-                                    {
-                                        return Action::OpenFile(file_path);
-                                    } else if let Some(ref raw_results) = app.raw_search_results
-                                        && !raw_results.lines.is_empty()
-                                    {
-                                        // If we have results but couldn't parse, just return NoOp
-                                        return Action::NoOp;
-                                    }
-
-                                    // If we have rich search results and a selection, try to parse and open the file
-                                    if !app.rich_search_results.is_empty()
-                                        && let Some(selected_idx) = app.ui.selected
-                                        && let Some(selected_line) =
-                                            app.rich_search_results.get(selected_idx)
-                                    {
-                                        // For rich search results, we need to get the base directory from app state
-                                        let base_dir: PathBuf = app.fs.active_pane().cwd.clone();
-
-                                        if let Some((file_path, _line_num)) =
-                                            RawSearchResult::parse_file_info_with_base(
-                                                selected_line,
-                                                &base_dir,
-                                            )
-                                        {
-                                            return Action::OpenFile(file_path);
+                                        // Parse all lines up to the selected index to build context
+                                        for (i, context_line) in raw.lines.iter().enumerate() {
+                                            if let Some((path, line_num)) =
+                                                RawSearchResult::parse_heading_line_with_context(
+                                                    context_line,
+                                                    &mut current_file,
+                                                    &raw.base_directory,
+                                                )
+                                            {
+                                                if i == idx {
+                                                    debug!(
+                                                        "RAW: Parsed path: {:?}, line: {:?}",
+                                                        path, line_num
+                                                    );
+                                                    return Action::OpenFile(path, line_num);
+                                                }
+                                            }
                                         }
+
+                                        debug!("RAW: Failed to parse line: '{}'", line);
                                     }
 
-                                    // If we have simple search results and a selection, open the file
-                                    if !app.search_results.is_empty()
-                                        && let Some(selected_idx) = app.ui.selected
-                                        && let Some(selected_result) =
-                                            app.search_results.get(selected_idx)
+                                    // We had raw results but couldn't parse → nothing to do
+                                    if app.raw_search_results.is_some() && app.ui.selected.is_some()
                                     {
-                                        return Action::OpenFile(selected_result.path.clone());
+                                        debug!(
+                                            "RAW: Had results but couldn't parse - returning NoOp"
+                                        );
+                                        return Action::NoOp;
                                     }
 
-                                    // Otherwise, perform search
+                                    // ---------- RICH SEARCH RESULTS ----------
+                                    if let (false, Some(idx)) =
+                                        (app.rich_search_results.is_empty(), app.ui.selected)
+                                        && let Some(line) = app.rich_search_results.get(idx)
+                                    {
+                                        let base = app.fs.active_pane().cwd.clone();
+                                        debug!(
+                                            "RICH: Processing line at index {}: '{}'",
+                                            idx, line
+                                        );
+                                        debug!("RICH: Base directory: {:?}", base);
+
+                                        // Use stateful parsing for --heading format
+                                        let mut current_file = None;
+
+                                        // Parse all lines up to the selected index to build context
+                                        for (i, context_line) in
+                                            app.rich_search_results.iter().enumerate()
+                                        {
+                                            if let Some((path, line_num)) =
+                                                RawSearchResult::parse_heading_line_with_context(
+                                                    context_line,
+                                                    &mut current_file,
+                                                    &base,
+                                                )
+                                            {
+                                                if i == idx {
+                                                    debug!(
+                                                        "RICH: Parsed path: {:?}, line: {:?}",
+                                                        path, line_num
+                                                    );
+                                                    return Action::OpenFile(path, line_num);
+                                                }
+                                            }
+                                        }
+
+                                        debug!("RICH: Failed to parse line: '{}'", line);
+                                    }
+
+                                    // ---------- SIMPLE SEARCH RESULTS ----------
+                                    if let (false, Some(idx)) =
+                                        (app.search_results.is_empty(), app.ui.selected)
+                                        && let Some(res) = app.search_results.get(idx)
+                                    {
+                                        debug!("SIMPLE: Opening file: {:?}", res.path);
+                                        return Action::OpenFile(res.path.clone(), None);
+                                    }
+
+                                    debug!(
+                                        "CONTENT_SEARCH: No valid selection, launching new search with: '{}'",
+                                        app.ui.input
+                                    );
+                                    // No selection → launch a new search
                                     Action::ContentSearch(app.ui.input.clone())
                                 }
 
                                 KeyCode::Up => {
                                     let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-
-                                    let result_count: usize =
-                                        if let Some(ref raw_results) = app.raw_search_results {
-                                            raw_results.lines.len()
-                                        } else if !app.rich_search_results.is_empty() {
-                                            app.rich_search_results.len()
-                                        } else {
-                                            app.search_results.len()
-                                        };
-
+                                    let result_count = Self::current_result_count(&app);
                                     if result_count > 0 {
-                                        app.ui.selected =
-                                            Some(app.ui.selected.unwrap_or(0).saturating_sub(1));
+                                        let new_idx =
+                                            app.ui.selected.unwrap_or(0).saturating_sub(1);
+                                        app.ui.selected = Some(new_idx);
+                                        app.redraw = true;
                                     }
-
                                     Action::NoOp
                                 }
 
                                 KeyCode::Down => {
                                     let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-
-                                    let result_count: usize =
-                                        if let Some(ref raw_results) = app.raw_search_results {
-                                            raw_results.lines.len()
-                                        } else if !app.rich_search_results.is_empty() {
-                                            app.rich_search_results.len()
-                                        } else {
-                                            app.search_results.len()
-                                        };
-
+                                    let result_count = Self::current_result_count(&app);
                                     if result_count > 0 {
-                                        let current: usize = app.ui.selected.unwrap_or(0);
-                                        app.ui.selected =
-                                            Some((current + 1).min(result_count.saturating_sub(1)));
+                                        let cur = app.ui.selected.unwrap_or(0);
+                                        let new_idx = (cur + 1).min(result_count - 1);
+                                        app.ui.selected = Some(new_idx);
+                                        app.redraw = true;
                                     }
-
                                     Action::NoOp
                                 }
 
@@ -603,6 +627,11 @@ impl Controller {
 
             Action::DirectContentSearch(pattern) => {
                 let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
+
+                // Activate content search overlay to show results
+                app.ui.overlay = UIOverlay::ContentSearch;
+                app.ui.input.clear();
+
                 app.start_content_search(pattern);
 
                 // Exit command mode after starting search
@@ -689,15 +718,19 @@ impl Controller {
                     if let Some(progress) = task_result.progress {
                         loading.progress = Some(progress);
                     }
+
                     if let Some(ref item) = task_result.current_item {
                         loading.current_item = Some(item.clone());
                     }
+
                     if let Some(done) = task_result.completed {
                         loading.completed = Some(done);
                     }
+
                     if let Some(total) = task_result.total {
                         loading.total = Some(total);
                     }
+
                     if let Some(msg) = task_result.message {
                         loading.message = msg;
                     }
@@ -879,17 +912,31 @@ impl Controller {
                 app.redraw = true;
             }
 
-            Action::OpenFile(path) => {
-                // Launch external editor with the file
+            Action::OpenFile(path, line_number) => {
+                // Launch external editor with the file, optionally jumping to a specific line
+                debug!(
+                    "OPENFILE: Received path: {:?}, line_number: {:?}",
+                    path, line_number
+                );
                 let path_str: String = path.to_string_lossy().to_string();
+                debug!("OPENFILE: Converted to string: '{}'", path_str);
 
-                tokio::spawn(async move {
-                    let mut cmd: Command = Command::new("code");
+                let mut cmd: Command = Command::new("code");
+
+                // Add line number argument if provided (VS Code format: --goto file:line)
+                if let Some(line) = line_number {
+                    let goto_arg = format!("{path_str}:{line}");
+                    debug!("OPENFILE: Using --goto argument: '{}'", goto_arg);
+                    cmd.arg("--goto").arg(goto_arg);
+                } else {
+                    debug!("OPENFILE: Using simple path argument: '{}'", path_str);
                     cmd.arg(&path_str);
-                    if let Err(e) = cmd.spawn() {
-                        tracing::error!("Failed to open file with code: {}", e);
-                    }
-                });
+                }
+
+                debug!("OPENFILE: Spawning command: {:?}", cmd);
+                if let Err(e) = cmd .spawn() {
+                    tracing::error!("Failed to open file with code: {}", e);
+                }
 
                 // Close the overlay after opening
                 let mut app: MutexGuard<'_, AppState> = self.app.lock().await;

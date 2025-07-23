@@ -30,6 +30,7 @@ After ANY source edit:
 3. Modern Rust 2024, full clippy compliance
 4. Document significant changes in CLAUDE.md
 5. Compactify CLAUDE.md when lengthy
+- Always organize rust functions into structs
 
 ## Features
 ✅ Async dir navigation, incremental loading
@@ -53,6 +54,8 @@ After ANY source edit:
 - Folder counts: direct children only, not recursive
 - Clippy: let-chains, format!(), #[derive(Default)], Display trait
 - Command unification: removed Ctrl+P, vim-style only
+- :grep overlay: Fixed DirectContentSearch to activate ContentSearch overlay
+- Line jumping: OpenFile(PathBuf, Option<u32>), VS Code --goto file:line support
 
 ## Technical Notes
 - Action enum: no PartialEq (RawSearchResult.Text)
@@ -69,3 +72,6 @@ Run: `RUST_LOG=debug cargo run`
 
 ## Recipes
 **recipe git**: 1.git status 2.For each modified/untracked file: git add {file} → analyze git diff → git commit {msg} → git push
+
+## Update Instructions
+- Update project instructions to show the default diff on terminal for user approval, don't use external editor

@@ -51,8 +51,7 @@ impl ContentSearchOverlay {
         Self::render_content_results(frame, app, layout[1]);
 
         // Render help text at bottom
-        let help_text =
-            "Type pattern • Enter to search • Shift+Enter to jump to file • Esc to close";
+        let help_text = "Type pattern • Enter to search and jump to file • Esc to close";
         let help_paragraph = Paragraph::new(help_text)
             .style(Style::default().fg(theme::COMMENT))
             .alignment(Alignment::Center);

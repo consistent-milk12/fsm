@@ -140,10 +140,12 @@ pub enum Action {
     /// Reload the current directory.
     ReloadDirectory,
 
-    /// Open a file with external editor.
-    OpenFile(PathBuf),
+    /// Open a file with external editor, optionally jumping to a specific line.
+    OpenFile(PathBuf, Option<u32>),
+
     /// Show input prompt for file/directory creation.
     ShowInputPrompt(InputPromptType),
+
     /// Submit input prompt with user input.
     SubmitInputPrompt(String),
 }

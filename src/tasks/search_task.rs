@@ -54,44 +54,174 @@ impl RawSearchResult {
 
     /// Parse file information from a ripgrep output line
     /// Format: "filename:line_number:content" or just "filename" for headings
+    /// NOTE: This function should only be used with complete "filename:line:content" lines
+    /// For parsing individual lines from ripgrep output, use stateful parsing in the search task
     pub fn parse_file_info(line: &str) -> Option<(PathBuf, Option<u32>)> {
         // Strip ANSI color codes first
         let clean_line = Self::strip_ansi_codes(line);
+        tracing::debug!("PARSE: Original line: '{}'", line);
+        tracing::debug!("PARSE: Clean line: '{}'", clean_line);
+
+        // Skip empty lines and context separators
+        if clean_line.trim().is_empty() || clean_line.starts_with("--") {
+            tracing::debug!("PARSE: Skipping empty/separator line");
+            return None;
+        }
+
+        // Check if it's a file heading (no line number, just filename)
+        if !clean_line.contains(':') {
+            let path = PathBuf::from(clean_line.trim());
+            tracing::debug!("PARSE: File heading detected: {:?}", path);
+            return Some((path, None));
+        }
+
+        // Parse "filename:line_number:content" format
+        let parts: Vec<&str> = clean_line.splitn(3, ':').collect();
+        tracing::debug!("PARSE: Split into {} parts: {:?}", parts.len(), parts);
+
+        if parts.len() >= 3 {
+            // This should be a complete filename:line:content format
+            let file_path = PathBuf::from(parts[0].trim());
+            let line_number = parts[1].trim().parse::<u32>().ok();
+            tracing::debug!(
+                "PARSE: Parsed complete line - file: {:?}, line: {:?}",
+                file_path,
+                line_number
+            );
+            Some((file_path, line_number))
+        } else if parts.len() == 2 {
+            // This might be "line_number:content" format - we need context
+            if let Ok(line_num) = parts[0].trim().parse::<u32>() {
+                tracing::debug!(
+                    "PARSE: Found line:content format without filename - line: {}",
+                    line_num
+                );
+                // Return None because we need filename context
+                return None;
+            } else {
+                // This might be "filename:something"
+                let file_path = PathBuf::from(parts[0].trim());
+                tracing::debug!("PARSE: Parsed partial - file: {:?}", file_path);
+                Some((file_path, None))
+            }
+        } else {
+            tracing::debug!("PARSE: Failed to parse - insufficient parts");
+            None
+        }
+    }
+
+    /// Parse file information and resolve relative paths against base directory
+    /// This function handles stateful parsing for ripgrep --heading format
+    pub fn parse_file_info_with_base(
+        line: &str,
+        base_dir: &std::path::Path,
+    ) -> Option<(PathBuf, Option<u32>)> {
+        tracing::debug!(
+            "PARSE_WITH_BASE: Input line: '{}', base_dir: {:?}",
+            line,
+            base_dir
+        );
+
+        Self::parse_file_info(line).map(|(path, line_num)| {
+            tracing::debug!(
+                "PARSE_WITH_BASE: Initial parsed path: {:?}, is_absolute: {}",
+                path,
+                path.is_absolute()
+            );
+
+            let absolute_path = if path.is_absolute() {
+                tracing::debug!("PARSE_WITH_BASE: Path is already absolute");
+                path
+            } else {
+                let joined = base_dir.join(path);
+                tracing::debug!("PARSE_WITH_BASE: Joined relative path: {:?}", joined);
+                joined
+            };
+
+            tracing::debug!(
+                "PARSE_WITH_BASE: Final result - path: {:?}, line: {:?}",
+                absolute_path,
+                line_num
+            );
+            (absolute_path, line_num)
+        })
+    }
+
+    /// Parse a single line from ripgrep --heading output with stateful context
+    /// Returns (file_path, line_number) if this line represents a match
+    pub fn parse_heading_line_with_context(
+        line: &str,
+        current_file: &mut Option<PathBuf>,
+        base_dir: &std::path::Path,
+    ) -> Option<(PathBuf, Option<u32>)> {
+        let clean_line = Self::strip_ansi_codes(line);
+        tracing::debug!(
+            "PARSE_HEADING: Processing line: '{}' with current_file: {:?}",
+            clean_line,
+            current_file
+        );
 
         // Skip empty lines and context separators
         if clean_line.trim().is_empty() || clean_line.starts_with("--") {
             return None;
         }
 
-        // Check if it's a file heading (no line number, just filename)
+        // Check if this is a file heading (no colon, just a filename)
+        // But exclude ripgrep context lines that start with line numbers followed by - or +
         if !clean_line.contains(':') {
-            return Some((PathBuf::from(clean_line.trim()), None));
-        }
-
-        // Parse "filename:line_number:content" format
-        let parts: Vec<&str> = clean_line.splitn(3, ':').collect();
-        if parts.len() >= 2 {
-            let file_path = PathBuf::from(parts[0].trim());
-            let line_number = parts[1].trim().parse::<u32>().ok();
-            Some((file_path, line_number))
-        } else {
-            None
-        }
-    }
-
-    /// Parse file information and resolve relative paths against base directory
-    pub fn parse_file_info_with_base(
-        line: &str,
-        base_dir: &std::path::Path,
-    ) -> Option<(PathBuf, Option<u32>)> {
-        Self::parse_file_info(line).map(|(path, line_num)| {
+            // Skip ripgrep context indicators (e.g., "63-", "42+", etc.)
+            if let Some(first_char) = clean_line.chars().next() {
+                if first_char.is_ascii_digit() {
+                    // Look for pattern like "123-" or "123+" which are context lines
+                    let mut chars = clean_line.chars();
+                    let mut found_digits = false;
+                    
+                    while let Some(c) = chars.next() {
+                        if c.is_ascii_digit() {
+                            found_digits = true;
+                        } else if found_digits && (c == '-' || c == '+') {
+                            // This is a context line, not a filename
+                            tracing::debug!("PARSE_HEADING: Skipping context line: '{}'", clean_line);
+                            return None;
+                        } else {
+                            break;
+                        }
+                    }
+                }
+            }
+            
+            let path = PathBuf::from(clean_line.trim());
             let absolute_path = if path.is_absolute() {
-                path
+                path.clone()
             } else {
-                base_dir.join(path)
+                base_dir.join(&path)
             };
-            (absolute_path, line_num)
-        })
+            *current_file = Some(absolute_path.clone());
+            tracing::debug!("PARSE_HEADING: New file heading: {:?}", absolute_path);
+            return Some((absolute_path, None));
+        }
+
+        // This should be a line:content format
+        let parts: Vec<&str> = clean_line.splitn(2, ':').collect();
+        if parts.len() == 2 {
+            if let Ok(line_num) = parts[0].trim().parse::<u32>() {
+                // This is line_number:content format
+                if let Some(current_path) = current_file {
+                    tracing::debug!(
+                        "PARSE_HEADING: Found match - file: {:?}, line: {}",
+                        current_path,
+                        line_num
+                    );
+                    return Some((current_path.clone(), Some(line_num)));
+                } else {
+                    tracing::debug!(
+                        "PARSE_HEADING: Found line:content but no current file context"
+                    );
+                }
+            }
+        }
+
+        None
     }
 }
 

@@ -10,6 +10,7 @@ use std::{
     io::{self, Stdout},
     path::PathBuf,
     sync::Arc,
+    time::Instant,
 };
 
 use anyhow::{Context, Result};
@@ -38,7 +39,7 @@ use fsm::{
 
 type AppTerminal = Terminal<Backend<Stdout>>;
 
-#[tokio::main]
+#[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() -> Result<()> {
     // Setup panic handler early
     setup_panic_handler();
@@ -60,51 +61,46 @@ struct App {
     controller: Controller,
     state: Arc<Mutex<AppState>>,
     shutdown: Arc<Notify>,
+    last_memory_check: Instant,
 }
 
 impl App {
     /// Initialize the application with all necessary components
     async fn new() -> Result<Self> {
-        // Initialize logging first
         Logger::init_tracing();
         info!("Starting File Manager TUI");
 
-        // Setup terminal
         let terminal: AppTerminal = setup_terminal().context("Failed to initialize terminal")?;
 
-        // Load configuration
-        let config: Arc<Config> = Arc::new(Config::load().await.unwrap_or_else(|e| {
+        // Concurrently load configuration and determine the current directory to improve startup time.
+        let config_handle = tokio::spawn(Config::load());
+        let dir_handle = tokio::spawn(tokio::fs::canonicalize("."));
+
+        let config = Arc::new(config_handle.await?.unwrap_or_else(|e| {
             warn!("Failed to load config, using defaults: {}", e);
             Config::default()
         }));
 
-        // Initialize core components
-        let cache: Arc<ObjectInfoCache> = Arc::new(ObjectInfoCache::default());
-        let fs_state: FSState = FSState::default();
-        let ui_state: UIState = UIState::default();
+        let cache = Arc::new(ObjectInfoCache::default());
+        let fs_state = FSState::default();
+        let ui_state = UIState::default();
 
-        // Create communication channels
         let (task_tx, task_rx) = mpsc::unbounded_channel::<TaskResult>();
         let (action_tx, action_rx) = mpsc::unbounded_channel::<Action>();
 
-        // Create application state
-        let app_state: Arc<Mutex<AppState>> = Arc::new(Mutex::new(AppState::new(
+        let app_state = Arc::new(Mutex::new(AppState::new(
             config, cache, fs_state, ui_state, task_tx, action_tx,
         )));
 
-        // Initialize controller
-        let controller: Controller = Controller::new(app_state.clone(), task_rx, action_rx);
+        let controller = Controller::new(app_state.clone(), task_rx, action_rx);
+        let shutdown = Arc::new(Notify::new());
 
-        // Setup shutdown notification
-        let shutdown: Arc<Notify> = Arc::new(Notify::new());
-
-        // Perform initial directory scan
-        let current_dir: PathBuf = tokio::fs::canonicalize(".")
-            .await
+        let current_dir: PathBuf = dir_handle
+            .await?
             .context("Failed to get current directory")?;
 
         {
-            let mut state: MutexGuard<'_, AppState> = app_state.lock().await;
+            let mut state = app_state.lock().await;
             state.enter_directory(current_dir).await;
             state.redraw = true;
         }
@@ -116,6 +112,7 @@ impl App {
             controller,
             state: app_state,
             shutdown,
+            last_memory_check: Instant::now(),
         })
     }
 
@@ -130,6 +127,9 @@ impl App {
         loop {
             // Render UI if needed
             self.render().await?;
+
+            // Check memory usage periodically (every 5 seconds)
+            self.check_memory_usage();
 
             // Wait for next event
             let action: Action = tokio::select! {
@@ -163,11 +163,13 @@ impl App {
         Ok(())
     }
 
-    /// Render the UI if a redraw is needed
+    /// Render the UI if a redraw is needed with performance monitoring
     async fn render(&mut self) -> Result<()> {
         let mut state: MutexGuard<'_, AppState> = self.state.lock().await;
 
         if state.redraw {
+            let start = Instant::now();
+
             self.terminal
                 .draw(|frame: &mut Frame<'_>| {
                     View::redraw(frame, &mut state);
@@ -175,25 +177,103 @@ impl App {
                 .context("Failed to draw terminal")?;
 
             state.redraw = false;
+
+            // Monitor render performance - log slow renders that could impact UX
+            let duration = start.elapsed();
+            if duration.as_millis() > 16 {
+                // > 16ms = < 60fps
+                warn!(
+                    "Slow render detected: {}ms (target: <16ms for 60fps)",
+                    duration.as_millis()
+                );
+            } else if duration.as_millis() > 8 {
+                // Log renders that are getting close to the threshold
+                tracing::debug!("Render time: {}ms", duration.as_millis());
+            }
         }
 
         Ok(())
     }
 
-    /// Setup signal handlers for graceful shutdown
-    async fn setup_shutdown_handler(&self) {
-        let shutdown: Arc<Notify> = self.shutdown.clone();
+    /// Check memory usage and log warnings if memory is getting low
+    fn check_memory_usage(&mut self) {
+        let now = Instant::now();
 
-        tokio::spawn(async move {
-            match signal::ctrl_c().await {
-                Ok(()) => {
-                    info!("Received Ctrl+C signal");
-                    shutdown.notify_one();
+        // Check memory every 5 seconds to avoid performance impact
+        if now.duration_since(self.last_memory_check).as_secs() >= 5 {
+            self.last_memory_check = now;
+
+            match sys_info::mem_info() {
+                Ok(mem_info) => {
+                    let available_mb = mem_info.avail / 1024; // Convert KB to MB
+                    let total_mb = mem_info.total / 1024;
+                    let used_percent = ((total_mb - available_mb) as f64 / total_mb as f64) * 100.0;
+
+                    // Log memory warnings based on available memory
+                    if available_mb < 100 {
+                        // Less than 100MB available
+                        error!(
+                            "Critical memory usage: Only {}MB available ({}% used)",
+                            available_mb, used_percent as u32
+                        );
+                    } else if available_mb < 500 {
+                        // Less than 500MB available
+                        warn!(
+                            "High memory usage: {}MB available ({}% used)",
+                            available_mb, used_percent as u32
+                        );
+                    } else if used_percent > 80.0 {
+                        tracing::debug!(
+                            "Memory usage: {}MB available ({}% used)",
+                            available_mb,
+                            used_percent as u32
+                        );
+                    }
                 }
                 Err(e) => {
-                    error!("Failed to listen for Ctrl+C: {}", e);
+                    tracing::debug!("Failed to get memory info: {}", e);
                 }
             }
+        }
+    }
+
+    /// Setup signal handlers for graceful shutdown
+    async fn setup_shutdown_handler(&self) {
+        let shutdown = self.shutdown.clone();
+
+        tokio::spawn(async move {
+            #[cfg(unix)]
+            {
+                use tokio::signal::unix::{SignalKind, signal};
+
+                let mut sigterm =
+                    signal(SignalKind::terminate()).expect("Failed to create SIGTERM handler");
+                let mut sigint =
+                    signal(SignalKind::interrupt()).expect("Failed to create SIGINT handler");
+
+                tokio::select! {
+                    _ = sigterm.recv() => {
+                        info!("Received SIGTERM signal");
+                    }
+                    _ = sigint.recv() => {
+                        info!("Received SIGINT signal");
+                    }
+                    _ = signal::ctrl_c() => {
+                        info!("Received Ctrl+C signal");
+                    }
+                }
+            }
+
+            #[cfg(not(unix))]
+            {
+                if let Err(e) = signal::ctrl_c().await {
+                    error!("Failed to listen for Ctrl+C: {}", e);
+                    return;
+                }
+                info!("Received Ctrl+C signal");
+            }
+
+            shutdown.notify_one();
         });
     }
 }

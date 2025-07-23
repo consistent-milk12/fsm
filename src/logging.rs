@@ -23,8 +23,11 @@ pub struct Logger;
 impl Logger {
     /// Call **once** near the start of `main`.
     pub fn init_tracing() {
-        // create logs/ if missing
+        // empty logs/ dir
         let log_dir: &Path = Path::new("logs");
+        if log_dir.exists() {
+            fs::remove_dir_all(log_dir).expect("cannot remove logs dir");
+        }
         fs::create_dir_all(log_dir).expect("cannot create logs dir");
 
         SEQ.get_or_init(|| AtomicUsize::new(1));
