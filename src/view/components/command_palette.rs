@@ -1,6 +1,7 @@
 // src/view/components/command_palette.rs
 
-use crate::model::app_state::AppState;
+use crate::model::command_palette::{Command, CommandPaletteState};
+use crate::model::{app_state::AppState, ui_state::UIOverlay};
 use crate::view::theme;
 use ratatui::{
     Frame,
@@ -13,16 +14,16 @@ pub struct CommandPalette;
 
 impl CommandPalette {
     pub fn render(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
-        let state = &app.ui.command_palette;
+        let state: &CommandPaletteState = &app.ui.command_palette;
 
-        if !state.visible {
+        if !matches!(app.ui.overlay, UIOverlay::CommandPalette) {
             return;
         }
 
-        let popup_area = Self::centered_rect(60, 40, area);
+        let popup_area: Rect = Self::centered_rect(60, 40, area);
         frame.render_widget(Clear, popup_area);
 
-        let input_para = Paragraph::new(format!(":{}", state.input))
+        let input_para: Paragraph<'_> = Paragraph::new(format!(":{}", state.input))
             .block(
                 Block::default()
                     .borders(Borders::ALL)
@@ -33,7 +34,7 @@ impl CommandPalette {
             .alignment(Alignment::Left)
             .style(Style::default().add_modifier(Modifier::BOLD));
 
-        let input_area = Rect {
+        let input_area: Rect = Rect {
             height: 3,
             ..popup_area
         };
@@ -42,19 +43,19 @@ impl CommandPalette {
         let items: Vec<ListItem> = state
             .filtered
             .iter()
-            .map(|cmd| ListItem::new(cmd.title.clone()))
+            .map(|cmd: &Command| ListItem::new(cmd.title.clone()))
             .collect();
 
-        let mut list_state = ListState::default();
+        let mut list_state: ListState = ListState::default();
         list_state.select(Some(state.selected));
 
-        let list_area = Rect {
+        let list_area: Rect = Rect {
             y: popup_area.y + 3,
             height: popup_area.height - 3,
             ..popup_area
         };
 
-        let list = List::new(items)
+        let list: List<'_> = List::new(items)
             .block(
                 Block::default()
                     .borders(Borders::LEFT | Borders::RIGHT | Borders::BOTTOM)
@@ -73,8 +74,8 @@ impl CommandPalette {
     }
 
     fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
-        let popup_width = r.width * percent_x / 100;
-        let popup_height = r.height * percent_y / 100;
+        let popup_width: u16 = r.width * percent_x / 100;
+        let popup_height: u16 = r.height * percent_y / 100;
         Rect {
             x: r.x + (r.width - popup_width) / 2,
             y: r.y + (r.height - popup_height) / 2,
