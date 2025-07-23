@@ -12,7 +12,7 @@ use std::path::PathBuf;
 
 /// Represents a high-level action that the application can perform.
 /// This abstracts away raw terminal events into meaningful commands.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum Action {
     /// A keyboard event.
     Key(KeyEvent),
@@ -26,8 +26,24 @@ pub enum Action {
     ToggleHelp,
     /// Toggle the command palette visibility.
     ToggleCommandPalette,
+    /// Toggle the file name search overlay.
+    ToggleFileNameSearch,
+    /// Toggle the content search overlay.
+    ToggleContentSearch,
+    /// Perform a file name search (instant).
+    FileNameSearch(String),
+    /// Perform a content search (ripgrep).
+    ContentSearch(String),
     /// Toggle showing hidden files.
     ToggleShowHidden,
+    /// Show search results.
+    ShowSearchResults(Vec<crate::fs::object_info::ObjectInfo>),
+    /// Show filename search results.
+    ShowFilenameSearchResults(Vec<crate::fs::object_info::ObjectInfo>),
+    /// Show rich content search results with line numbers and context (deprecated).
+    ShowRichSearchResults(Vec<String>),
+    /// Show raw ripgrep search results.
+    ShowRawSearchResults(crate::tasks::search_task::RawSearchResult),
     /// Simulate a loading state (for demo/testing).
     SimulateLoading,
     /// An internal tick event for periodic updates.
@@ -38,14 +54,32 @@ pub enum Action {
     MoveSelectionUp,
     /// Move selection down.
     MoveSelectionDown,
+    /// Page up (move selection up by viewport height).
+    PageUp,
+    /// Page down (move selection down by viewport height).
+    PageDown,
+    /// Jump to first entry.
+    SelectFirst,
+    /// Jump to last entry.
+    SelectLast,
     /// Enter selected directory or open file.
     EnterSelected,
     /// Go to parent directory.
     GoToParent,
+    Delete,
+    CreateFile,
+    CreateDirectory,
+    Sort(String),
+    Filter(String),
     /// Updates an ObjectInfo in the state (e.g., from a background task).
     UpdateObjectInfo {
         parent_dir: PathBuf,
         info: ObjectInfo,
+    },
+    /// Handle streaming directory scan updates
+    DirectoryScanUpdate {
+        path: PathBuf,
+        update: crate::fs::dir_scanner::ScanUpdate,
     },
     // Add more actions as the application grows, e.g.:
     // ChangeDirectory(PathBuf),
@@ -53,4 +87,12 @@ pub enum Action {
     // MarkEntry(PathBuf),
     // CopyMarked,
     // DeleteMarked,
+    /// No operation. Used when an event is consumed but no state change is needed.
+    NoOp,
+    /// Close the currently active overlay.
+    CloseOverlay,
+    /// Reload the current directory.
+    ReloadDirectory,
+    /// Open a file with external editor.
+    OpenFile(PathBuf),
 }
