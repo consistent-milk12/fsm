@@ -15,9 +15,11 @@
 use crate::AppState;
 use crate::model::ui_state::UIOverlay;
 use crate::view::components::{
-    command_palette::CommandPalette, help_overlay::HelpOverlay, loading_overlay::LoadingOverlay,
+    command_palette::CommandPalette, content_search_overlay::ContentSearchOverlay,
+    filename_search_overlay::FileNameSearchOverlay, help_overlay::HelpOverlay,
+    loading_overlay::LoadingOverlay, notification_overlay::NotificationOverlay,
     object_table::ObjectTable, prompt_bar::PromptBar, search_overlay::SearchOverlay,
-    status_bar::StatusBar,
+    search_results_overlay::SearchResultsOverlay, status_bar::StatusBar,
 };
 
 use ratatui::{
@@ -29,7 +31,7 @@ pub struct View;
 
 impl View {
     /// Draws the full UI for one frame.
-    pub fn redraw(frame: &mut Frame<'_>, app: &AppState) {
+    pub fn redraw(frame: &mut Frame<'_>, app: &mut AppState) {
         // The main object table's block will act as the background
         let main_layout = Layout::default()
             .direction(Direction::Vertical)
@@ -48,11 +50,21 @@ impl View {
             match app.ui.overlay {
                 UIOverlay::Help => HelpOverlay::render(frame, app, overlay_area),
                 UIOverlay::Search => SearchOverlay::render(frame, app, overlay_area),
+                UIOverlay::FileNameSearch => {
+                    FileNameSearchOverlay::render(frame, app, overlay_area)
+                }
+                UIOverlay::ContentSearch => ContentSearchOverlay::render(frame, app, overlay_area),
+                UIOverlay::SearchResults => SearchResultsOverlay::render(frame, app, overlay_area),
                 UIOverlay::Loading => LoadingOverlay::render(frame, app, overlay_area),
                 UIOverlay::Prompt => PromptBar::render(frame, app, overlay_area),
                 UIOverlay::CommandPalette => CommandPalette::render(frame, app, overlay_area),
                 _ => {}
             }
+        }
+
+        // Always render notifications on top of everything
+        if app.ui.notification.is_some() {
+            NotificationOverlay::render(frame, app, frame.area());
         }
     }
 }
