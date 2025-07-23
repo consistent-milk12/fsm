@@ -5,12 +5,13 @@
 //! Cross-platform, async-friendly abstraction for a file or directory entry.
 //! Integrates with ObjectTable (for TUI), moka cache, and async tasks.
 
-use chrono::{DateTime, TimeZone, Utc};
+use chrono::{DateTime, Local, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 use std::ffi::OsStr;
 use std::fs::{FileType, Metadata};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tracing::{debug, warn};
 
 /// Enum for object type, matching the table logic.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -42,11 +43,151 @@ pub struct ObjectInfo {
     pub is_dir: bool,
     pub is_symlink: bool,
     pub size: u64,
-    pub items_count: usize,      // Number of items in dir, 0 for files
-    pub modified: DateTime<Utc>, // For display/sorting
+    pub items_count: usize,        // Number of items in dir, 0 for files
+    pub modified: DateTime<Local>, // For display/sorting
+    /// Whether full metadata has been loaded
+    pub metadata_loaded: bool,
+}
+
+/// Lightweight version with just basic info for immediate display
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LightObjectInfo {
+    pub path: PathBuf,
+    pub name: String,
+    pub extension: Option<String>,
+    pub object_type: ObjectType,
+    pub is_dir: bool,
+    pub is_symlink: bool,
 }
 
 impl ObjectInfo {
+    /// Create a lightweight object with just basic info (fast)
+    pub async fn from_path_light(path: &Path) -> std::io::Result<LightObjectInfo> {
+        let metadata: Metadata = tokio::fs::metadata(path).await?;
+        let file_type: FileType = metadata.file_type();
+
+        let name: String = path
+            .file_name()
+            .and_then(OsStr::to_str)
+            .unwrap_or("Unknown")
+            .to_string();
+
+        let extension = if file_type.is_file() {
+            path.extension()
+                .and_then(OsStr::to_str)
+                .map(|ext| ext.to_lowercase())
+        } else {
+            None
+        };
+
+        let is_dir: bool = file_type.is_dir();
+        let is_symlink: bool = file_type.is_symlink();
+
+        let object_type: ObjectType = if is_dir {
+            ObjectType::Dir
+        } else if is_symlink {
+            ObjectType::Symlink
+        } else if let Some(ext) = &extension {
+            ObjectType::Other(ext.to_uppercase())
+        } else {
+            ObjectType::File
+        };
+
+        Ok(LightObjectInfo {
+            path: path.to_path_buf(),
+            name,
+            extension,
+            object_type,
+            is_dir,
+            is_symlink,
+        })
+    }
+
+    /// Upgrade a lightweight object to full ObjectInfo with metadata (slow)
+    pub async fn from_light_info(light: LightObjectInfo) -> std::io::Result<Self> {
+        let metadata: Metadata = tokio::fs::symlink_metadata(&light.path).await?;
+
+        let size: u64 = if light.is_dir { 0 } else { metadata.len() };
+
+        let items_count: usize = if light.is_dir {
+            match tokio::fs::read_dir(&light.path).await {
+                Ok(mut entries) => {
+                    let mut count = 0;
+                    while let Ok(Some(_)) = entries.next_entry().await {
+                        count += 1;
+                    }
+                    count
+                }
+                Err(_) => 0,
+            }
+        } else {
+            0
+        };
+
+        let modified: SystemTime = metadata.modified().unwrap_or_else(|e| {
+            warn!("Failed to get modified time for {:?}: {}", light.path, e);
+            UNIX_EPOCH
+        });
+
+        let modified_dt: Duration = modified
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or(Duration::from_secs(0));
+
+        let modified_dt: DateTime<Local> = Local
+            .timestamp_opt(modified_dt.as_secs() as i64, modified_dt.subsec_nanos())
+            .single()
+            .unwrap_or_else(|| Local.timestamp_opt(0, 0).single().unwrap());
+
+        debug!(
+            "ObjectInfo for {}: modified_dt = {}",
+            light.path.display(),
+            modified_dt.format("%Y-%m-%d")
+        );
+
+        Ok(ObjectInfo {
+            path: light.path,
+            name: light.name,
+            extension: light.extension,
+            object_type: light.object_type,
+            is_dir: light.is_dir,
+            is_symlink: light.is_symlink,
+            size,
+            items_count,
+            modified: modified_dt,
+            metadata_loaded: true,
+        })
+    }
+
+    /// Create from lightweight info with placeholder metadata (for immediate display)
+    pub fn with_placeholder_metadata(light: LightObjectInfo) -> Self {
+        // Try to get actual modified  even for placeholder
+        let modified: SystemTime = std::fs::metadata(&light.path)
+            .and_then(|metadata| metadata.modified())
+            .unwrap_or(UNIX_EPOCH);
+
+        let modified_dt = modified
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or(Duration::from_secs(0));
+
+        let modified_dt = Local
+            .timestamp_opt(modified_dt.as_secs() as i64, modified_dt.subsec_nanos())
+            .single()
+            .unwrap_or_else(|| Local.timestamp_opt(0, 0).single().unwrap());
+
+        ObjectInfo {
+            path: light.path,
+            name: light.name,
+            extension: light.extension,
+            object_type: light.object_type,
+            is_dir: light.is_dir,
+            is_symlink: light.is_symlink,
+            size: 0,
+            items_count: 0,
+            modified: modified_dt,
+            metadata_loaded: false,
+        }
+    }
+
     /// Build from path and standard metadata. (You can adapt for async if needed.)
     pub async fn from_path(path: &Path) -> std::io::Result<Self> {
         use chrono::TimeZone;
@@ -87,8 +228,12 @@ impl ObjectInfo {
             .modified()
             .ok()
             .and_then(|t: SystemTime| t.duration_since(UNIX_EPOCH).ok())
-            .map(|d: Duration| Utc.timestamp_opt(d.as_secs_f32() as i64, 0).unwrap())
-            .unwrap_or_else(|| Utc.timestamp_opt(0, 0).unwrap());
+            .map(|d: Duration| {
+                Utc.timestamp_opt(d.as_secs() as i64, d.subsec_nanos())
+                    .single()
+                    .unwrap_or_else(|| Utc.timestamp_opt(0, 0).single().unwrap())
+            })
+            .unwrap_or_else(|| Utc.timestamp_opt(0, 0).single().unwrap());
 
         Ok(Self {
             path: path.to_path_buf(),
@@ -99,7 +244,8 @@ impl ObjectInfo {
             is_symlink,
             size,
             items_count,
-            modified,
+            modified: modified.into(),
+            metadata_loaded: true,
         })
     }
 
@@ -121,7 +267,8 @@ impl Default for ObjectInfo {
             is_symlink: false,
             size: 0,
             items_count: 0,
-            modified: chrono::Utc.timestamp_opt(0, 0).unwrap(),
+            modified: chrono::Local.timestamp_opt(0, 0).unwrap(),
+            metadata_loaded: false,
         }
     }
 }
