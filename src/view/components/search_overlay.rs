@@ -6,14 +6,14 @@
 //! - Integrates with UIState's input buffer and last_query
 //! - Themed, keyboard-centric, and visually distinct
 
-use crate::view::theme;
 use crate::AppState;
+use crate::view::theme;
 use ratatui::{
+    Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span, Text},
     widgets::{Block, Borders, Clear, Paragraph},
-    Frame,
 };
 
 pub struct SearchOverlay;
