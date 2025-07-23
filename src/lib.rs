@@ -34,17 +34,21 @@ pub mod model {
 
 /// --- UI rendering: all view logic and components ---
 pub mod view {
-    pub mod theme;
     pub mod icons;
+    pub mod theme;
     pub mod ui; // main UI orchestrator
     pub mod components {
         pub mod command_palette;
+        pub mod content_search_overlay;
+        pub mod filename_search_overlay;
         pub mod help_overlay;
         pub use help_overlay::HelpOverlay;
         pub mod loading_overlay;
+        pub mod notification_overlay;
         pub mod object_table;
         pub mod prompt_bar;
         pub mod search_overlay;
+        pub mod search_results_overlay;
         pub mod status_bar;
     }
     pub use components::*;
@@ -59,6 +63,8 @@ pub mod fs {
 
 /// --- Background/async tasks ---
 pub mod tasks {
+    pub mod filename_search_task;
+    pub mod metadata_task;
     pub mod search_task;
     pub mod size_task;
 }
@@ -67,8 +73,8 @@ pub mod logging;
 pub use logging::Logger;
 
 /// --- Plugins and utilities (optional, if you want to expose) ---
-// pub mod plugins;
-// pub mod util;
+pub mod plugins;
+pub mod util;
 
 /// --- Crate-level re-exports for the most important types (optional) ---
 pub use error::AppError;
