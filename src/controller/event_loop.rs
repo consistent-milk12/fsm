@@ -27,17 +27,25 @@ use tokio::sync::{Mutex, mpsc};
 use tracing::{debug, info, trace, warn};
 
 /// Enhanced task result with performance metrics
-#[derive(Debug, Clone, PartialEq)]
-pub struct TaskResult {
-    pub task_id: u64,
-    pub result: Result<String, String>,
-    pub progress: Option<f64>,
-    pub current_item: Option<String>,
-    pub completed: Option<u64>,
-    pub total: Option<u64>,
-    pub message: Option<String>,
-    pub execution_time: Option<std::time::Duration>,
-    pub memory_usage: Option<u64>,
+#[derive(Debug, Clone)]
+pub enum TaskResult {
+    /// Legacy task result format
+    Legacy {
+        task_id: u64,
+        result: Result<String, String>,
+        progress: Option<f64>,
+        current_item: Option<String>,
+        completed: Option<u64>,
+        total: Option<u64>,
+        message: Option<String>,
+        execution_time: Option<std::time::Duration>,
+        memory_usage: Option<u64>,
+    },
+    /// File operation completion
+    FileOperationComplete {
+        operation_id: String,
+        result: Result<(), crate::error::AppError>,
+    },
 }
 
 /// Enhanced event loop with performance monitoring and advanced features
@@ -129,8 +137,7 @@ impl EventLoop {
             }
 
             Some(task_result) = self.task_rx.recv() => {
-                debug!("Task result received: task_id={}, execution_time={:?}",
-                       task_result.task_id, task_result.execution_time);
+                debug!("Task result received: {:?}", task_result);
                 Some(Action::TaskResult(task_result))
             }
 
@@ -407,6 +414,20 @@ impl EventLoop {
             (KeyCode::Char('/'), _) => {
                 info!("Opening filename search");
                 Action::ToggleFileNameSearch
+            }
+
+            // File operations
+            (KeyCode::Char('c'), _) => {
+                info!("Copy file - requesting destination");
+                Action::ShowInputPrompt(InputPromptType::CopyDestination)
+            }
+            (KeyCode::Char('m'), _) => {
+                info!("Move file - requesting destination");
+                Action::ShowInputPrompt(InputPromptType::MoveDestination)
+            }
+            (KeyCode::Char('r'), _) => {
+                info!("Rename file - requesting new name");
+                Action::ShowInputPrompt(InputPromptType::RenameFile)
             }
 
             // Navigation keys
@@ -1140,42 +1161,72 @@ impl EventLoop {
 
             // Enhanced task result processing
             Action::TaskResult(task_result) => {
-                debug!("Processing task result for task {}", task_result.task_id);
+                debug!("Processing task result: {:?}", task_result);
                 let mut app = self.app.lock().await;
 
-                // Update loading state with enhanced progress tracking
-                if let Some(ref mut loading) = app.ui.loading {
-                    if let Some(progress) = task_result.progress {
-                        loading.progress = Some(progress);
+                match task_result {
+                    TaskResult::Legacy {
+                        task_id,
+                        result,
+                        progress,
+                        current_item,
+                        completed,
+                        ..
+                    } => {
+                        // Update loading state with enhanced progress tracking
+                        if let Some(ref mut loading) = app.ui.loading {
+                            if let Some(progress) = progress {
+                                loading.progress = Some(progress);
+                            }
+
+                            if let Some(current) = &current_item {
+                                loading.current_item = Some(current.clone());
+                            }
+
+                            if let Some(completed) = completed {
+                                loading.completed = Some(completed);
+                            }
+
+                            loading.spinner_frame = loading.spinner_frame.wrapping_add(1);
+                        }
+
+                        // Complete task on 100% progress
+                        if let Some(p) = progress
+                            && (p - 1.0).abs() < f64::EPSILON
+                        {
+                            app.ui.loading = None;
+                            if app.ui.overlay == UIOverlay::Loading {
+                                app.ui.overlay = UIOverlay::None;
+                                app.ui
+                                    .show_info("Loading complete. All files scanned.".to_string());
+                            }
+                        }
+
+                        app.complete_task(
+                            task_id,
+                            Some(match &result {
+                                Ok(s) => s.clone(),
+                                Err(e) => format!("Error: {e}"),
+                            }),
+                        );
                     }
-                    if let Some(current) = &task_result.current_item {
-                        loading.current_item = Some(current.clone());
-                    }
-                    if let Some(completed) = task_result.completed {
-                        loading.completed = Some(completed);
-                    }
-                    loading.spinner_frame = loading.spinner_frame.wrapping_add(1);
+
+                    TaskResult::FileOperationComplete {
+                        operation_id,
+                        result,
+                    } => match result {
+                        Ok(()) => {
+                            info!("File operation {} completed successfully", operation_id);
+                            app.ui.show_info("File operation completed".to_string());
+                        }
+
+                        Err(e) => {
+                            warn!("File operation {} failed: {}", operation_id, e);
+                            app.ui.show_error(format!("File operation failed: {e}"));
+                        }
+                    },
                 }
 
-                // Complete task on 100% progress
-                if let Some(p) = task_result.progress
-                    && (p - 1.0).abs() < f64::EPSILON
-                {
-                    app.ui.loading = None;
-                    if app.ui.overlay == UIOverlay::Loading {
-                        app.ui.overlay = UIOverlay::None;
-                        app.ui
-                            .show_info("Loading complete. All files scanned.".to_string());
-                    }
-                }
-
-                app.complete_task(
-                    task_result.task_id,
-                    Some(match &task_result.result {
-                        Ok(s) => s.clone(),
-                        Err(e) => format!("Error: {e}"),
-                    }),
-                );
                 app.ui.request_redraw(RedrawFlag::All);
             }
 
@@ -1195,6 +1246,7 @@ impl EventLoop {
                         ScanUpdate::Completed(count) => {
                             info!("Directory scan completed with {} entries", count);
                             let entries = app.fs.active_pane().entries.clone();
+
                             app.fs
                                 .active_pane_mut()
                                 .complete_incremental_loading(entries);
@@ -1222,6 +1274,7 @@ impl EventLoop {
                             let current_pane = app.fs.active_pane_mut();
                             current_pane.is_loading = false;
                             current_pane.is_incremental_loading = false;
+
                             let err_msg = format!("Error scanning directory: {e}");
                             current_pane.last_error = Some(err_msg.clone());
                             app.set_error(err_msg);
@@ -1276,6 +1329,7 @@ impl EventLoop {
                 info!("Filter action should now be command-driven (:filter)");
                 let mut app = self.app.lock().await;
                 let active_pane = app.fs.active_pane_mut();
+
                 active_pane.filter = match active_pane.filter {
                     EntryFilter::All => EntryFilter::FilesOnly,
                     EntryFilter::FilesOnly => EntryFilter::DirsOnly,
@@ -1284,6 +1338,7 @@ impl EventLoop {
                     | EntryFilter::Pattern(_)
                     | EntryFilter::Custom(_) => EntryFilter::All,
                 };
+
                 let filter_criteria = active_pane.filter.to_string();
                 app.filter_entries(&filter_criteria);
                 app.ui.request_redraw(RedrawFlag::All);
@@ -1315,38 +1370,132 @@ impl EventLoop {
                         drop(app);
                         Box::pin(self.dispatch_action(Action::CreateFileWithName(input))).await;
                     }
+
                     Some(InputPromptType::CreateDirectory) => {
                         drop(app);
                         Box::pin(self.dispatch_action(Action::CreateDirectoryWithName(input)))
                             .await;
                     }
+
                     Some(InputPromptType::Rename) => {
                         info!("Processing rename prompt with input: '{}'", input);
                         drop(app);
                         Box::pin(self.dispatch_action(Action::RenameEntry(input))).await;
                     }
+
                     Some(InputPromptType::Search) => {
                         info!("Processing search prompt with input: '{}'", input);
                         drop(app);
                         Box::pin(self.dispatch_action(Action::DirectContentSearch(input))).await;
                     }
+
                     Some(InputPromptType::GoToPath) => {
                         info!("Processing go-to-path prompt with input: '{}'", input);
                         drop(app);
                         Box::pin(self.dispatch_action(Action::GoToPath(input))).await;
                     }
+
                     Some(InputPromptType::Custom(prompt_msg)) => {
                         info!(
                             "Processing custom prompt '{}' with input: '{}'",
                             prompt_msg, input
                         );
+
                         // Show notification with custom prompt result
                         app.ui.show_notification(
                             format!("Custom prompt '{prompt_msg}': {input}"),
                             NotificationLevel::Info,
                             Some(3000), // 3 second auto-dismiss
                         );
+
                         app.ui.request_redraw(RedrawFlag::All);
+                    }
+                    // File operation input prompts
+                    Some(InputPromptType::CopyDestination) => {
+                        info!("Processing copy destination prompt with input: '{}'", input);
+
+                        // Get current selected file path
+                        let selected_path = {
+                            let app = self.app.lock().await;
+
+                            app.fs.active_pane().selected.and_then(|selected_idx| {
+                                app.fs
+                                    .active_pane()
+                                    .entries
+                                    .get(selected_idx)
+                                    .map(|entry| entry.path.clone())
+                            })
+                        };
+
+                        if let Some(source_path) = selected_path {
+                            let dest_path = std::path::PathBuf::from(input);
+                            drop(app);
+
+                            Box::pin(self.dispatch_action(Action::Copy {
+                                source: source_path,
+                                dest: dest_path,
+                            }))
+                            .await;
+                        } else {
+                            app.ui
+                                .show_error("No file selected for copy operation".to_string());
+                            app.ui.request_redraw(RedrawFlag::All);
+                        }
+                    }
+                    Some(InputPromptType::MoveDestination) => {
+                        info!("Processing move destination prompt with input: '{}'", input);
+                        // Get current selected file path
+                        let selected_path = {
+                            let app = self.app.lock().await;
+                            app.fs.active_pane().selected.and_then(|selected_idx| {
+                                app.fs
+                                    .active_pane()
+                                    .entries
+                                    .get(selected_idx)
+                                    .map(|entry| entry.path.clone())
+                            })
+                        };
+
+                        if let Some(source_path) = selected_path {
+                            let dest_path = std::path::PathBuf::from(input);
+                            drop(app);
+                            Box::pin(self.dispatch_action(Action::Move {
+                                source: source_path,
+                                dest: dest_path,
+                            }))
+                            .await;
+                        } else {
+                            app.ui
+                                .show_error("No file selected for move operation".to_string());
+                            app.ui.request_redraw(RedrawFlag::All);
+                        }
+                    }
+                    Some(InputPromptType::RenameFile) => {
+                        info!("Processing rename file prompt with input: '{}'", input);
+                        // Get current selected file path
+                        let selected_path = {
+                            let app = self.app.lock().await;
+                            app.fs.active_pane().selected.and_then(|selected_idx| {
+                                app.fs
+                                    .active_pane()
+                                    .entries
+                                    .get(selected_idx)
+                                    .map(|entry| entry.path.clone())
+                            })
+                        };
+
+                        if let Some(source_path) = selected_path {
+                            drop(app);
+                            Box::pin(self.dispatch_action(Action::Rename {
+                                source: source_path,
+                                new_name: input,
+                            }))
+                            .await;
+                        } else {
+                            app.ui
+                                .show_error("No file selected for rename operation".to_string());
+                            app.ui.request_redraw(RedrawFlag::All);
+                        }
                     }
                     None => {
                         info!("No prompt type set when submitting input");
@@ -1371,6 +1520,99 @@ impl EventLoop {
                 }
             }
 
+            // NEW FILE OPERATIONS - Core functionality implementation
+            Action::Copy { source, dest } => {
+                info!("Starting copy operation: {:?} -> {:?}", source, dest);
+                let app = self.app.lock().await;
+                let task_tx = app.task_tx.clone();
+                drop(app);
+
+                // Create and spawn file operation task
+                let task = crate::tasks::file_ops_task::FileOperationTask::new(
+                    crate::tasks::file_ops_task::FileOperation::Copy {
+                        source: source.clone(),
+                        dest: dest.clone(),
+                    },
+                    task_tx,
+                );
+
+                tokio::spawn(async move {
+                    if let Err(e) = task.execute().await {
+                        eprintln!("Copy operation failed: {e}");
+                    }
+                });
+
+                let mut app = self.app.lock().await;
+                app.ui.show_info(format!(
+                    "Copying {} to {}",
+                    source.file_name().unwrap_or_default().to_string_lossy(),
+                    dest.display()
+                ));
+                app.ui.request_redraw(RedrawFlag::All);
+            }
+
+            Action::Move { source, dest } => {
+                info!("Starting move operation: {:?} -> {:?}", source, dest);
+                let app = self.app.lock().await;
+                let task_tx = app.task_tx.clone();
+                drop(app);
+
+                // Create and spawn file operation task
+                let task = crate::tasks::file_ops_task::FileOperationTask::new(
+                    crate::tasks::file_ops_task::FileOperation::Move {
+                        source: source.clone(),
+                        dest: dest.clone(),
+                    },
+                    task_tx,
+                );
+
+                tokio::spawn(async move {
+                    if let Err(e) = task.execute().await {
+                        eprintln!("Move operation failed: {e}");
+                    }
+                });
+
+                let mut app = self.app.lock().await;
+                app.ui.show_info(format!(
+                    "Moving {} to {}",
+                    source.file_name().unwrap_or_default().to_string_lossy(),
+                    dest.display()
+                ));
+                app.ui.request_redraw(RedrawFlag::All);
+            }
+
+            Action::Rename { source, new_name } => {
+                info!("Starting rename operation: {:?} -> {}", source, new_name);
+                let app = self.app.lock().await;
+                let task_tx = app.task_tx.clone();
+                drop(app);
+
+                // Create and spawn file operation task
+                let task = crate::tasks::file_ops_task::FileOperationTask::new(
+                    crate::tasks::file_ops_task::FileOperation::Rename {
+                        source: source.clone(),
+                        new_name: new_name.clone(),
+                    },
+                    task_tx,
+                );
+
+                tokio::spawn(async move {
+                    if let Err(e) = task.execute().await {
+                        eprintln!("Rename operation failed: {e}");
+                    }
+                });
+
+                let mut app = self.app.lock().await;
+
+                app.ui.show_info(format!(
+                    "Renaming {} to {}",
+                    source.file_name().unwrap_or_default().to_string_lossy(),
+                    new_name
+                ));
+
+                app.ui.request_redraw(RedrawFlag::All);
+            }
+
             // Pass-through actions
             Action::Key(_) | Action::Mouse(_) | Action::Resize(..) | Action::NoOp => {
                 let mut app = self.app.lock().await;
@@ -1379,6 +1621,7 @@ impl EventLoop {
         }
 
         let execution_time = start_time.elapsed();
+
         if execution_time.as_millis() > 10 {
             debug!("Action dispatch took {:.2}ms", execution_time.as_millis());
         }
