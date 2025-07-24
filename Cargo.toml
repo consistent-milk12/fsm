@@ -25,6 +25,7 @@ tracing-appender = "0.2.3"
 tracing-subscriber = { version = "0.3.19", features = ["chrono", "env-filter", "json", "serde", "serde_json"] }
 walkdir = "2.5.0"
 futures = "0.3.31"
+uuid = "1.17.0"
 
 [[bin]]
 name = "fs"
