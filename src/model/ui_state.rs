@@ -32,14 +32,14 @@ pub enum RedrawFlag {
 impl RedrawFlag {
     pub const fn bits(self) -> u8 {
         match self {
-            Self::Main => 0b00000001,         // Main file listing
-            Self::StatusBar => 0b00000010,    // Status/footer bar
-            Self::Overlay => 0b00000100,      // Active overlay/modal
-            Self::Notification => 0b00001000, // Notification area
-            Self::Command => 0b00010000,      // Command input area
-            Self::Sidebar => 0b00100000,      // Left sidebar/pane
-            Self::Preview => 0b01000000,      // Preview pane
-            Self::All => 0b01111111,          // Full UI redraw
+            Self::Main => 0b0000_0001,         // Main file listing
+            Self::StatusBar => 0b0000_0010,    // Status/footer bar
+            Self::Overlay => 0b0000_0100,      // Active overlay/modal
+            Self::Notification => 0b0000_1000, // Notification area
+            Self::Command => 0b0001_0000,      // Command input area
+            Self::Sidebar => 0b0010_0000,      // Left sidebar/pane
+            Self::Preview => 0b0100_0000,      // Preview pane
+            Self::All => 0b0111_1111,          // Full UI redraw
         }
     }
 }
