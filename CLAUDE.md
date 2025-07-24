@@ -34,12 +34,13 @@ After ANY source edit:
 
 ## Features
 ✅ Async dir navigation, incremental loading
-✅ File ops: create/delete with input prompts  
+✅ File ops: create/delete/copy/move/rename with input prompts  
 ✅ Search: filename(/) + content(:search) with ripgrep+ANSI
 ✅ Vim command mode(:) with args, no Ctrl+P overlay
-✅ Input prompts: modal n/f key bindings
+✅ Input prompts: modal n/f/c/m/r key bindings
 ✅ Caching: Moka LRU, background metadata
 ✅ UI: ObjectTable, footer hotkeys, overlays
+✅ Background file operations: async copy/move/rename via FileOperationTask
 
 ## Key Implementations
 - **Search**: Raw ripgrep --color=always, ansi-to-tui parsing, Shift+Enter file jump
@@ -47,6 +48,8 @@ After ANY source edit:
 - **State**: UIState.Command mode, InputPromptType enum, input_prompt_type field
 - **Actions**: ShowInputPrompt/SubmitInputPrompt, Box::pin() for async recursion
 - **UI**: Integrated command line, hotkey footer, centered modals
+- **File Operations**: Copy/Move/Rename actions, FileOperationTask background processing
+- **Task System**: TaskResult enum (Legacy + FileOperationComplete variants)
 
 ## Recent Fixes
 - Ripgrep: JSON→raw output, ANSI colors preserved
@@ -56,6 +59,10 @@ After ANY source edit:
 - Command unification: removed Ctrl+P, vim-style only
 - :grep overlay: Fixed DirectContentSearch to activate ContentSearch overlay
 - Line jumping: OpenFile(PathBuf, Option<u32>), VS Code --goto file:line support
+- File operations: Complete copy/move/rename implementation with c/m/r keys
+- TaskResult enum: Migrated from struct to enum with Legacy + FileOperationComplete variants
+- AppError Clone: Manual implementation for non-Clone fields (io::Error)
+- Async recursion: Box::pin() for recursive copy_directory function
 
 ## Technical Notes
 - Action enum: no PartialEq (RawSearchResult.Text)
@@ -72,6 +79,39 @@ Run: `RUST_LOG=debug cargo run`
 
 ## Recipes
 **recipe git**: 1.git status 2.For each modified/untracked file: git add {file} → analyze git diff → git commit {msg} → git push
+
+## Design Documentation Protocol
+**MANDATORY**: All significant feature development MUST follow this workflow:
+
+### 1. Planning Phase (Before Implementation)
+- Analysis → Planning → Implementation workflow  
+- Use @Design.md for comprehensive feature planning
+- Document tiered priority system (TIER 1 = Critical, TIER 2 = High Impact, etc.)
+- Break features into phases with clear success criteria
+- Include architecture changes, dependencies, and technical considerations
+
+### 2. Implementation Phase (During Development)  
+- Document detailed implementation workflow in Design.md
+- Include actual code snippets and step-by-step changes made
+- Record technical challenges encountered and solutions
+- Update success criteria as features are completed [x] vs [ ]
+
+### 3. Completion Phase (After Implementation)
+- Add comprehensive "IMPLEMENTATION COMPLETE" section to Design.md
+- Document workflow summary with 8 key implementation steps:
+  1. Action System Extension (new enums/variants)
+  2. Background Task System (new task types)  
+  3. Data Structure Extensions (TaskResult, etc.)
+  4. Key Bindings Implementation
+  5. Input Processing Logic
+  6. Handler Implementation  
+  7. Core Operation Logic
+  8. Completion/Error Handling
+- Include Technical Challenges Resolved section
+- Document Architecture Integration details
+- Describe User Experience workflow
+
+**This chronology creates permanent project memory and enables efficient future development.**
 
 ## Update Instructions
 - Update project instructions to show the default diff on terminal for user approval, don't use external editor
