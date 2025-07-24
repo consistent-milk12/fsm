@@ -221,6 +221,84 @@ impl AppError {
     }
 }
 
+// Manual Clone implementation to handle non-Clone fields
+impl Clone for AppError {
+    fn clone(&self) -> Self {
+        match self {
+            AppError::Io(e) => AppError::Io(io::Error::new(e.kind(), e.to_string())),
+            AppError::FsMetadata { path, source } => AppError::FsMetadata {
+                path: path.clone(),
+                source: io::Error::new(source.kind(), source.to_string()),
+            },
+            AppError::PermissionDenied(path) => AppError::PermissionDenied(path.clone()),
+            AppError::NotFound(path) => AppError::NotFound(path.clone()),
+            AppError::Cache(msg) => AppError::Cache(msg.clone()),
+            AppError::Config(e) => AppError::Other(format!("Config error: {e}")),
+            AppError::ConfigIo { path, source } => AppError::ConfigIo {
+                path: path.clone(),
+                source: io::Error::new(source.kind(), source.to_string()),
+            },
+            AppError::Serde(e) => AppError::Other(format!("Serde error: {e}")),
+            AppError::ExternalCmd { cmd, code, stderr } => AppError::ExternalCmd {
+                cmd: cmd.clone(),
+                code: *code,
+                stderr: stderr.clone(),
+            },
+            AppError::Ripgrep(msg) => AppError::Ripgrep(msg.clone()),
+            AppError::SearchFailed { path, reason } => AppError::SearchFailed {
+                path: path.clone(),
+                reason: reason.clone(),
+            },
+            AppError::FileOperationFailed {
+                operation,
+                path,
+                reason,
+            } => AppError::FileOperationFailed {
+                operation: operation.clone(),
+                path: path.clone(),
+                reason: reason.clone(),
+            },
+            AppError::NavigationFailed { path, reason } => AppError::NavigationFailed {
+                path: path.clone(),
+                reason: reason.clone(),
+            },
+            AppError::UiComponent { component, message } => AppError::UiComponent {
+                component: component.clone(),
+                message: message.clone(),
+            },
+            AppError::InvalidInput { field, message } => AppError::InvalidInput {
+                field: field.clone(),
+                message: message.clone(),
+            },
+            AppError::TaskFailed { task_id, reason } => AppError::TaskFailed {
+                task_id: *task_id,
+                reason: reason.clone(),
+            },
+            AppError::TaskTimeout {
+                task_type,
+                timeout_secs,
+            } => AppError::TaskTimeout {
+                task_type: task_type.clone(),
+                timeout_secs: *timeout_secs,
+            },
+            AppError::CacheOperation {
+                operation,
+                key,
+                reason,
+            } => AppError::CacheOperation {
+                operation: operation.clone(),
+                key: key.clone(),
+                reason: reason.clone(),
+            },
+            AppError::Cancelled => AppError::Cancelled,
+            AppError::Terminal(msg) => AppError::Terminal(msg.clone()),
+            AppError::Resize(msg) => AppError::Resize(msg.clone()),
+            AppError::Plugin(msg) => AppError::Plugin(msg.clone()),
+            AppError::Other(msg) => AppError::Other(msg.clone()),
+        }
+    }
+}
+
 // Allow conversion from `anyhow::Error` as fallback.
 impl From<anyhow::Error> for AppError {
     fn from(e: anyhow::Error) -> Self {
