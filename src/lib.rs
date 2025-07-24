@@ -450,6 +450,15 @@ pub mod tasks {
     /// - Memory-efficient streaming
     /// - Error resilience for inaccessible files
     pub mod size_task;
+
+    /// **File Operations Task** - Background file operations
+    ///
+    /// Handles file operations asynchronously to prevent UI blocking:
+    /// - Copy, move, rename operations
+    /// - Progress tracking for large files
+    /// - Cross-filesystem compatibility
+    /// - Error handling and recovery
+    pub mod file_ops_task;
 }
 
 // =============================================================================
