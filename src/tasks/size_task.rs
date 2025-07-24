@@ -9,7 +9,7 @@ use crate::controller::actions::Action;
 use crate::fs::object_info::ObjectInfo;
 use std::path::PathBuf;
 use tokio::sync::mpsc;
-use tracing::{error, info};
+use tracing::{info, warn};
 use walkdir::WalkDir;
 
 /// Spawns a Tokio task to calculate the recursive size and direct item count for a directory.
@@ -77,12 +77,12 @@ pub fn calculate_size_task(
                         info: object_info,
                     };
                     if let Err(e) = action_tx.send(action) {
-                        error!("Failed to send object info update: {}", e);
+                        warn!("Failed to send object info update: {}", e);
                     }
                 }
             }
             Err(e) => {
-                error!(
+                warn!(
                     "Failed to calculate directory size for {}: {}",
                     m_path.display(),
                     e

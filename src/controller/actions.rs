@@ -11,10 +11,14 @@ use crossterm::event::{KeyEvent, MouseEvent};
 use std::path::PathBuf;
 
 /// Type of input prompt to show
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InputPromptType {
     CreateFile,
     CreateDirectory,
+    Rename,
+    Search,
+    GoToPath,
+    Custom(String),
 }
 
 /// Represents a high-level action that the application can perform.
@@ -148,4 +152,10 @@ pub enum Action {
 
     /// Submit input prompt with user input.
     SubmitInputPrompt(String),
+
+    /// Rename selected entry.
+    RenameEntry(String),
+
+    /// Navigate to specified path.
+    GoToPath(String),
 }

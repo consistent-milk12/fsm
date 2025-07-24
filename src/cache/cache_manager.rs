@@ -20,11 +20,11 @@ use std::{
 };
 
 use moka::future::Cache;
-use serde::{Deserialize, Serialize};
+// Serde traits now imported via config module
 use thiserror::Error;
 use tracing::{debug, error, info, warn};
 
-use crate::{error::AppError, fs::object_info::ObjectInfo};
+use crate::{config::CacheConfig, error::AppError, fs::object_info::ObjectInfo};
 
 /// Compact string key for cache entries (uses Arc for cheap cloning)
 pub type ObjectKey = Arc<str>;
@@ -46,35 +46,8 @@ impl From<CacheError> for AppError {
     }
 }
 
-/// Cache configuration with sensible defaults
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CacheConfig {
-    /// Maximum number of entries
-    pub max_capacity: u64,
-    /// Time-to-live for entries
-    pub ttl: Duration,
-    /// Time-to-idle (evict if not accessed)
-    pub tti: Duration,
-    /// Maximum memory usage estimate (bytes)
-    pub max_memory_mb: u64,
-    /// Enable cache statistics
-    pub enable_stats: bool,
-    /// Number of shards for concurrent access (power of 2)
-    pub num_shards: usize,
-}
-
-impl Default for CacheConfig {
-    fn default() -> Self {
-        Self {
-            max_capacity: 32_768,
-            ttl: Duration::from_secs(1800), // 30 minutes
-            tti: Duration::from_secs(600),  // 10 minutes
-            max_memory_mb: 256,
-            enable_stats: true,
-            num_shards: 64, // Good default for concurrent access
-        }
-    }
-}
+// Cache configuration is now centralized in src/config.rs
+// This module re-exports it for backward compatibility
 
 /// Cache statistics for monitoring and debugging
 #[derive(Debug, Default)]
@@ -309,7 +282,7 @@ impl ObjectInfoCache {
                 match load_result {
                     Ok(info) => Ok(CacheEntry::Success(info)),
                     Err(e) => {
-                        error!("Cache loader failed for key '{}': {}", key_clone, e);
+                        warn!("Cache loader failed for key '{}': {}", key_clone, e);
                         // Don't cache the failure - let it be retried
                         Err(e)
                     }
@@ -487,7 +460,7 @@ impl ObjectInfoCache {
 
         // Warn if hit rate is low
         if stats.hit_rate() < 0.5 && stats.hits + stats.misses > 1000 {
-            warn!(
+            info!(
                 "Low cache hit rate: {:.2}% (consider increasing cache size or TTL)",
                 stats.hit_rate() * 100.0
             );
@@ -495,7 +468,7 @@ impl ObjectInfoCache {
 
         // Warn if memory usage is high
         if memory_usage_mb > self.config.max_memory_mb {
-            warn!(
+            info!(
                 "Cache memory usage ({} MB) exceeds configured limit ({} MB)",
                 memory_usage_mb, self.config.max_memory_mb
             );
@@ -503,7 +476,7 @@ impl ObjectInfoCache {
 
         // Warn if exception rate is high
         if stats.exception_rate() > 0.1 && stats.loads > 100 {
-            warn!(
+            info!(
                 "High cache load exception rate: {:.2}%",
                 stats.exception_rate() * 100.0
             );

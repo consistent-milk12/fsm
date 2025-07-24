@@ -11,7 +11,7 @@ use std::ffi::OsStr;
 use std::fs::{FileType, Metadata};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tracing::{debug, warn};
+use tracing::{debug, info};
 
 /// Enum for object type, matching the table logic.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -125,7 +125,7 @@ impl ObjectInfo {
         };
 
         let modified: SystemTime = metadata.modified().unwrap_or_else(|e| {
-            warn!("Failed to get modified time for {:?}: {}", light.path, e);
+            info!("Failed to get modified time for {:?}: {}", light.path, e);
             UNIX_EPOCH
         });
 

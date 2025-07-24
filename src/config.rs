@@ -22,7 +22,7 @@ use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::Duration;
-use tracing::{info, warn};
+use tracing::info;
 
 /// App theme (color scheme) selector.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -47,14 +47,44 @@ pub enum Keymap {
     Custom(String),
 }
 
+/// Cache configuration with sensible defaults - embedded in main Config
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CacheConfig {
+    /// Maximum number of entries
+    pub max_capacity: u64,
+    /// Time-to-live for entries
+    #[serde(with = "humantime_serde")]
+    pub ttl: Duration,
+    /// Time-to-idle (evict if not accessed)
+    #[serde(with = "humantime_serde")]
+    pub tti: Duration,
+    /// Maximum memory usage estimate (MB)
+    pub max_memory_mb: u64,
+    /// Enable cache statistics
+    pub enable_stats: bool,
+    /// Number of shards for concurrent access (power of 2)
+    pub num_shards: usize,
+}
+
+impl Default for CacheConfig {
+    fn default() -> Self {
+        Self {
+            max_capacity: 32_768,
+            ttl: Duration::from_secs(1800), // 30 minutes
+            tti: Duration::from_secs(600),  // 10 minutes
+            max_memory_mb: 256,
+            enable_stats: true,
+            num_shards: 64, // Good default for concurrent access
+        }
+    }
+}
+
 /// Main configuration struct for the application.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub theme: Theme,
     pub keymap: Keymap,
-    pub cache_entries: u64,
-    #[serde(with = "humantime_serde")]
-    pub cache_ttl: Duration,
+    pub cache: CacheConfig, // Centralized cache configuration
     pub show_hidden: bool,
     pub editor_cmd: String,
     // Add more config fields here as needed
@@ -65,8 +95,7 @@ impl Default for Config {
         Config {
             theme: Theme::Default,
             keymap: Keymap::Standard,
-            cache_entries: 5000,
-            cache_ttl: Duration::from_secs(600),
+            cache: CacheConfig::default(), // Use centralized cache config
             show_hidden: false,
             editor_cmd: "nvim".to_string(),
         }
@@ -86,7 +115,7 @@ impl Config {
             let cfg: Config = toml::from_str(&text)?;
             Ok(cfg)
         } else {
-            warn!(
+            info!(
                 "No config file found at {}, using default configuration. Creating it now.",
                 path.display()
             );

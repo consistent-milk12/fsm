@@ -30,7 +30,7 @@ impl StatusBar {
                 format!("🔥 Error: {err}"),
                 Style::default().fg(theme::RED).bold(),
             )
-        } else if let Some(ref status) = app.last_status {
+        } else if let Some(ref status) = app.ui.last_status {
             (status.clone(), Style::default().fg(theme::GREEN))
         } else {
             ("Ready".to_string(), Style::default().fg(theme::COMMENT))

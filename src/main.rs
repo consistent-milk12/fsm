@@ -23,7 +23,7 @@ use tokio::{
     signal,
     sync::{Mutex, MutexGuard, Notify, mpsc},
 };
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 use fsm::{
     Logger,
@@ -31,9 +31,13 @@ use fsm::{
     config::Config,
     controller::{
         actions::Action,
-        event_loop::{Controller, TaskResult},
+        event_loop::{EventLoop, TaskResult},
     },
-    model::{app_state::AppState, fs_state::FSState, ui_state::UIState},
+    model::{
+        app_state::AppState,
+        fs_state::FSState,
+        ui_state::{RedrawFlag, UIState},
+    },
     view::ui::View,
 };
 
@@ -58,7 +62,7 @@ async fn main() -> Result<()> {
 /// Application runtime configuration and state
 struct App {
     terminal: AppTerminal,
-    controller: Controller,
+    controller: EventLoop,
     state: Arc<Mutex<AppState>>,
     shutdown: Arc<Notify>,
     last_memory_check: Instant,
@@ -77,11 +81,11 @@ impl App {
         let dir_handle = tokio::spawn(tokio::fs::canonicalize("."));
 
         let config = Arc::new(config_handle.await?.unwrap_or_else(|e| {
-            warn!("Failed to load config, using defaults: {}", e);
+            info!("Failed to load config, using defaults: {}", e);
             Config::default()
         }));
 
-        let cache = Arc::new(ObjectInfoCache::default());
+        let cache = Arc::new(ObjectInfoCache::with_config(config.cache.clone()));
         let fs_state = FSState::default();
         let ui_state = UIState::default();
 
@@ -89,10 +93,15 @@ impl App {
         let (action_tx, action_rx) = mpsc::unbounded_channel::<Action>();
 
         let app_state = Arc::new(Mutex::new(AppState::new(
-            config, cache, fs_state, ui_state, task_tx, action_tx,
+            config,
+            cache,
+            fs_state,
+            ui_state,
+            task_tx.clone(),
+            action_tx,
         )));
 
-        let controller = Controller::new(app_state.clone(), task_rx, action_rx);
+        let controller = EventLoop::new(app_state.clone(), task_rx, action_rx);
         let shutdown = Arc::new(Notify::new());
 
         let current_dir: PathBuf = dir_handle
@@ -102,7 +111,7 @@ impl App {
         {
             let mut state = app_state.lock().await;
             state.enter_directory(current_dir).await;
-            state.redraw = true;
+            state.ui.request_redraw(RedrawFlag::All); // Use UI state for redraw management
         }
 
         info!("Application initialization complete");
@@ -167,7 +176,7 @@ impl App {
     async fn render(&mut self) -> Result<()> {
         let mut state: MutexGuard<'_, AppState> = self.state.lock().await;
 
-        if state.redraw {
+        if state.ui.needs_redraw() {
             let start = Instant::now();
 
             self.terminal
@@ -176,13 +185,13 @@ impl App {
                 })
                 .context("Failed to draw terminal")?;
 
-            state.redraw = false;
+            state.ui.clear_redraw();
 
             // Monitor render performance - log slow renders that could impact UX
             let duration = start.elapsed();
             if duration.as_millis() > 16 {
                 // > 16ms = < 60fps
-                warn!(
+                info!(
                     "Slow render detected: {}ms (target: <16ms for 60fps)",
                     duration.as_millis()
                 );
@@ -212,13 +221,13 @@ impl App {
                     // Log memory warnings based on available memory
                     if available_mb < 100 {
                         // Less than 100MB available
-                        error!(
+                        warn!(
                             "Critical memory usage: Only {}MB available ({}% used)",
                             available_mb, used_percent as u32
                         );
                     } else if available_mb < 500 {
                         // Less than 500MB available
-                        warn!(
+                        info!(
                             "High memory usage: {}MB available ({}% used)",
                             available_mb, used_percent as u32
                         );
@@ -267,7 +276,7 @@ impl App {
             #[cfg(not(unix))]
             {
                 if let Err(e) = signal::ctrl_c().await {
-                    error!("Failed to listen for Ctrl+C: {}", e);
+                    warn!("Failed to listen for Ctrl+C: {}", e);
                     return;
                 }
                 info!("Received Ctrl+C signal");
@@ -281,7 +290,7 @@ impl App {
 impl Drop for App {
     fn drop(&mut self) {
         if let Err(e) = cleanup_terminal(&mut self.terminal) {
-            error!("Failed to cleanup terminal: {}", e);
+            warn!("Failed to cleanup terminal: {}", e);
         }
     }
 }
@@ -323,7 +332,7 @@ fn setup_panic_handler() {
         let _ = disable_raw_mode();
         let _ = execute!(io::stderr(), LeaveAlternateScreen);
 
-        error!("Application panicked: {}", panic_info);
+        warn!("Application panicked: {}", panic_info);
         original_hook(panic_info);
     }));
 }

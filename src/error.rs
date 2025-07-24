@@ -65,9 +65,54 @@ pub enum AppError {
     #[error("Ripgrep search error: {0}")]
     Ripgrep(String),
 
-    /// Async task failure or join error.
-    #[error("Async task failed: {0}")]
-    Task(String),
+    /// Search operation specific errors
+    #[error("Search failed in {path:?}: {reason}")]
+    SearchFailed { path: PathBuf, reason: String },
+
+    /// File operation specific errors  
+    #[error("File operation '{operation}' failed on {path:?}: {reason}")]
+    FileOperationFailed {
+        operation: String, // "create", "delete", "rename", etc.
+        path: PathBuf,
+        reason: String,
+    },
+
+    /// Directory navigation errors
+    #[error("Navigation failed: cannot access {path:?}: {reason}")]
+    NavigationFailed { path: PathBuf, reason: String },
+
+    /// UI component errors
+    #[error("UI component error in {component}: {message}")]
+    UiComponent {
+        component: String, // "ObjectTable", "SearchOverlay", etc.
+        message: String,
+    },
+
+    /// Input validation errors
+    #[error("Invalid input: {field} - {message}")]
+    InvalidInput {
+        field: String, // "filename", "search_pattern", etc.
+        message: String,
+    },
+
+    /// Task management errors  
+    #[error("Task {task_id} failed: {reason}")]
+    TaskFailed { task_id: u64, reason: String },
+
+    /// Background task timeout
+    #[error("Task {task_type} timed out after {timeout_secs}s")]
+    TaskTimeout {
+        task_type: String,
+        timeout_secs: u64,
+    },
+
+    /// Cache operation errors (more specific than generic Cache)
+    #[error("Cache operation failed: {operation} on key '{key}': {reason}")]
+    CacheOperation {
+        operation: String, // "get", "insert", "evict", etc.
+        key: String,
+        reason: String,
+    },
 
     /// Operation cancelled by user or system.
     #[error("Operation was cancelled")]
@@ -94,6 +139,85 @@ impl AppError {
     /// Attach extra context to an error.
     pub fn with_context<S: Into<String>>(self, ctx: S) -> AppError {
         AppError::Other(format!("{}: {}", ctx.into(), self))
+    }
+
+    /// Create a search failure error
+    pub fn search_failed<P: Into<PathBuf>, S: Into<String>>(path: P, reason: S) -> Self {
+        AppError::SearchFailed {
+            path: path.into(),
+            reason: reason.into(),
+        }
+    }
+
+    /// Create a file operation failure error
+    pub fn file_operation_failed<S1, P, S2>(operation: S1, path: P, reason: S2) -> Self
+    where
+        S1: Into<String>,
+        P: Into<PathBuf>,
+        S2: Into<String>,
+    {
+        AppError::FileOperationFailed {
+            operation: operation.into(),
+            path: path.into(),
+            reason: reason.into(),
+        }
+    }
+
+    /// Create a navigation failure error
+    pub fn navigation_failed<P: Into<PathBuf>, S: Into<String>>(path: P, reason: S) -> Self {
+        AppError::NavigationFailed {
+            path: path.into(),
+            reason: reason.into(),
+        }
+    }
+
+    /// Create a UI component error
+    pub fn ui_component_error<S1: Into<String>, S2: Into<String>>(
+        component: S1,
+        message: S2,
+    ) -> Self {
+        AppError::UiComponent {
+            component: component.into(),
+            message: message.into(),
+        }
+    }
+
+    /// Create an input validation error
+    pub fn invalid_input<S1: Into<String>, S2: Into<String>>(field: S1, message: S2) -> Self {
+        AppError::InvalidInput {
+            field: field.into(),
+            message: message.into(),
+        }
+    }
+
+    /// Create a task failure error
+    pub fn task_failed<S: Into<String>>(task_id: u64, reason: S) -> Self {
+        AppError::TaskFailed {
+            task_id,
+            reason: reason.into(),
+        }
+    }
+
+    /// Create a task timeout error
+    pub fn task_timeout<S: Into<String>>(task_type: S, timeout_secs: u64) -> Self {
+        AppError::TaskTimeout {
+            task_type: task_type.into(),
+            timeout_secs,
+        }
+    }
+
+    /// Create a cache operation error
+    pub fn cache_operation_failed<S1, S2, S3>(operation: S1, key: S2, reason: S3) -> Self
+    where
+        S1: Into<String>,
+        S2: Into<String>,
+        S3: Into<String>,
+    {
+        AppError::CacheOperation {
+            operation: operation.into(),
+            key: key.into(),
+            reason: reason.into(),
+        }
     }
 }
 

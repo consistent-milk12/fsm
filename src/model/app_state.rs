@@ -24,7 +24,7 @@ use crate::controller::event_loop::TaskResult;
 use crate::fs::dir_scanner;
 use crate::fs::object_info::ObjectInfo;
 use crate::model::fs_state::{FSState, PaneState};
-use crate::model::ui_state::UIState;
+use crate::model::ui_state::{RedrawFlag, UIState};
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Error;
@@ -33,7 +33,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::process::Command;
 use tokio::sync::mpsc;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 /// Represents a pending or running asynchronous task (search, copy, delete, etc.).
 #[derive(Debug, Clone)]
@@ -51,27 +51,33 @@ pub struct TaskInfo {
     pub message: Option<String>,
 }
 
-/// Core application state struct, designed for fast, extensible power-user features.
+/// Core application state struct - focused on business logic and data management
 pub struct AppState {
+    // --- Core Configuration and Services ---
     pub config: Arc<Config>,
     pub cache: Arc<ObjectInfoCache>,
+
+    // --- UI and Filesystem State ---
     pub ui: UIState,
     pub fs: FSState,
+
+    // --- Communication Channels ---
     pub task_tx: mpsc::UnboundedSender<TaskResult>,
     pub action_tx: mpsc::UnboundedSender<Action>,
-    pub redraw: bool,
+
+    // --- Business Logic State ---
+    /// Marked files/directories by path for batch operations
     pub marked: HashSet<PathBuf>,
+    /// Application history for undo/redo operations
     pub history: VecDeque<AppHistoryEvent>,
+    /// Plugin registry and information
     pub plugins: HashMap<String, PluginInfo>,
+    /// Active background tasks
     pub tasks: HashMap<u64, TaskInfo>,
+    /// Last error message (distinct from UI notifications)
     pub last_error: Option<String>,
-    pub last_status: Option<String>,
+    /// Application startup time for analytics
     pub started_at: Instant,
-    pub search_results: Vec<ObjectInfo>,
-    pub filename_search_results: Vec<ObjectInfo>,
-    pub rich_search_results: Vec<String>,
-    pub raw_search_results: Option<crate::tasks::search_task::RawSearchResult>,
-    pub raw_search_selected: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -103,44 +109,44 @@ impl AppState {
         action_tx: mpsc::UnboundedSender<Action>,
     ) -> Self {
         Self {
+            // Core Configuration and Services
             config,
             cache,
+
+            // UI and Filesystem State
             ui,
             fs,
+
+            // Communication Channels
             task_tx,
             action_tx,
-            redraw: true,
+
+            // Business Logic State
             marked: HashSet::new(),
             history: VecDeque::new(),
             plugins: HashMap::new(),
             tasks: HashMap::new(),
             last_error: None,
-            last_status: None,
             started_at: Instant::now(),
-            search_results: Vec::new(),
-            filename_search_results: Vec::new(),
-            rich_search_results: Vec::new(),
-            raw_search_results: None,
-            raw_search_selected: 0,
         }
     }
 
     /// Mark a file or directory by its canonical path for batch operations.
     pub fn mark_entry(&mut self, path: impl Into<PathBuf>) {
         self.marked.insert(path.into());
-        self.redraw = true;
+        self.ui.request_redraw(RedrawFlag::All); // Use UI state for redraw management
     }
 
     /// Unmark a previously marked entry.
     pub fn unmark_entry(&mut self, path: &Path) {
         self.marked.remove(path);
-        self.redraw = true;
+        self.ui.request_redraw(RedrawFlag::All);
     }
 
     /// Clear all marked entries.
     pub fn clear_marks(&mut self) {
         self.marked.clear();
-        self.redraw = true;
+        self.ui.request_redraw(RedrawFlag::All);
     }
 
     /// Add a reversible event to the history stack (for undo/redo).
@@ -149,20 +155,20 @@ impl AppState {
         if self.history.len() > 128 {
             self.history.pop_front();
         }
-        self.redraw = true;
+        self.ui.request_redraw(RedrawFlag::All);
     }
 
     /// Register a plugin for later use.
     pub fn register_plugin(&mut self, info: PluginInfo) {
         self.plugins.insert(info.name.clone(), info);
-        self.redraw = true;
+        self.ui.request_redraw(RedrawFlag::All);
     }
 
     /// Add or update a running/pending async task.
     pub fn add_task(&mut self, task: TaskInfo) {
         info!("Adding task: {}", task.description);
         self.tasks.insert(task.task_id, task);
-        self.redraw = true;
+        self.ui.request_redraw(RedrawFlag::All);
     }
 
     /// Update task completion/result.
@@ -171,26 +177,26 @@ impl AppState {
             info!("Completing task: {}", task.description);
             task.is_completed = true;
             task.result = result;
-            self.redraw = true;
+            self.ui.request_redraw(RedrawFlag::All);
         }
     }
 
     /// Set the latest error message (display in UI).
     pub fn set_error(&mut self, msg: impl Into<String>) {
         let msg_str = msg.into();
-        error!("Setting error: {}", msg_str);
+        warn!("Setting error: {}", msg_str);
         self.last_error = Some(msg_str.clone());
         self.ui.show_error(msg_str);
-        self.redraw = true;
+        self.ui.request_redraw(RedrawFlag::All);
     }
 
     /// Set the latest info/status message (display in UI).
     pub fn set_status(&mut self, msg: impl Into<String>) {
         let msg_str = msg.into();
         info!("Setting status: {}", msg_str);
-        self.last_status = Some(msg_str.clone());
+        self.ui.last_status = Some(msg_str.clone());
         self.ui.show_info(msg_str);
-        self.redraw = true;
+        self.ui.request_redraw(RedrawFlag::All);
     }
 
     /// Show a success notification
@@ -198,22 +204,22 @@ impl AppState {
         let success_msg = msg.into();
         self.ui.show_success(success_msg.clone());
         info!("Success: {}", success_msg);
-        self.redraw = true;
+        self.ui.request_redraw(RedrawFlag::All);
     }
 
     /// Show a warning notification
     pub fn show_warning(&mut self, msg: impl Into<String>) {
         let warning_msg = msg.into();
         self.ui.show_warning(warning_msg.clone());
-        warn!("Warning: {}", warning_msg);
-        self.redraw = true;
+        info!("Warning: {}", warning_msg);
+        self.ui.request_redraw(RedrawFlag::All);
     }
 
     /// Clear error and status messages.
     pub fn clear_msgs(&mut self) {
         self.last_error = None;
-        self.last_status = None;
-        self.redraw = true;
+        self.ui.last_status = None;
+        self.ui.request_redraw(RedrawFlag::All);
     }
 
     /// Navigate to a new directory, updating the active pane.
@@ -223,7 +229,7 @@ impl AppState {
             Ok(p) => p,
             Err(e) => {
                 self.set_error(format!("Invalid path: {}: {}", path.display(), e));
-                self.redraw = true;
+                self.ui.request_redraw(RedrawFlag::All);
                 return;
             }
         };
@@ -231,7 +237,7 @@ impl AppState {
         let current_pane = self.fs.active_pane_mut();
         current_pane.cwd = canonical_path.clone();
         current_pane.is_loading = true;
-        self.redraw = true;
+        self.ui.request_redraw(RedrawFlag::All);
 
         // Use streaming directory scan for better responsiveness
         self.enter_directory_streaming(canonical_path).await;
@@ -244,10 +250,10 @@ impl AppState {
             info!("Going to parent directory: {}", parent.display());
             self.enter_directory(parent.to_path_buf()).await;
         } else {
-            warn!("Already at root, cannot go to parent.");
+            info!("Already at root, cannot go to parent.");
             self.set_status("Already at root.");
         }
-        self.redraw = true;
+        self.ui.request_redraw(RedrawFlag::All);
     }
 
     pub async fn reload_directory(&mut self) {
@@ -281,7 +287,7 @@ impl AppState {
             }
         });
 
-        self.redraw = true;
+        self.ui.request_redraw(RedrawFlag::All);
     }
 
     /// Enter the currently selected directory or open the file.
@@ -301,7 +307,7 @@ impl AppState {
             }
         }
 
-        self.redraw = true;
+        self.ui.request_redraw(RedrawFlag::All);
     }
 
     /// Open a file with external editor (VS Code)
@@ -408,19 +414,113 @@ impl AppState {
         }
     }
 
+    /// Rename the currently selected entry
+    pub async fn rename_selected_entry(&mut self, new_name: String) {
+        let active_pane = self.fs.active_pane();
+        if let Some(selected_idx) = self.ui.selected
+            && let Some(selected_entry) = active_pane.entries.get(selected_idx)
+        {
+            let old_path = &selected_entry.path;
+            let parent_dir = old_path.parent().unwrap_or(&active_pane.cwd);
+            let new_path = parent_dir.join(&new_name);
+
+            if let Err(e) = tokio::fs::rename(old_path, &new_path).await {
+                self.set_error(format!("Failed to rename to '{new_name}': {e}"));
+            } else {
+                self.show_success(format!("Renamed to '{new_name}'"));
+                self.reload_directory().await;
+            }
+        } else {
+            self.set_error("No entry selected for renaming".to_string());
+        }
+    }
+
+    /// Navigate to the specified path
+    pub async fn navigate_to_path(&mut self, path_str: String) {
+        let path = PathBuf::from(path_str.trim());
+
+        // Expand tilde for home directory
+        let expanded_path = if path.starts_with("~") {
+            if let Some(home) = directories::UserDirs::new().map(|u| u.home_dir().to_path_buf()) {
+                home.join(path.strip_prefix("~").unwrap_or(&path))
+            } else {
+                path
+            }
+        } else if path.is_relative() {
+            // Make relative paths absolute from current directory
+            self.fs.active_pane().cwd.join(path)
+        } else {
+            path
+        };
+
+        if expanded_path.exists() {
+            if expanded_path.is_dir() {
+                info!("Navigating to directory: {:?}", expanded_path);
+                self.enter_directory(expanded_path).await;
+            } else {
+                self.set_error(format!(
+                    "Path is not a directory: {}",
+                    expanded_path.display()
+                ));
+            }
+        } else {
+            self.set_error(format!("Path does not exist: {}", expanded_path.display()));
+        }
+    }
+
     /// Perform a file name search (recursive, background task)
     pub fn filename_search(&mut self, pattern: String) {
-        if pattern.trim().is_empty() {
+        let trimmed_pattern = pattern.trim();
+        if trimmed_pattern.is_empty() {
+            debug!("Filename search called with empty pattern, ignoring");
             return;
         }
 
-        // Clear previous results and start new search
-        self.filename_search_results.clear();
+        info!(
+            "Starting filename search for pattern: '{}'",
+            trimmed_pattern
+        );
 
-        let task_id = self.tasks.len() as u64;
+        // Cancel any existing filename search tasks to prevent conflicts
+        let existing_searches: Vec<u64> = self
+            .tasks
+            .iter()
+            .filter(|(_, task)| task.description.contains("Filename search") && !task.is_completed)
+            .map(|(id, _)| *id)
+            .collect();
+
+        if !existing_searches.is_empty() {
+            info!(
+                "Cancelling {} existing filename search tasks: {:?}",
+                existing_searches.len(),
+                existing_searches
+            );
+            for task_id in existing_searches {
+                if let Some(task) = self.tasks.get_mut(&task_id) {
+                    task.is_completed = true;
+                    task.result = Some("Cancelled by new search".to_string());
+                }
+            }
+        }
+
+        // Clear previous results and start new search
+        let previous_results_count = self.ui.filename_search_results.len();
+        self.ui.filename_search_results.clear();
+        if previous_results_count > 0 {
+            debug!("Cleared {} previous search results", previous_results_count);
+        }
+
+        // Generate unique task ID (use timestamp + random component to avoid collisions)
+        let task_id = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+
+        debug!("Generated task ID {} for filename search", task_id);
+
         let task = TaskInfo {
             task_id,
-            description: format!("Filename search for '{pattern}'"),
+            description: format!("Filename search for '{trimmed_pattern}'"),
             started_at: Instant::now(),
             is_completed: false,
             result: None,
@@ -434,15 +534,22 @@ impl AppState {
 
         // Start background filename search task
         let current_dir = self.fs.active_pane().cwd.clone();
+        info!(
+            "Launching filename search task {} in directory: {}",
+            task_id,
+            current_dir.display()
+        );
+
         crate::tasks::filename_search_task::filename_search_task(
             task_id,
-            pattern,
+            trimmed_pattern.to_string(),
             current_dir,
             self.task_tx.clone(),
             self.action_tx.clone(),
         );
 
-        self.redraw = true;
+        self.ui.request_redraw(RedrawFlag::All);
+        debug!("Filename search task {} initiated successfully", task_id);
     }
 
     /// Start a content search using ripgrep
@@ -451,8 +558,8 @@ impl AppState {
             return;
         }
 
-        self.search_results.clear();
-        self.rich_search_results.clear();
+        self.ui.search_results.clear();
+        self.ui.rich_search_results.clear();
         self.ui.last_query = Some(pattern.clone());
 
         // Keep the ContentSearch overlay active and show search state
@@ -493,7 +600,7 @@ impl AppState {
                 info.path.display(),
                 info.modified.format("%Y-%m-%d")
             );
-            self.redraw = true;
+            self.ui.request_redraw(RedrawFlag::All);
         }
     }
 
@@ -512,7 +619,7 @@ impl AppState {
                 .sort_by(|a, b| b.modified.cmp(&a.modified)),
             _ => {}
         }
-        self.redraw = true;
+        self.ui.request_redraw(RedrawFlag::All);
     }
 
     pub fn filter_entries(&mut self, filter_criteria: &str) {
@@ -524,7 +631,7 @@ impl AppState {
             .into_iter()
             .filter(|entry| entry.name.contains(filter_criteria))
             .collect();
-        self.redraw = true;
+        self.ui.request_redraw(RedrawFlag::All);
     }
 }
 
@@ -540,9 +647,8 @@ impl std::fmt::Debug for AppState {
             .field("tasks", &self.tasks)
             .field("plugins", &self.plugins)
             .field("last_error", &self.last_error)
-            .field("last_status", &self.last_status)
+            .field("last_status", &self.ui.last_status)
             .field("started_at", &self.started_at)
-            .field("redraw", &self.redraw)
             .finish()
     }
 }

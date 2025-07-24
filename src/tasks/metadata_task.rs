@@ -9,7 +9,7 @@ use crate::controller::actions::Action;
 use crate::fs::object_info::{LightObjectInfo, ObjectInfo};
 use std::path::PathBuf;
 use tokio::sync::mpsc;
-use tracing::{debug, warn};
+use tracing::{debug, info};
 
 /// Spawn a background task to load full metadata for an entry
 pub fn load_metadata_task(
@@ -28,7 +28,7 @@ pub fn load_metadata_task(
                 });
             }
             Err(e) => {
-                warn!("Failed to load metadata for {:?}: {}", parent_dir, e);
+                info!("Failed to load metadata for {:?}: {}", parent_dir, e);
             }
         }
     });
@@ -67,7 +67,7 @@ pub fn batch_load_metadata_task(
 
                 Err(e) => {
                     debug!("Failed to load metadata for {:?}: {}", light_info_path, e);
-                    warn!("Failed to load metadata for {:?}: {}", parent_dir, e);
+                    info!("Failed to load metadata for {:?}: {}", parent_dir, e);
                 }
             }
 

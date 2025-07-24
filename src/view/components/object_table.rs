@@ -10,7 +10,10 @@
 
 use crate::{
     model::app_state::AppState,
-    view::{icons, theme},
+    view::{
+        components::command_completion::{CommandCompletion, CompletionConfig},
+        icons, theme,
+    },
 };
 use ratatui::{
     Frame,
@@ -26,10 +29,15 @@ impl ObjectTable {
     pub fn render(frame: &mut Frame<'_>, app: &mut AppState, area: Rect) {
         // Split the area into table, command line (if active), and footer
         let constraints = if app.ui.is_in_command_mode() {
+            // Use new completion system to calculate required height
+            let config = CompletionConfig::default();
+            let command_area_height =
+                CommandCompletion::calculate_required_height(&app.ui.command_palette, &config);
+
             vec![
-                Constraint::Fill(1),   // Table area
-                Constraint::Length(1), // Command line area
-                Constraint::Length(1), // Footer area
+                Constraint::Fill(1),                     // Table area
+                Constraint::Length(command_area_height), // Command line area (dynamic)
+                Constraint::Length(1),                   // Footer area
             ]
         } else {
             vec![
@@ -151,9 +159,10 @@ impl ObjectTable {
 
         frame.render_stateful_widget(table, table_area, &mut table_state);
 
-        // Render command line if in command mode
+        // Render command line if in command mode using new completion system
         if let Some(cmd_area) = command_area {
-            Self::render_command_line(frame, app, cmd_area);
+            let config = CompletionConfig::default();
+            CommandCompletion::render_command_interface(frame, app, cmd_area, &config);
         }
 
         // Render footer with hotkeys
@@ -164,31 +173,19 @@ impl ObjectTable {
         pane.table_state = table_state;
     }
 
-    /// Renders the vim-style command line for command input
-    fn render_command_line(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
-        let input = &app.ui.command_palette.input;
-        let command_text = format!(":{input}");
-
-        let command_line = Paragraph::new(command_text).style(
-            Style::default()
-                .bg(theme::BACKGROUND)
-                .fg(theme::PURPLE)
-                .add_modifier(Modifier::BOLD),
-        );
-
-        frame.render_widget(command_line, area);
-    }
+    // Command line rendering is now handled by the dedicated CommandCompletion module
 
     /// Renders the footer bar with hotkey information using dark purple theme
     fn render_footer(frame: &mut Frame<'_>, area: Rect) {
-        // Create hotkey spans with dark purple styling
+        // Create hotkey spans with command-line focused styling
         let hotkeys = [
-            ("n", "New File"),
-            ("f", "New Folder"),
+            (":nf", "New File"),
+            (":nd", "New Folder"),
+            (":reload", "Reload Dir"),
             ("/", "File Search"),
-            (":", "Command Palette"),
+            (":grep", "Content Search"),
+            (":", "Command Mode"),
             ("h", "Help"),
-            ("backspace", "Go Back"),
         ];
 
         let mut spans = Vec::new();

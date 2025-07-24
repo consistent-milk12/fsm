@@ -16,7 +16,7 @@ pub struct SearchResultsOverlay;
 
 impl SearchResultsOverlay {
     pub fn render(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
-        let results = &app.search_results;
+        let results = &app.ui.search_results;
 
         let mut lines = vec![Line::from(Span::styled(
             "Search Results",

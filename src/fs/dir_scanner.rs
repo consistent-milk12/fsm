@@ -38,7 +38,7 @@ pub async fn scan_dir(path: &Path, show_hidden: bool) -> Result<Vec<ObjectInfo>,
 
             Err(e) => {
                 // Log the error but continue processing other entries
-                tracing::warn!("Failed to get ObjectInfo for {:?}: {}", entry_path, e);
+                tracing::info!("Failed to get ObjectInfo for {:?}: {}", entry_path, e);
             }
         }
     }
@@ -151,7 +151,7 @@ pub async fn scan_dir_streaming_with_background_metadata(
                     }
                 }
                 Err(e) => {
-                    tracing::warn!("Failed to get basic info for {:?}: {}", entry_path, e);
+                    tracing::info!("Failed to get basic info for {:?}: {}", entry_path, e);
                     let _ = tx.send(ScanUpdate::Error(e.to_string()));
                 }
             }
@@ -248,7 +248,7 @@ pub async fn scan_dir_streaming(
                     }
                 }
                 Err(e) => {
-                    tracing::warn!("Failed to get ObjectInfo for {:?}: {}", entry_path, e);
+                    tracing::info!("Failed to get ObjectInfo for {:?}: {}", entry_path, e);
                     let _ = tx.send(ScanUpdate::Error(e.to_string()));
                 }
             }

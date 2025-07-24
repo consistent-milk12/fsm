@@ -5,7 +5,7 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use tracing::Metadata;
+use tracing::{Event, Metadata, Subscriber};
 use tracing_appender::rolling::{RollingFileAppender, daily};
 use tracing_subscriber::{
     EnvFilter, Registry,
@@ -16,6 +16,7 @@ use tracing_subscriber::{
     },
     layer::SubscriberExt,
     prelude::*,
+    registry::LookupSpan,
 };
 
 pub struct Logger;
@@ -59,14 +60,14 @@ struct SeqFileMod;
 
 impl<S, N> FormatEvent<S, N> for SeqFileMod
 where
-    S: tracing::Subscriber + for<'lookup> tracing_subscriber::registry::LookupSpan<'lookup>,
+    S: Subscriber + for<'lookup> LookupSpan<'lookup>,
     N: for<'a> FormatFields<'a> + 'static,
 {
     fn format_event(
         &self,
         ctx: &FmtContext<'_, S, N>,
         mut w: Writer<'_>,
-        ev: &tracing::Event<'_>,
+        ev: &Event<'_>,
     ) -> std::fmt::Result {
         // monotonically‑increasing sequence number
         let seq: usize = SEQ

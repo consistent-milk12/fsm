@@ -18,7 +18,7 @@ use tokio::{
 
 use crate::controller::{actions::Action, event_loop::TaskResult};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct RawSearchResult {
     pub lines: Vec<String>,
     pub parsed_lines: Vec<Text<'static>>,
@@ -28,7 +28,7 @@ pub struct RawSearchResult {
 
 impl RawSearchResult {
     /// Strip ANSI escape codes from a string
-    fn strip_ansi_codes(input: &str) -> String {
+    pub fn strip_ansi_codes(input: &str) -> String {
         // Simple regex-free approach to strip ANSI codes
         let mut result = String::new();
         let mut chars = input.chars();
@@ -97,7 +97,7 @@ impl RawSearchResult {
                     line_num
                 );
                 // Return None because we need filename context
-                return None;
+                None
             } else {
                 // This might be "filename:something"
                 let file_path = PathBuf::from(parts[0].trim());
@@ -170,26 +170,26 @@ impl RawSearchResult {
         // But exclude ripgrep context lines that start with line numbers followed by - or +
         if !clean_line.contains(':') {
             // Skip ripgrep context indicators (e.g., "63-", "42+", etc.)
-            if let Some(first_char) = clean_line.chars().next() {
-                if first_char.is_ascii_digit() {
-                    // Look for pattern like "123-" or "123+" which are context lines
-                    let mut chars = clean_line.chars();
-                    let mut found_digits = false;
-                    
-                    while let Some(c) = chars.next() {
-                        if c.is_ascii_digit() {
-                            found_digits = true;
-                        } else if found_digits && (c == '-' || c == '+') {
-                            // This is a context line, not a filename
-                            tracing::debug!("PARSE_HEADING: Skipping context line: '{}'", clean_line);
-                            return None;
-                        } else {
-                            break;
-                        }
+            if let Some(first_char) = clean_line.chars().next()
+                && first_char.is_ascii_digit()
+            {
+                // Look for pattern like "123-" or "123+" which are context lines
+                let chars = clean_line.chars();
+                let mut found_digits = false;
+
+                for c in chars {
+                    if c.is_ascii_digit() {
+                        found_digits = true;
+                    } else if found_digits && (c == '-' || c == '+') {
+                        // This is a context line, not a filename
+                        tracing::debug!("PARSE_HEADING: Skipping context line: '{}'", clean_line);
+                        return None;
+                    } else {
+                        break;
                     }
                 }
             }
-            
+
             let path = PathBuf::from(clean_line.trim());
             let absolute_path = if path.is_absolute() {
                 path.clone()
@@ -203,21 +203,19 @@ impl RawSearchResult {
 
         // This should be a line:content format
         let parts: Vec<&str> = clean_line.splitn(2, ':').collect();
-        if parts.len() == 2 {
-            if let Ok(line_num) = parts[0].trim().parse::<u32>() {
-                // This is line_number:content format
-                if let Some(current_path) = current_file {
-                    tracing::debug!(
-                        "PARSE_HEADING: Found match - file: {:?}, line: {}",
-                        current_path,
-                        line_num
-                    );
-                    return Some((current_path.clone(), Some(line_num)));
-                } else {
-                    tracing::debug!(
-                        "PARSE_HEADING: Found line:content but no current file context"
-                    );
-                }
+        if parts.len() == 2
+            && let Ok(line_num) = parts[0].trim().parse::<u32>()
+        {
+            // This is line_number:content format
+            if let Some(current_path) = current_file {
+                tracing::debug!(
+                    "PARSE_HEADING: Found match - file: {:?}, line: {}",
+                    current_path,
+                    line_num
+                );
+                return Some((current_path.clone(), Some(line_num)));
+            } else {
+                tracing::debug!("PARSE_HEADING: Found line:content but no current file context");
             }
         }
 
@@ -338,6 +336,8 @@ impl TaskResultExt for TaskResult {
             completed: None,
             total: None,
             message: None,
+            execution_time: None, // No execution time tracking in helper methods
+            memory_usage: None,   // No memory usage tracking in helper methods
         }
     }
     fn error(id: u64, msg: String) -> Self {
@@ -349,6 +349,8 @@ impl TaskResultExt for TaskResult {
             completed: None,
             total: None,
             message: None,
+            execution_time: None, // No execution time tracking in helper methods
+            memory_usage: None,   // No memory usage tracking in helper methods
         }
     }
 }
