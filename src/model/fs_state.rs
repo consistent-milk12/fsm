@@ -148,9 +148,14 @@ impl PaneState {
 
     /// Get visible entries for virtual scrolling
     pub fn visible_entries(&self) -> &[ObjectInfo] {
-        let start = self.scroll_offset;
-        let end = (start + self.viewport_height).min(self.entries.len());
-        &self.entries[start..end]
+        let start: usize = self.scroll_offset;
+        let end: usize = (start + self.viewport_height).min(self.entries.len());
+
+        if start >= end || start >= self.entries.len() {
+            &self.entries[0..0]
+        } else {
+            &self.entries[start..end]
+        }
     }
 
     /// Move selection up and adjust scroll if needed
