@@ -362,7 +362,7 @@ pub fn filename_search_task(
 
                 debug!("Progress update: {}", progress_msg);
 
-                let _ = task_tx.send(TaskResult {
+                let _ = task_tx.send(TaskResult::Legacy {
                     task_id,
                     result: Ok(progress_msg.clone()),
                     progress: None, // Indeterminate progress
@@ -503,7 +503,7 @@ trait TaskResultExt {
 
 impl TaskResultExt for TaskResult {
     fn ok(id: u64, msg: String) -> Self {
-        Self {
+        Self::Legacy {
             task_id: id,
             result: Ok(msg),
             progress: Some(1.0),
@@ -516,7 +516,7 @@ impl TaskResultExt for TaskResult {
         }
     }
     fn error(id: u64, msg: String) -> Self {
-        Self {
+        Self::Legacy {
             task_id: id,
             result: Err(msg),
             progress: Some(1.0),
