@@ -19,6 +19,10 @@ pub enum InputPromptType {
     Search,
     GoToPath,
     Custom(String),
+    // File operations
+    CopyDestination,
+    MoveDestination,
+    RenameFile,
 }
 
 /// Represents a high-level action that the application can perform.
@@ -158,4 +162,23 @@ pub enum Action {
 
     /// Navigate to specified path.
     GoToPath(String),
+
+    // File operations
+    /// Copy file/directory from source to destination
+    Copy {
+        source: PathBuf,
+        dest: PathBuf,
+    },
+
+    /// Move file/directory from source to destination  
+    Move {
+        source: PathBuf,
+        dest: PathBuf,
+    },
+
+    /// Rename file/directory
+    Rename {
+        source: PathBuf,
+        new_name: String,
+    },
 }
