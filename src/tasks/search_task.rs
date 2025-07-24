@@ -214,9 +214,8 @@ impl RawSearchResult {
                     line_num
                 );
                 return Some((current_path.clone(), Some(line_num)));
-            } else {
-                tracing::debug!("PARSE_HEADING: Found line:content but no current file context");
             }
+            tracing::debug!("PARSE_HEADING: Found line:content but no current file context");
         }
 
         None
@@ -328,7 +327,7 @@ trait TaskResultExt {
 
 impl TaskResultExt for TaskResult {
     fn ok(id: u64, msg: String) -> Self {
-        Self {
+        Self::Legacy {
             task_id: id,
             result: Ok(msg),
             progress: Some(1.0),
@@ -341,7 +340,7 @@ impl TaskResultExt for TaskResult {
         }
     }
     fn error(id: u64, msg: String) -> Self {
-        Self {
+        Self::Legacy {
             task_id: id,
             result: Err(msg),
             progress: Some(1.0),
