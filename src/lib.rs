@@ -321,6 +321,9 @@ pub mod view {
         /// Content search overlay with ripgrep integration
         pub mod content_search_overlay;
 
+        /// File operations progress overlay with real-time progress tracking
+        pub mod file_operations_overlay;
+
         /// Filename search overlay with real-time results
         pub mod filename_search_overlay;
 

@@ -306,7 +306,7 @@ pub struct UIState {
     pub recent_actions: Vec<String>,
 
     /// Track active file operations with progress
-    pub active_file_opeartions: HashMap<String, FileOperationProgress>,
+    pub active_file_operations: HashMap<String, FileOperationProgress>,
 }
 
 impl UIState {
@@ -354,7 +354,7 @@ impl UIState {
             recent_actions: Vec::with_capacity(16),
 
             // File operation tracker
-            active_file_opeartions: HashMap::new(),
+            active_file_operations: HashMap::new(),
         }
     }
 

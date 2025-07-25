@@ -17,6 +17,7 @@ use tokio::{
     fs::{File, ReadDir},
     sync::mpsc::{self, error::SendError},
 };
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use tokio::fs as TokioFs;
@@ -30,6 +31,7 @@ pub struct FileOperationTask {
     pub operation_id: String,
     pub operation: FileOperation,
     pub task_tx: mpsc::UnboundedSender<TaskResult>,
+    pub cancel_token: CancellationToken,
 }
 
 /// Types of file operations supported
@@ -64,17 +66,30 @@ impl std::fmt::Display for FileOperation {
 
 impl FileOperationTask {
     /// Create new file operation task with unique ID
-    pub fn new(operation: FileOperation, task_tx: mpsc::UnboundedSender<TaskResult>) -> Self {
+    pub fn new(
+        operation: FileOperation,
+        task_tx: mpsc::UnboundedSender<TaskResult>,
+        cancel_token: CancellationToken,
+    ) -> Self {
         Self {
             operation_id: Uuid::new_v4().to_string(),
             operation,
             task_tx,
+            cancel_token,
         }
     }
 
     /// Execute file operation with full progress reporting
     pub async fn execute(&self) -> Result<(), AppError> {
         use FileOperation::*;
+
+        // Check for cancellation before starting
+        if self.cancel_token.is_cancelled() {
+            let err_kind: ErrorKind = ErrorKind::Interrupted;
+            let err_msg: &'static str = "Operation was cancelled.";
+
+            return Err(Self::error(err_kind, err_msg));
+        }
 
         // Calculate total operation size first
         let (total_bytes, total_files) = self.calculate_operation_size().await?;
@@ -83,7 +98,12 @@ impl FileOperationTask {
 
         // Report initial progress
         let initial_file: &Path = match &self.operation {
-            Copy { source, .. } | Move { source, .. } | Rename { source, .. } => source,
+            Copy { source, dest: _ }
+            | Move { source, dest: _ }
+            | Rename {
+                source,
+                new_name: _,
+            } => source,
         };
 
         self.report_progress(
@@ -250,12 +270,10 @@ impl FileOperationTask {
                 let new_dest: PathBuf = dest.join(filename);
                 new_dest
             } else {
-                let ekind: ErrorKind = ErrorKind::InvalidInput;
-                let emsg: &'static str = "Cannot determine filename from source.";
-                let err: Error = Error::new(ekind, emsg);
-                let app_err: AppError = AppError::Io(err);
+                let err_kind: ErrorKind = ErrorKind::InvalidInput;
+                let err_msg: &'static str = "Cannot determine filename from source.";
 
-                return Err(app_err);
+                return Err(Self::error(err_kind, err_msg));
             }
         } else {
             let new_dest: PathBuf = dest.to_path_buf();
@@ -296,6 +314,14 @@ impl FileOperationTask {
 
         'copy_file_bytes: loop {
             let bytes_read: usize = src_file.read(&mut buffer).await?;
+
+            // Check for cancellation before starting
+            if self.cancel_token.is_cancelled() {
+                let err_kind: ErrorKind = ErrorKind::Interrupted;
+                let err_msg: &'static str = "Operation was cancelled.";
+
+                return Err(Self::error(err_kind, err_msg));
+            }
 
             if bytes_read == 0 {
                 break 'copy_file_bytes;
@@ -385,6 +411,14 @@ impl FileOperationTask {
             total_files,
         )
         .await?;
+
+        // Check for cancellation before starting
+        if self.cancel_token.is_cancelled() {
+            let err_kind: ErrorKind = ErrorKind::Interrupted;
+            let err_msg: &'static str = "Operation was cancelled.";
+
+            return Err(Self::error(err_kind, err_msg));
+        }
 
         // Try efficient rename first (same filesystem)
         match TokioFs::rename(source, &final_dst).await {
@@ -477,6 +511,14 @@ impl FileOperationTask {
         )
         .await?;
 
+        // Check for cancellation before starting
+        if self.cancel_token.is_cancelled() {
+            let err_kind: ErrorKind = ErrorKind::Interrupted;
+            let err_msg: &'static str = "Operation was cancelled.";
+
+            return Err(Self::error(err_kind, err_msg));
+        }
+
         // Perform rename operation
         TokioFs::rename(source, &new_path).await?;
 
@@ -496,5 +538,13 @@ impl FileOperationTask {
         .await?;
 
         Ok(())
+    }
+
+    #[inline(always)]
+    fn error(err_kind: ErrorKind, err_msg: &'static str) -> AppError {
+        let err: Error = Error::new(err_kind, err_msg);
+        let app_err: AppError = AppError::Io(err);
+
+        return app_err;
     }
 }

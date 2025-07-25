@@ -18,15 +18,17 @@ use crate::model::app_state::AppState;
 use crate::model::command_palette::CommandAction;
 use crate::model::fs_state::{EntryFilter, EntrySort, PaneState};
 use crate::model::ui_state::{LoadingState, NotificationLevel, RedrawFlag, UIMode, UIOverlay};
+use crate::tasks::file_ops_task::{FileOperation, FileOperationTask};
 use crate::tasks::search_task::RawSearchResult;
 use crossterm::event::{Event as TermEvent, EventStream, KeyCode, KeyModifiers};
 use futures::StreamExt;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::process::Command;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::{Mutex, MutexGuard, mpsc};
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, trace, warn};
 
 /// Enhanced task result with performance metrics
@@ -1261,27 +1263,59 @@ impl EventLoop {
 
                     TaskResult::FileOperationProgress {
                         operation_id,
-                        operation_type: _,
+                        operation_type,
                         current_bytes,
                         total_bytes,
                         current_file,
                         files_completed,
                         total_files,
-                        start_time: _,
-                        throughput_bps: _,
+                        start_time,
+                        throughput_bps,
                     } => {
-                        info!(
-                            "File operation progress: {operation_id} - {current_bytes}/{total_bytes} bytes ({files_completed} files)"
+                        debug!(
+                            "File operation progress: {operation_id} - {current_bytes}/{total_bytes} bytes ({files_completed}/{total_files} files)"
                         );
 
-                        // TODO: Update progress overlay UI in Phase 2.3
-                        // For now, just update any loading state
+                        // Update active file operations progress tracking
+                        if let Some(existing_progress) =
+                            app.ui.active_file_operations.get_mut(&operation_id)
+                        {
+                            // Update active file operations progress tracking
+                            existing_progress.update(
+                                current_bytes,
+                                current_file.clone(),
+                                files_completed,
+                            );
+
+                            // Update throughput if provided
+                            if let Some(bps) = throughput_bps {
+                                existing_progress.throughput_bps = Some(bps);
+                            }
+                        } else {
+                            // Create new progress entry
+                            use crate::model::ui_state::FileOperationProgress;
+
+                            let mut progress: FileOperationProgress = FileOperationProgress::new(
+                                operation_type,
+                                total_bytes,
+                                total_files,
+                            );
+
+                            progress.start_time = start_time;
+                            progress.update(current_bytes, current_file.clone(), files_completed);
+
+                            if let Some(bps) = throughput_bps {
+                                progress.throughput_bps = Some(bps);
+                            }
+
+                            app.ui
+                                .active_file_operations
+                                .insert(operation_id.clone(), progress);
+                        }
+
                         if let Some(ref mut loading) = app.ui.loading {
                             if total_bytes > 0 {
-                                let curr: f64 = current_bytes as f64;
-                                let total: f64 = total_bytes as f64;
-
-                                loading.progress = Some(curr / total);
+                                loading.progress = Some(current_bytes as f64 / total_bytes as f64);
                             }
 
                             loading.current_item = Some(
@@ -1489,20 +1523,20 @@ impl EventLoop {
                         info!("Processing copy destination prompt with input: '{}'", input);
 
                         // Get current selected file path
-                        let selected_path = {
-                            let app = self.app.lock().await;
+                        let selected_path: Option<PathBuf> = {
+                            let app: MutexGuard<'_, AppState> = self.app.lock().await;
 
                             app.fs.active_pane().selected.and_then(|selected_idx| {
                                 app.fs
                                     .active_pane()
                                     .entries
                                     .get(selected_idx)
-                                    .map(|entry| entry.path.clone())
+                                    .map(|entry: &ObjectInfo| entry.path.clone())
                             })
                         };
 
                         if let Some(source_path) = selected_path {
-                            let dest_path = std::path::PathBuf::from(input);
+                            let dest_path: PathBuf = std::path::PathBuf::from(input);
                             drop(app);
 
                             Box::pin(self.dispatch_action(Action::Copy {
@@ -1519,19 +1553,19 @@ impl EventLoop {
                     Some(InputPromptType::MoveDestination) => {
                         info!("Processing move destination prompt with input: '{}'", input);
                         // Get current selected file path
-                        let selected_path = {
-                            let app = self.app.lock().await;
+                        let selected_path: Option<PathBuf> = {
+                            let app: MutexGuard<'_, AppState> = self.app.lock().await;
                             app.fs.active_pane().selected.and_then(|selected_idx| {
                                 app.fs
                                     .active_pane()
                                     .entries
                                     .get(selected_idx)
-                                    .map(|entry| entry.path.clone())
+                                    .map(|entry: &ObjectInfo| entry.path.clone())
                             })
                         };
 
                         if let Some(source_path) = selected_path {
-                            let dest_path = std::path::PathBuf::from(input);
+                            let dest_path: PathBuf = std::path::PathBuf::from(input);
                             drop(app);
                             Box::pin(self.dispatch_action(Action::Move {
                                 source: source_path,
@@ -1541,20 +1575,21 @@ impl EventLoop {
                         } else {
                             app.ui
                                 .show_error("No file selected for move operation".to_string());
+
                             app.ui.request_redraw(RedrawFlag::All);
                         }
                     }
                     Some(InputPromptType::RenameFile) => {
                         info!("Processing rename file prompt with input: '{}'", input);
                         // Get current selected file path
-                        let selected_path = {
-                            let app = self.app.lock().await;
+                        let selected_path: Option<PathBuf> = {
+                            let app: MutexGuard<'_, AppState> = self.app.lock().await;
                             app.fs.active_pane().selected.and_then(|selected_idx| {
                                 app.fs
                                     .active_pane()
                                     .entries
                                     .get(selected_idx)
-                                    .map(|entry| entry.path.clone())
+                                    .map(|entry: &ObjectInfo| entry.path.clone())
                             })
                         };
 
@@ -1568,6 +1603,7 @@ impl EventLoop {
                         } else {
                             app.ui
                                 .show_error("No file selected for rename operation".to_string());
+
                             app.ui.request_redraw(RedrawFlag::All);
                         }
                     }
@@ -1580,8 +1616,8 @@ impl EventLoop {
 
             Action::Tick => {
                 // Quiet tick processing with performance monitoring
-                let mut app = self.app.lock().await;
-                let redraw_needed = app.ui.update_notification();
+                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
+                let redraw_needed: bool = app.ui.update_notification();
 
                 // Periodic cleanup and optimization
                 if self.event_count.is_multiple_of(1000) {
@@ -1597,17 +1633,20 @@ impl EventLoop {
             // NEW FILE OPERATIONS - Core functionality implementation
             Action::Copy { source, dest } => {
                 info!("Starting copy operation: {:?} -> {:?}", source, dest);
-                let app = self.app.lock().await;
-                let task_tx = app.task_tx.clone();
+                let app: MutexGuard<'_, AppState> = self.app.lock().await;
+                let task_tx: UnboundedSender<TaskResult> = app.task_tx.clone();
                 drop(app);
 
                 // Create and spawn file operation task
-                let task = crate::tasks::file_ops_task::FileOperationTask::new(
-                    crate::tasks::file_ops_task::FileOperation::Copy {
+                let cancel_token: CancellationToken = CancellationToken::new();
+
+                let task: FileOperationTask = FileOperationTask::new(
+                    FileOperation::Copy {
                         source: source.clone(),
                         dest: dest.clone(),
                     },
                     task_tx,
+                    cancel_token,
                 );
 
                 tokio::spawn(async move {
@@ -1627,17 +1666,20 @@ impl EventLoop {
 
             Action::Move { source, dest } => {
                 info!("Starting move operation: {:?} -> {:?}", source, dest);
-                let app = self.app.lock().await;
-                let task_tx = app.task_tx.clone();
+                let app: MutexGuard<'_, AppState> = self.app.lock().await;
+                let task_tx: UnboundedSender<TaskResult> = app.task_tx.clone();
                 drop(app);
 
                 // Create and spawn file operation task
-                let task = crate::tasks::file_ops_task::FileOperationTask::new(
-                    crate::tasks::file_ops_task::FileOperation::Move {
+                let cancel_token: CancellationToken = CancellationToken::new();
+
+                let task: FileOperationTask = FileOperationTask::new(
+                    FileOperation::Move {
                         source: source.clone(),
                         dest: dest.clone(),
                     },
                     task_tx,
+                    cancel_token,
                 );
 
                 tokio::spawn(async move {
@@ -1646,28 +1688,33 @@ impl EventLoop {
                     }
                 });
 
-                let mut app = self.app.lock().await;
+                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
+
                 app.ui.show_info(format!(
                     "Moving {} to {}",
                     source.file_name().unwrap_or_default().to_string_lossy(),
                     dest.display()
                 ));
+
                 app.ui.request_redraw(RedrawFlag::All);
             }
 
             Action::Rename { source, new_name } => {
                 info!("Starting rename operation: {:?} -> {}", source, new_name);
-                let app = self.app.lock().await;
-                let task_tx = app.task_tx.clone();
+                let app: MutexGuard<'_, AppState> = self.app.lock().await;
+                let task_tx: UnboundedSender<TaskResult> = app.task_tx.clone();
                 drop(app);
 
                 // Create and spawn file operation task
-                let task = crate::tasks::file_ops_task::FileOperationTask::new(
-                    crate::tasks::file_ops_task::FileOperation::Rename {
+                let cancel_token: CancellationToken = CancellationToken::new();
+
+                let task = FileOperationTask::new(
+                    FileOperation::Rename {
                         source: source.clone(),
                         new_name: new_name.clone(),
                     },
                     task_tx,
+                    cancel_token,
                 );
 
                 tokio::spawn(async move {
@@ -1676,7 +1723,7 @@ impl EventLoop {
                     }
                 });
 
-                let mut app = self.app.lock().await;
+                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
 
                 app.ui.show_info(format!(
                     "Renaming {} to {}",
@@ -1701,12 +1748,12 @@ impl EventLoop {
 
             // Pass-through actions
             Action::Key(_) | Action::Mouse(_) | Action::Resize(..) | Action::NoOp => {
-                let mut app = self.app.lock().await;
+                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
                 app.ui.request_redraw(RedrawFlag::All);
             }
         }
 
-        let execution_time = start_time.elapsed();
+        let execution_time: Duration = start_time.elapsed();
 
         if execution_time.as_millis() > 10 {
             debug!("Action dispatch took {:.2}ms", execution_time.as_millis());
