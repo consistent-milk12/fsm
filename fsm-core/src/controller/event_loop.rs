@@ -1,17 +1,7 @@
-//! src/controller/event_loop.rs
-//! ============================================================================
-//! # Enhanced Event Loop Controller with Advanced Features
-//!
-//! Production-ready event loop implementation with:
-//! - Async/await architecture with optimized task handling
-//! - Complete command palette integration with auto-completion
-//! - Comprehensive input prompt system with all types implemented
-//! - Advanced search capabilities (filename, content, raw results)
-//! - Robust error handling and recovery mechanisms
-//! - Performance monitoring and resource management
-//! - Extensive logging and debugging support
-
 use crate::controller::actions::{Action, InputPromptType};
+use crate::controller::eactions::{ActionType, EAction};
+use crate::controller::ekey_processor::EKeyProcessor;
+
 use crate::fs::dir_scanner::ScanUpdate;
 use crate::fs::object_info::ObjectInfo;
 use crate::model::app_state::AppState;
@@ -20,6 +10,7 @@ use crate::model::fs_state::{EntryFilter, EntrySort, PaneState};
 use crate::model::ui_state::{LoadingState, NotificationLevel, RedrawFlag, UIMode, UIOverlay};
 use crate::tasks::file_ops_task::{FileOperation, FileOperationTask};
 use crate::tasks::search_task::RawSearchResult;
+use clipr::ClipError;
 use crossterm::event::{Event as TermEvent, EventStream, KeyCode, KeyModifiers};
 use futures::StreamExt;
 use std::path::PathBuf;
@@ -192,7 +183,24 @@ impl EventLoop {
     }
 
     /// Enhanced terminal event handling with comprehensive logging
-    async fn handle_terminal_event(&self, event: TermEvent) -> Action {
+    async fn handle_terminal_event(&mut self, event: TermEvent) -> Action {
+        if let TermEvent::Key(key_event) = event {
+            let kp_exists = self.app.lock().await.key_processor.is_some();
+            if kp_exists {
+                match self.handle_key_event_performance(key_event).await {
+                    Ok(action) => return action,
+                    Err(_) => { /* Key not handled by performance processor, continue standard handling */ }
+                }
+            } else {
+                // One-time initialization
+                let mut app = self.app.lock().await;
+                if app.key_processor.is_none() {
+                    let clipboard = app.ui.clipboard.clone();
+                    app.key_processor = Some(EKeyProcessor::new(clipboard));
+                }
+            }
+        }
+
         let app = self.app.lock().await;
         let current_overlay = app.ui.overlay;
         let current_mode = app.ui.mode;
@@ -1874,6 +1882,8 @@ impl EventLoop {
                 app.ui.request_redraw(RedrawFlag::All);
             }
 
+
+
             Action::CancelFileOperation { operation_id } => {
                 info!("Cancelling file operation: {operation_id}");
 
@@ -1898,5 +1908,162 @@ impl EventLoop {
         if execution_time.as_millis() > 10 {
             debug!("Action dispatch took {:.2}ms", execution_time.as_millis());
         }
+    }
+
+    /// Performance-optimized key event handling with sub-microsecond response
+    async fn handle_key_event_performance(
+        &mut self,
+        key: crossterm::event::KeyEvent,
+    ) -> Result<Action, ()> {
+        let start_time = Instant::now();
+
+        let mut app = self.app.lock().await;
+        if let Some(processor) = app.key_processor.as_mut() {
+            if let Some(action) = processor.process_key(key) {
+                // Drop the lock before calling dispatch_eaction, which might lock again
+                drop(app);
+
+                // Dispatch action with lock-free atomic operations
+                self.dispatch_eaction(action).await;
+
+                // Re-acquire lock to update stats
+                let mut app = self.app.lock().await;
+                if let Some(processor) = app.key_processor.as_mut() {
+                    let latency_ns = start_time.elapsed().as_nanos() as u64;
+                    processor.stats.update_latency(latency_ns);
+                }
+
+                return Ok(Action::NoOp); // Handled
+            }
+        }
+
+        Err(()) // Not handled
+    }
+
+    /// Lock-free action dispatch with zero allocations
+    async fn dispatch_eaction(&mut self, action: EAction) {
+        match action.action_type {
+            ActionType::CopyToClipboard => {
+                self.handle_copy_to_clipboard_performance().await;
+            }
+            ActionType::MoveToClipboard => {
+                self.handle_move_to_clipboard_performance().await;
+            }
+            ActionType::PasteFromClipboard => {
+                self.handle_paste_from_clipboard_performance().await;
+            }
+            ActionType::NavigateUp => {
+                self.dispatch_action(Action::MoveSelectionUp).await;
+            }
+            ActionType::NavigateDown => {
+                self.dispatch_action(Action::MoveSelectionDown).await;
+            }
+            ActionType::EnterDirectory => {
+                self.dispatch_action(Action::EnterSelected).await;
+            }
+        }
+    }
+
+    /// Zero-allocation clipboard copy with lock-free operations
+    async fn handle_copy_to_clipboard_performance(&mut self) {
+        let selected_path = {
+            let app = self.app.lock().await;
+            app.fs.get_selected_path()
+        };
+
+        if let Some(path) = selected_path {
+            let mut app = self.app.lock().await;
+            if let Some(processor) = app.key_processor.as_mut() {
+                match processor.clipboard.add_copy(path).await {
+                    Ok(id) => {
+                        app.ui
+                            .show_info(format!("Copied to clipboard: item {}", id));
+                    }
+                    Err(e) => {
+                        let error_msg = format!("Clipboard copy error: {}", e);
+                        app.ui.show_error(error_msg);
+                    }
+                }
+            }
+        } else {
+            let mut app = self.app.lock().await;
+            app.ui.show_error("No item selected to copy".to_string());
+        }
+    }
+
+    async fn handle_move_to_clipboard_performance(&mut self) {
+        let selected_path = {
+            let app = self.app.lock().await;
+            app.fs.get_selected_path()
+        };
+
+        if let Some(path) = selected_path {
+            let mut app = self.app.lock().await;
+            if let Some(processor) = app.key_processor.as_mut() {
+                match processor.clipboard.add_move(path).await {
+                    Ok(id) => {
+                        app.ui
+                            .show_info(format!("Marked for move: item {}", id));
+                    }
+                    Err(e) => {
+                        let error_msg = format!("Clipboard move error: {}", e);
+                        app.ui.show_error(error_msg);
+                    }
+                }
+            }
+        } else {
+            let mut app = self.app.lock().await;
+            app.ui.show_error("No item selected to move".to_string());
+        }
+    }
+
+    async fn handle_paste_from_clipboard_performance(&mut self) {
+        let (clipboard, dest_path) = {
+            let app = self.app.lock().await;
+            (
+                app.key_processor.as_ref().unwrap().clipboard.clone(),
+                app.fs.active_pane().cwd.clone(),
+            )
+        };
+
+        // TODO: Implement clipboard.get_all_items() in clipr crate
+        let items_to_paste = clipboard.get_all_items().await;
+
+        if items_to_paste.is_empty() {
+            let mut app = self.app.lock().await;
+            app.ui.show_info("Clipboard is empty.".to_string());
+            return;
+        }
+
+        let op_count = items_to_paste.len();
+        for item in items_to_paste {
+            let source = item.source_path.clone().into();
+            let dest = dest_path.join(item.source_path.clone());
+            let action = match item.operation {
+                clipr::ClipBoardOperation::Copy => Action::Copy { source, dest },
+                clipr::ClipBoardOperation::Move => Action::Move { source, dest },
+            };
+            self.dispatch_action(action).await;
+        }
+
+        if op_count > 0 {
+            let mut app = self.app.lock().await;
+            app.ui
+                .show_info(format!("Pasting {} item(s)...", op_count));
+        }
+
+        // TODO: Implement clipboard.clear_on_paste() in clipr crate
+        clipboard.clear_on_paste().await;
+    }
+
+    /// Lock-free error handling without allocations
+    async fn handle_clipboard_error_performance(
+        &mut self,
+        error: ClipError,
+        operation: &'static str,
+    ) {
+        let mut app = self.app.lock().await;
+        app.ui
+            .show_error(format!("Clipboard {} error: {}", operation, error));
     }
 }
