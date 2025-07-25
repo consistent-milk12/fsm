@@ -5,17 +5,22 @@
 //! Handles copy, move, and rename operations asynchronously to prevent UI
 //! blocking during large file operations.
 
-use crate::controller::event_loop::TaskResult;
 use crate::error::AppError;
+use crate::{AppState, controller::event_loop::TaskResult};
+use std::sync::Arc;
 use std::{
     fs::Metadata,
     io::{Error, ErrorKind},
     path::{Path, PathBuf},
     time::Instant,
 };
+use tokio::sync::MutexGuard;
 use tokio::{
     fs::{File, ReadDir},
-    sync::mpsc::{self, error::SendError},
+    sync::{
+        Mutex,
+        mpsc::{self, error::SendError},
+    },
 };
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -32,6 +37,7 @@ pub struct FileOperationTask {
     pub operation: FileOperation,
     pub task_tx: mpsc::UnboundedSender<TaskResult>,
     pub cancel_token: CancellationToken,
+    pub app: Arc<Mutex<AppState>>,
 }
 
 /// Types of file operations supported
@@ -70,12 +76,14 @@ impl FileOperationTask {
         operation: FileOperation,
         task_tx: mpsc::UnboundedSender<TaskResult>,
         cancel_token: CancellationToken,
+        app: Arc<Mutex<AppState>>,
     ) -> Self {
         Self {
             operation_id: Uuid::new_v4().to_string(),
             operation,
             task_tx,
             cancel_token,
+            app,
         }
     }
 
@@ -161,6 +169,12 @@ impl FileOperationTask {
         };
 
         let _send_result: Result<(), SendError<TaskResult>> = self.task_tx.send(completion_result);
+
+        // Cleanup operation from UI state
+        {
+            let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
+            app.ui.remove_operation(&self.operation_id);
+        }
 
         result
     }

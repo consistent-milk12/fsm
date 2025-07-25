@@ -13,6 +13,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use tokio_util::sync::CancellationToken;
 
 use crate::controller::actions::InputPromptType;
 use crate::fs::object_info::ObjectInfo;
@@ -52,18 +53,18 @@ impl RedrawFlag {
 pub enum UIMode {
     #[default]
     Browse,
-    
+
     Visual, // for multi-select/range
-    
+
     Search,
-    
+
     Prompt,
-    
-    Command,   // vim-style command input mode
-    
+
+    Command, // vim-style command input mode
+
     Scripting, // for scripting/plugins
-    
-    BatchOp,   // show/cancel batch operation
+
+    BatchOp, // show/cancel batch operation
 }
 
 // All overlays (mutually exclusive modals)
@@ -71,25 +72,25 @@ pub enum UIMode {
 pub enum UIOverlay {
     #[default]
     None,
-    
+
     Help,
-    
+
     Search,
-    
+
     FileNameSearch,
-    
+
     ContentSearch,
-    
+
     SearchResults,
-    
+
     Loading,
-    
+
     Status,
-    
+
     Prompt,
-    
+
     Batch,
-    
+
     Scripting,
 }
 
@@ -105,22 +106,22 @@ pub enum SearchType {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NotificationLevel {
     Info,
-    
+
     Warning,
-    
+
     Error,
-    
+
     Success,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Notification {
     pub message: String,
-    
+
     pub level: NotificationLevel,
-    
+
     pub timestamp: Instant,
-    
+
     pub auto_dismiss_ms: Option<u64>,
 }
 
@@ -233,7 +234,7 @@ impl FileOperationProgress {
 }
 
 /// Main UI state structure
-#[derive(Debug, Default, Clone, PartialEq)]
+#[derive(Debug, Default, Clone)]
 pub struct UIState {
     pub redraw_flags: u8,
     // --- Selection and Navigation State ---
@@ -307,6 +308,15 @@ pub struct UIState {
 
     /// Track active file operations with progress
     pub active_file_operations: HashMap<String, FileOperationProgress>,
+
+    /// Track cancellation tokens for active operations
+    pub operations_cancel_tokens: HashMap<String, CancellationToken>,
+}
+
+impl PartialEq for UIState {
+    fn eq(&self, other: &Self) -> bool {
+        self.mode.eq(&other.mode)
+    }
 }
 
 impl UIState {
@@ -355,6 +365,9 @@ impl UIState {
 
             // File operation tracker
             active_file_operations: HashMap::new(),
+
+            // Operation cancel tracker
+            operations_cancel_tokens: HashMap::new(),
         }
     }
 
@@ -614,5 +627,33 @@ impl UIState {
             self.recent_actions.remove(0);
         }
         self.recent_actions.push(action.into());
+    }
+
+    /// Store cancellation token for operation
+    pub fn store_cancel_token(&mut self, operation_id: String, token: CancellationToken) {
+        self.operations_cancel_tokens.insert(operation_id, token);
+    }
+
+    /// Cancel all active file operations
+    pub fn cancel_all_operations(&mut self) -> usize {
+        let count: usize = self.operations_cancel_tokens.len();
+
+        // Cancel all tokens
+        for token in self.operations_cancel_tokens.values() {
+            token.cancel();
+        }
+
+        // Clear tracking data
+        self.operations_cancel_tokens.clear();
+        self.active_file_operations.clear();
+
+        count
+    }
+
+    /// Remove completed/cancelled operation
+    pub fn remove_operation(&mut self, operation_id: &str) {
+        self.operations_cancel_tokens.remove(operation_id);
+
+        self.active_file_operations.remove(operation_id);
     }
 }

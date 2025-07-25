@@ -232,16 +232,21 @@ impl EventLoop {
                     UIMode::Command => self.handle_command_mode_keys(key_event).await,
                     _ => match current_overlay {
                         UIOverlay::None => self.handle_navigation_mode_keys(key_event).await,
+
                         UIOverlay::FileNameSearch => {
                             self.handle_filename_search_keys(key_event).await
                         }
+
                         UIOverlay::ContentSearch => {
                             self.handle_content_search_keys(key_event).await
                         }
+
                         UIOverlay::Prompt => self.handle_prompt_keys(key_event).await,
+
                         UIOverlay::SearchResults => {
                             self.handle_search_results_keys(key_event).await
                         }
+
                         _ => {
                             debug!("Ignoring key in overlay mode: {:?}", current_overlay);
                             Action::NoOp
@@ -274,6 +279,26 @@ impl EventLoop {
         overlay: UIOverlay,
         has_notification: bool,
     ) -> Action {
+        // HIGHEST PRIORITY: Cancel active file operations
+        {
+            let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
+
+            if !app.ui.active_file_operations.is_empty() {
+                let cancelled_count: usize = app.ui.cancel_all_operations();
+
+                if cancelled_count > 0 {
+                    app.ui
+                        .show_info(format!("Cancelled {cancelled_count} file operations(s)"));
+
+                    info!("User cancelled {cancelled_count} file operations via ESC key");
+
+                    app.ui.request_redraw(RedrawFlag::All);
+
+                    return Action::NoOp;
+                }
+            }
+        }
+
         debug!(
             "Escape pressed: mode={:?}, overlay={:?}, notification={}",
             mode, overlay, has_notification
@@ -282,7 +307,7 @@ impl EventLoop {
         // Priority order: notification -> overlay -> command completions -> command mode -> quit
         if has_notification {
             debug!("Escape: dismissing notification");
-            let mut app = self.app.lock().await;
+            let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
             app.ui.dismiss_notification();
             app.ui.request_redraw(RedrawFlag::All);
             return Action::NoOp;
@@ -1249,17 +1274,31 @@ impl EventLoop {
                     TaskResult::FileOperationComplete {
                         operation_id,
                         result,
-                    } => match result {
-                        Ok(()) => {
-                            info!("File operation {} completed successfully", operation_id);
-                            app.ui.show_info("File operation completed".to_string());
+                    } => {
+                        {
+                            let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
+
+                            // Remove from tracking regardless of sucess/failure
+                            app.ui.remove_operation(&operation_id);
                         }
 
-                        Err(e) => {
-                            warn!("File operation {} failed: {}", operation_id, e);
-                            app.ui.show_error(format!("File operation failed: {e}"));
+                        match result {
+                            Ok(()) => {
+                                info!("File operation {} completed successfully", operation_id);
+                                app.ui.show_info("File operation completed".to_string());
+                            }
+
+                            Err(e) => {
+                                if e.to_string().contains("Cancelled") {
+                                    // Don't show error for user-initiated cancellation.
+                                    debug!("Operation {operation_id} was cancelled by user.")
+                                } else {
+                                    warn!("File operation {} failed: {}", operation_id, e);
+                                    app.ui.show_error(format!("File operation failed: {e}"));
+                                }
+                            }
                         }
-                    },
+                    }
 
                     TaskResult::FileOperationProgress {
                         operation_id,
@@ -1635,6 +1674,7 @@ impl EventLoop {
                 info!("Starting copy operation: {:?} -> {:?}", source, dest);
                 let app: MutexGuard<'_, AppState> = self.app.lock().await;
                 let task_tx: UnboundedSender<TaskResult> = app.task_tx.clone();
+                let app_handle: Arc<Mutex<AppState>> = self.app.clone();
                 drop(app);
 
                 // Create and spawn file operation task
@@ -1646,8 +1686,17 @@ impl EventLoop {
                         dest: dest.clone(),
                     },
                     task_tx,
-                    cancel_token,
+                    cancel_token.clone(),
+                    app_handle,
                 );
+
+                // Store cancellation token in UI state for ESC key access
+                {
+                    let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
+
+                    app.ui
+                        .store_cancel_token(task.operation_id.clone(), cancel_token);
+                }
 
                 tokio::spawn(async move {
                     if let Err(e) = task.execute().await {
@@ -1655,12 +1704,13 @@ impl EventLoop {
                     }
                 });
 
-                let mut app = self.app.lock().await;
+                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
                 app.ui.show_info(format!(
                     "Copying {} to {}",
                     source.file_name().unwrap_or_default().to_string_lossy(),
                     dest.display()
                 ));
+
                 app.ui.request_redraw(RedrawFlag::All);
             }
 
@@ -1668,6 +1718,7 @@ impl EventLoop {
                 info!("Starting move operation: {:?} -> {:?}", source, dest);
                 let app: MutexGuard<'_, AppState> = self.app.lock().await;
                 let task_tx: UnboundedSender<TaskResult> = app.task_tx.clone();
+                let app_handle: Arc<Mutex<AppState>> = self.app.clone();
                 drop(app);
 
                 // Create and spawn file operation task
@@ -1679,8 +1730,17 @@ impl EventLoop {
                         dest: dest.clone(),
                     },
                     task_tx,
-                    cancel_token,
+                    cancel_token.clone(),
+                    app_handle,
                 );
+
+                // Store cancellation token in UI state for ESC key access
+                {
+                    let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
+
+                    app.ui
+                        .store_cancel_token(task.operation_id.clone(), cancel_token);
+                }
 
                 tokio::spawn(async move {
                     if let Err(e) = task.execute().await {
@@ -1703,19 +1763,29 @@ impl EventLoop {
                 info!("Starting rename operation: {:?} -> {}", source, new_name);
                 let app: MutexGuard<'_, AppState> = self.app.lock().await;
                 let task_tx: UnboundedSender<TaskResult> = app.task_tx.clone();
+                let app_handle: Arc<Mutex<AppState>> = self.app.clone();
                 drop(app);
 
                 // Create and spawn file operation task
                 let cancel_token: CancellationToken = CancellationToken::new();
 
-                let task = FileOperationTask::new(
+                let task: FileOperationTask = FileOperationTask::new(
                     FileOperation::Rename {
                         source: source.clone(),
                         new_name: new_name.clone(),
                     },
                     task_tx,
-                    cancel_token,
+                    cancel_token.clone(),
+                    app_handle,
                 );
+
+                // Store cancellation token in UI state for ESC key access
+                {
+                    let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
+
+                    app.ui
+                        .store_cancel_token(task.operation_id.clone(), cancel_token);
+                }
 
                 tokio::spawn(async move {
                     if let Err(e) = task.execute().await {

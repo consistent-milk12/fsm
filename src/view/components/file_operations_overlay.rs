@@ -1,7 +1,7 @@
 //!
 //! Filepath: src/view/components/file_extension_overlay.rs
 //! Caller File: [src/view/ui.rs]
-//! 
+//!
 use crate::model::ui_state::FileOperationProgress;
 use ratatui::{
     Frame,
