@@ -48,8 +48,8 @@ impl FileOperationsOverlay {
         let percentage: u16 = (progress.progress_ratio() * 100.0) as u16;
         let throughput: String = Self::format_throughput(*throughput_bps);
         let eta: String = Self::format_eta(*estimated_completion);
-        let file_display: String = Self::truncate_path(&current_file, 35);
-        let file_count: String = format!("({}/{})", files_completed, total_files);
+        let file_display: String = Self::truncate_path(current_file, 35);
+        let file_count: String = format!("({files_completed}/{total_files})");
 
         let color: Color = match operation_type.as_str() {
             "Copy" => Color::Blue,
@@ -68,7 +68,7 @@ impl FileOperationsOverlay {
             )))
             .gauge_style(Style::default().fg(color))
             .percent(percentage)
-            .label(format!("{}% ({}, {})", percentage, throughput, eta));
+            .label(format!("{percentage}% ({throughput}, {eta})"));
 
         f.render_widget(gauge, area);
     }
@@ -138,7 +138,7 @@ impl FileOperationsOverlay {
         let mut unit_idx: usize = 0;
 
         while size >= 1024.0 && unit_idx < UNITS.len() - 1 {
-            size = size / 1024.0;
+            size /= 1024.0;
             unit_idx += 1;
         }
 

@@ -242,7 +242,7 @@ impl FileOperationTask {
         total_files: u32,
     ) -> Result<(), AppError> {
         let throughput = if current_bytes > 0 {
-            Some(current_bytes / 1)
+            Some(current_bytes)
         } else {
             None
         };
@@ -346,7 +346,7 @@ impl FileOperationTask {
             *current_bytes += bytes_read as u64;
 
             // Report progress every 1MB or 10% of file
-            if copied % optimal_interval == 0 {
+            if copied.is_multiple_of(optimal_interval) {
                 self.report_progress(
                     *current_bytes,
                     total_bytes,
@@ -452,7 +452,7 @@ impl FileOperationTask {
                 )
                 .await?;
 
-                return Ok(());
+                Ok(())
             }
 
             Err(_) => {
@@ -474,7 +474,7 @@ impl FileOperationTask {
                     TokioFs::remove_dir_all(source).await?;
                 }
 
-                return Ok(());
+                Ok(())
             }
         }
     }
@@ -559,6 +559,6 @@ impl FileOperationTask {
         let err: Error = Error::new(err_kind, err_msg);
         let app_err: AppError = AppError::Io(err);
 
-        return app_err;
+        app_err
     }
 }
