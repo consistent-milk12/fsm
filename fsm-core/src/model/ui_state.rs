@@ -20,7 +20,7 @@ use crate::fs::object_info::ObjectInfo;
 use crate::model::command_palette::{Command, CommandAction, CommandPaletteState};
 use crate::tasks::search_task::RawSearchResult;
 
-use clipr::Clipboard;
+use clipr::ClipBoard;
 
 /// Granular redraw flags for selective UI updates
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -328,7 +328,7 @@ pub struct UIState {
     pub operations_cancel_tokens: HashMap<String, CancellationToken>,
 
     /// Integrated clipboard system
-    pub clipboard: Clipboard,
+    pub clipboard: ClipBoard,
 
     /// Clipboard overlay state
     pub clipboard_overlay_active: bool,
@@ -393,7 +393,7 @@ impl UIState {
             operations_cancel_tokens: HashMap::new(),
 
             // Clipboard Flag
-            clipboard: Clipboard::default(),
+            clipboard: ClipBoard::default(),
             clipboard_overlay_active: false,
             selected_clipboard_item: None,
             clipboard_view_mode: ClipBoardViewMode::default(),
