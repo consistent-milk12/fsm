@@ -1,287 +1,261 @@
 # FSM Implementation Specification
 
-**ACTIVE FEATURE:** Phase 2.3: FileOperationsOverlay UI Component
+**ACTIVE FEATURE:** Phase 2.4: ESC Key Cancellation & Operation Cleanup
 
 ## 1. Executive Summary
-**Objective:** Implement visual progress indicators for file operations  
-**Priority:** High (blocks user experience for large file operations)  
-**Complexity:** Medium (UI integration + real-time updates)  
-**Dependencies:** Phase 2.1 & 2.2 progress backend (✅ Complete)  
-**Estimated Effort:** 1-2 development sessions  
+**Objective:** Enable user-initiated cancellation of file operations via ESC key  
+**Priority:** High (essential UX for long-running operations)  
+**Complexity:** Medium (key handling + cancellation token cleanup)  
+**Dependencies:** Phase 2.3 FileOperationsOverlay (✅ Complete)  
+**Estimated Effort:** 1 development session  
 
 ## 2. Context & Background
-**Problem:** Users have no visual feedback during large file operations  
-**Current State:** Backend progress tracking complete via UIState.active_file_operations HashMap  
-**Required:** UI component to visualize real-time progress data  
-**Integration Point:** Main UI rendering pipeline with conditional display  
+**Problem:** Users cannot cancel long-running file operations once started  
+**Current State:** CancellationToken integrated but no user-facing cancellation trigger  
+**Required:** ESC key handling + proper cleanup of cancelled operations  
+**Integration Point:** Event loop key handling + UIState operation management  
 
 ## 3. Success Criteria
 ### Must Have (P0)
-- [ ] **Real-time Updates**: Progress bars reflect current operation state
-- [ ] **Multi-operation Support**: Handle concurrent operations with separate bars  
-- [ ] **Performance Metrics**: Display throughput (MB/s) and ETA
-- [ ] **File Context**: Show current file being processed
-- [ ] **Auto-hide**: Overlay appears/disappears with active operations
+- [ ] **ESC Key Detection**: Detect ESC key during active file operations
+- [ ] **Token Cancellation**: Cancel active operations via CancellationToken
+- [ ] **UI Cleanup**: Remove cancelled operations from active_file_operations HashMap  
+- [ ] **User Feedback**: Show cancellation confirmation message
+- [ ] **Graceful Degradation**: Handle partial operation completion properly
 
 ### Should Have (P1)
-- [ ] **Color Coding**: Blue=Copy, Yellow=Move, Green=Rename
-- [ ] **Responsive Layout**: Adapt to terminal size, max 1/3 screen height
-- [ ] **Cancel Instruction**: Clear ESC key instruction displayed
-- [ ] **Non-intrusive**: Positioned at bottom, doesn't cover main content
+- [ ] **Multi-operation Cancel**: Cancel all active operations with single ESC press
+- [ ] **Cancel Confirmation**: Brief notification confirming cancellation
+- [ ] **Resource Cleanup**: Ensure proper cleanup of temporary files/handles
+- [ ] **Progress Preservation**: Don't lose completed work before cancellation
 
 ### Could Have (P2)
-- [ ] **Animation**: Smooth progress bar transitions
-- [ ] **Sound Feedback**: Optional completion notifications
+- [ ] **Selective Cancellation**: Choose which operation to cancel (future enhancement)
+- [ ] **Cancel with Confirmation**: Optional confirmation dialog before cancellation
 
 ## 4. Technical Approach
-**Architecture:** Component-based UI with ratatui Gauge widgets  
-**Data Flow:** UIState.active_file_operations → FileOperationsOverlay → Terminal  
-**Performance:** Conditional rendering only when operations active  
-**Error Handling:** Graceful degradation for edge cases
+**Architecture:** Event loop key handling with cancellation token integration  
+**Data Flow:** ESC key → event_loop → cancel tokens → cleanup UIState  
+**Performance:** Minimal overhead, only active during operations  
+**Error Handling:** Robust cleanup even if cancellation fails
 
 ## Implementation Specification
 
-### 1. Core Component Structure
+### 1. Cancellation Token Management
 ```rust
-// src/view/components/file_operations_overlay.rs (NEW FILE)
-use crate::model::ui_state::FileOperationProgress;
-use ratatui::{
-    layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Style},
-    widgets::{Block, Borders, Gauge, Paragraph},
-    Frame,
-};
-use std::collections::HashMap;
+// src/model/ui_state.rs - Add cancellation token tracking
+use tokio_util::CancellationToken;
 
-pub struct FileOperationsOverlay;
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct UIState {
+    // ... existing fields ...
+    
+    /// Track cancellation tokens for active operations
+    pub operation_cancel_tokens: HashMap<String, CancellationToken>,
+}
 
-impl FileOperationsOverlay {
-    /// Main render function - entry point for overlay display
-    pub fn render(f: &mut Frame, area: Rect, operations: &HashMap<String, FileOperationProgress>) {
-        if operations.is_empty() { return; }
-        
-        let areas = Self::calculate_layout(area, operations.len());
-        
-        for (i, (_id, progress)) in operations.iter().enumerate() {
-            if let Some(op_area) = areas.get(i) {
-                Self::render_single_operation(f, *op_area, progress);
-            }
-        }
-        
-        Self::render_cancel_instruction(f, &areas);
+impl UIState {
+    /// Store cancellation token for operation
+    pub fn store_cancel_token(&mut self, operation_id: String, token: CancellationToken) {
+        self.operation_cancel_tokens.insert(operation_id, token);
     }
     
-    /// Render individual progress bar with metrics
-    fn render_single_operation(f: &mut Frame, area: Rect, progress: &FileOperationProgress) {
-        let percentage = (progress.progress_ratio() * 100.0) as u16;
-        let throughput = Self::format_throughput(progress.throughput_bps);
-        let eta = Self::format_eta(progress.estimated_completion);
-        let file_display = Self::truncate_path(&progress.current_file, 35);
-        let file_count = format!("({}/{})", progress.files_completed, progress.total_files);
+    /// Cancel all active file operations
+    pub fn cancel_all_operations(&mut self) -> usize {
+        let count = self.operation_cancel_tokens.len();
         
-        let color = match progress.operation_type.as_str() {
-            "Copy" => Color::Blue,
-            "Move" => Color::Yellow, 
-            "Rename" => Color::Green,
-            _ => Color::Cyan,
-        };
+        // Cancel all tokens
+        for token in self.operation_cancel_tokens.values() {
+            token.cancel();
+        }
         
-        let gauge = Gauge::default()
-            .block(Block::default().borders(Borders::ALL)
-                .title(format!("{} {} {}", progress.operation_type, file_display, file_count)))
-            .gauge_style(Style::default().fg(color))
-            .percent(percentage)
-            .label(format!("{}% ({}, {})", percentage, throughput, eta));
-            
-        f.render_widget(gauge, area);
+        // Clear tracking data
+        self.operation_cancel_tokens.clear();
+        self.active_file_operations.clear();
+        
+        count
+    }
+    
+    /// Remove completed/cancelled operation
+    pub fn remove_operation(&mut self, operation_id: &str) {
+        self.operation_cancel_tokens.remove(operation_id);
+        self.active_file_operations.remove(operation_id);
     }
 }
 ```
 
-### 2. Layout & Display Logic
+### 2. Event Loop ESC Key Handling
 ```rust
-impl FileOperationsOverlay {
-    /// Calculate dynamic layout based on operation count
-    fn calculate_layout(area: Rect, operation_count: usize) -> Vec<Rect> {
-        let available_height = area.height.saturating_sub(1); // Reserve for instruction
-        let op_height = std::cmp::max(3, available_height / operation_count as u16);
+// src/controller/event_loop.rs - Add ESC key cancellation
+use crossterm::event::{KeyCode, KeyEvent};
+
+impl EventLoop {
+    async fn handle_key_event(&mut self, key: KeyEvent) -> Result<(), AppError> {
+        // ESC key handling - highest priority for operation cancellation
+        if key.code == KeyCode::Esc {
+            return self.handle_escape_key().await;
+        }
         
-        (0..operation_count).map(|i| Rect {
-            x: area.x,
-            y: area.y + (i as u16 * op_height),
-            width: area.width,
-            height: op_height,
-        }).collect()
+        // ... existing key handling ...
     }
     
-    /// Display cancel instruction at bottom
-    fn render_cancel_instruction(f: &mut Frame, areas: &[Rect]) {
-        if let Some(last_area) = areas.last() {
-            let instruction_area = Rect {
-                y: last_area.y + last_area.height,
-                height: 1,
-                ..*last_area
-            };
+    async fn handle_escape_key(&mut self) -> Result<(), AppError> {
+        let mut app = self.app.lock().await;
+        
+        // Cancel file operations if any are active
+        if !app.ui.active_file_operations.is_empty() {
+            let cancelled_count = app.ui.cancel_all_operations();
             
-            let text = Paragraph::new("Press ESC to cancel operations")
-                .style(Style::default().fg(Color::Gray));
-            f.render_widget(text, instruction_area);
-        }
-    }
-    
-    /// Format throughput for display
-    fn format_throughput(bps: Option<u64>) -> String {
-        match bps {
-            Some(bytes) => {
-                let (size, unit) = Self::scale_bytes(bytes);
-                format!("{:.1}{}/s", size, unit)
+            if cancelled_count > 0 {
+                app.ui.show_info(format!("Cancelled {} file operation(s)", cancelled_count));
+                tracing::info!("User cancelled {} file operations via ESC key", cancelled_count);
+                return Ok(());
             }
-            None => "calculating...".to_string(),
         }
+        
+        // Handle other overlay closures
+        match app.ui.overlay {
+            UIOverlay::Help | UIOverlay::Search | UIOverlay::FileNameSearch 
+            | UIOverlay::ContentSearch | UIOverlay::SearchResults 
+            | UIOverlay::Prompt => {
+                app.ui.close_all_overlays();
+            }
+            _ => {
+                // ESC in browse mode - could add additional behavior here
+            }
+        }
+        
+        Ok(())
     }
-    
-    /// Format ETA for display  
-    fn format_eta(eta: Option<std::time::Instant>) -> String {
-        match eta {
-            Some(time) => {
-                if let Ok(remaining) = time.duration_since(std::time::Instant::now()) {
-                    format!("{}s remaining", remaining.as_secs())
-                } else {
-                    "finishing...".to_string()
+}
+```
+
+### 3. File Operation Task Integration
+```rust
+// src/tasks/file_ops_task.rs - Integrate token storage
+impl FileOperationTask {
+    pub async fn execute(mut self) -> Result<(), AppError> {
+        let operation_id = self.operation_id.clone();
+        let cancel_token = self.cancel_token.clone();
+        
+        // Store cancellation token in UI state for ESC key access
+        {
+            let app = self.app.lock().await;
+            app.ui.store_cancel_token(operation_id.clone(), cancel_token.clone());
+        }
+        
+        // ... existing task execution logic ...
+        
+        // Cleanup on completion or error
+        let app = self.app.lock().await;
+        app.ui.remove_operation(&operation_id);
+        
+        Ok(())
+    }
+}
+```
+
+### 4. Enhanced Task Result Handling
+```rust
+// src/controller/event_loop.rs - Handle cancellation in task results
+async fn handle_task_result(&mut self, result: TaskResult) -> Result<(), AppError> {
+    match result {
+        TaskResult::FileOperationComplete { operation_id, result } => {
+            let mut app = self.app.lock().await;
+            
+            // Remove from tracking regardless of success/failure
+            app.ui.remove_operation(&operation_id);
+            
+            match result {
+                Ok(()) => {
+                    app.ui.show_success("File operation completed successfully");
+                }
+                Err(e) => {
+                    // Check if error was due to cancellation
+                    if e.to_string().contains("cancelled") || e.to_string().contains("canceled") {
+                        // Don't show error for user-initiated cancellation
+                        tracing::debug!("Operation {} was cancelled by user", operation_id);
+                    } else {
+                        app.ui.show_error(format!("File operation failed: {}", e));
+                    }
                 }
             }
-            None => "calculating...".to_string(),
         }
-    }
-    
-    /// Scale bytes to appropriate unit
-    fn scale_bytes(bytes: u64) -> (f64, &'static str) {
-        const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
-        let mut size = bytes as f64;
-        let mut unit_idx = 0;
-        
-        while size >= 1024.0 && unit_idx < UNITS.len() - 1 {
-            size /= 1024.0;
-            unit_idx += 1;
+        TaskResult::FileOperationProgress { operation_id, .. } => {
+            // Progress updates don't need special cancellation handling
+            // The cancellation will be handled by the task itself
         }
-        
-        (size, UNITS[unit_idx])
+        // ... other task results ...
     }
     
-    /// Truncate path for display
-    fn truncate_path(path: &std::path::Path, max_len: usize) -> String {
-        let path_str = path.to_string_lossy();
-        if path_str.len() <= max_len {
-            path_str.to_string()
-        } else {
-            format!("...{}", &path_str[path_str.len() - max_len + 3..])
-        }
-    }
+    Ok(())
 }
-```
-
-### 3. Main UI Integration
-```rust
-// src/view/ui.rs - Add to main render function
-use crate::view::components::file_operations_overlay::FileOperationsOverlay;
-
-pub fn render(f: &mut Frame, app: &AppState) {
-    // ... existing UI rendering ...
-    
-    // Render progress overlay if operations are active
-    if !app.ui.active_file_operations.is_empty() {
-        let overlay_area = calculate_progress_overlay_area(f.size(), app.ui.active_file_operations.len());
-        FileOperationsOverlay::render(f, overlay_area, &app.ui.active_file_operations);
-    }
-}
-
-/// Calculate overlay position - bottom of screen, above status bar
-fn calculate_progress_overlay_area(screen_size: Rect, operation_count: usize) -> Rect {
-    let overlay_height = std::cmp::min(
-        (operation_count * 3 + 2) as u16,  // 3 lines per operation + instruction
-        screen_size.height / 3             // Maximum 1/3 of screen
-    );
-    
-    Rect {
-        x: 1,
-        y: screen_size.height.saturating_sub(overlay_height + 2), // Above status bar
-        width: screen_size.width.saturating_sub(2),
-        height: overlay_height,
-    }
-}
-```
-
-### 4. Module Export Setup
-```rust
-// src/view/components/mod.rs - Add new component
-pub mod file_operations_overlay;
-pub use file_operations_overlay::FileOperationsOverlay;
 ```
 
 ## Success Criteria
-- [ ] **Real-time Updates**: Progress bars reflect current operation state
-- [ ] **Multi-operation Support**: Handle concurrent operations with separate bars
-- [ ] **Performance Metrics**: Display throughput (MB/s) and ETA
-- [ ] **File Context**: Show current file being processed
-- [ ] **Color Coding**: Blue=Copy, Yellow=Move, Green=Rename
-- [ ] **Responsive Layout**: Adapt to terminal size, max 1/3 screen height
-- [ ] **Auto-hide**: Overlay appears/disappears with active operations
-- [ ] **Non-intrusive**: Positioned at bottom, doesn't cover main content
-- [ ] **Cancel Instruction**: Clear ESC key instruction displayed
+- [ ] **ESC Key Detection**: Detect ESC key during active file operations
+- [ ] **Token Cancellation**: Cancel active operations via CancellationToken
+- [ ] **UI Cleanup**: Remove cancelled operations from active_file_operations HashMap  
+- [ ] **User Feedback**: Show cancellation confirmation message
+- [ ] **Graceful Degradation**: Handle partial operation completion properly
+- [ ] **Multi-operation Cancel**: Cancel all active operations with single ESC press
+- [ ] **Cancel Confirmation**: Brief notification confirming cancellation
+- [ ] **Resource Cleanup**: Ensure proper cleanup of temporary files/handles
+- [ ] **Progress Preservation**: Don't lose completed work before cancellation
 
 ## Technical Requirements
-- **Performance**: Conditional rendering only when operations active
-- **Memory**: Efficient string handling for path truncation
-- **Layout**: Dynamic height calculation based on operation count
-- **Integration**: Seamless addition to existing UI pipeline
-- **Error Handling**: Graceful degradation for edge cases
+- **Performance**: Minimal overhead, only active during operations
+- **Memory**: Efficient HashMap cleanup of cancelled operations
+- **Thread Safety**: Proper async/await handling during cancellation
+- **Integration**: Seamless addition to existing event loop
+- **Error Handling**: Robust cleanup even if cancellation fails
 
 ## Testing Approach
 1. Start large file copy operation
-2. Verify progress bar appears with correct metrics
-3. Test multiple concurrent operations
-4. Validate color coding and file display
-5. Confirm overlay disappears on completion
-6. Test responsive behavior with terminal resize
+2. Press ESC key during operation
+3. Verify operation cancels and UI clears
+4. Test with multiple concurrent operations
+5. Confirm cancellation notification appears
+6. Validate no resource leaks after cancellation
 
 ## 5. Testing Strategy
-**Unit Tests:** Component rendering with mock progress data  
-**Integration Tests:** Full UI pipeline with real file operations  
-**Performance Tests:** Memory usage with multiple concurrent operations  
-**User Acceptance:** Manual testing with large file operations  
+**Unit Tests:** Cancellation token behavior and UI state cleanup  
+**Integration Tests:** Full ESC key → cancellation → UI update pipeline  
+**Performance Tests:** Memory and resource usage during cancellation  
+**User Acceptance:** Manual testing with various operation types  
 
 ## 6. Risk Assessment (Claude-Enhanced)
 ### High Risk (Project Impact)
-- **Real-time UI updates causing performance degradation**
-  - *Claude Analysis*: UI blocking during rapid progress updates
-  - *Mitigation*: Conditional rendering with update throttling
-  - *Detection*: Monitor render times during large file operations
+- **Incomplete cancellation leaving zombie operations**
+  - *Claude Analysis*: Partial cleanup could cause UI inconsistencies
+  - *Mitigation*: Comprehensive cleanup in all code paths
+  - *Detection*: Monitor active operations count after cancellation
 
 ### Medium Risk (User Experience)  
-- **Terminal resize handling during active operations**
-  - *Claude Analysis*: Layout corruption when terminal resized mid-operation
-  - *Mitigation*: Responsive layout recalculation on resize events
-  - *Detection*: Manual testing across different terminal sizes
+- **Cancellation not responsive during heavy I/O**
+  - *Claude Analysis*: Long-running I/O operations may delay cancellation response
+  - *Mitigation*: Check cancellation token in I/O loops
+  - *Detection*: Manual testing with large file operations
 
-### Low Risk (Cosmetic)
-- **Color coding not displaying correctly on all terminals**
-  - *Claude Analysis*: Some terminals don't support full color palette
-  - *Mitigation*: Fallback colors for basic terminal compatibility
-  - *Detection*: Testing on minimal terminal emulators
+### Low Risk (Edge Cases)
+- **Race conditions between completion and cancellation**
+  - *Claude Analysis*: Operation could complete just as user presses ESC
+  - *Mitigation*: Proper synchronization and state checking
+  - *Detection*: Stress testing with rapid operations
 
 ### Edge Cases (Claude-Identified)
-- **Extremely long file paths breaking layout**
-- **Concurrent operations exceeding screen height**
-- **Zero-byte files causing division by zero in progress calculation**
-- **Network mounted files with inconsistent progress reporting**
+- **ESC key conflict with other UI overlays**
+- **Multiple rapid ESC key presses**
+- **Cancellation during error conditions**
+- **Network operations that can't be cancelled immediately**
 
 ## 7. Rollback Plan
-**Failure Condition:** UI performance degradation or rendering issues  
+**Failure Condition:** Cancellation causes crashes or incomplete cleanup  
 **Rollback Steps:**
-1. Remove FileOperationsOverlay from UI rendering
-2. Revert lib.rs module declaration  
-3. Delete overlay component file
-4. Operations continue with backend-only progress tracking
+1. Remove ESC key cancellation handling
+2. Revert UIState cancellation token methods
+3. Remove operation cleanup from event loop
+4. Operations continue without user cancellation option
 
 ## 8. Definition of Done (Claude-Enhanced)
 ### Code Quality
@@ -291,14 +265,14 @@ pub use file_operations_overlay::FileOperationsOverlay;
 - [ ] Error scenarios analyzed and mitigated
 
 ### Integration Testing  
-- [ ] Manual testing completed across different terminal sizes
-- [ ] Integration with existing UI verified
-- [ ] Performance impact measured and acceptable
-- [ ] Rollback plan tested and verified
+- [ ] Manual testing completed with various operation types
+- [ ] ESC key integration with existing overlays verified
+- [ ] Cancellation responsiveness measured and acceptable
+- [ ] Resource cleanup validated with monitoring tools
 
 ### Documentation & Continuity
 - [ ] Documentation updated in Design.md with technical details
-- [ ] ADR created for any architectural decisions made
+- [ ] ADR created for cancellation architecture decisions
 - [ ] Next phase specification prepared
 - [ ] CLAUDE.md updated with any workflow improvements discovered
 
@@ -310,7 +284,7 @@ pub use file_operations_overlay::FileOperationsOverlay;
 
 ---
 
-**This completes the visual layer for the robust progress tracking system built in Phases 2.1 & 2.2.**
+**This completes user-initiated cancellation for the robust file operations system.**
 
 ---
 

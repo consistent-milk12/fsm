@@ -172,17 +172,6 @@ pub mod controller {
     /// - Navigation (selection, directory changes)
     /// - Search operations (filename, content)
     /// - Background task results
-    pub mod actions;
-
-    /// Central event loop and action dispatcher
-    ///
-    /// The `EventLoop` struct:
-    /// - Receives events from multiple sources (terminal, tasks, direct actions)
-    /// - Routes actions to appropriate specialized handlers
-    /// - Manages task communication channels
-    /// - Coordinates state updates and UI redraws
-    pub mod event_loop;
-
     /// Specialized action handlers (implemented as EventLoop methods)
     ///
     /// Instead of one massive dispatch function, actions are routed to
@@ -194,7 +183,17 @@ pub mod controller {
     /// - handle_task_action: Background task coordination
     /// - handle_input_action: Input prompts, form validation
     // Re-export core types for easy access
+    pub mod actions;
     pub use actions::Action;
+
+    /// Central event loop and action dispatcher
+    ///
+    /// The `EventLoop` struct:
+    /// - Receives events from multiple sources (terminal, tasks, direct actions)
+    /// - Routes actions to appropriate specialized handlers
+    /// - Manages task communication channels
+    /// - Coordinates state updates and UI redraws
+    pub mod event_loop;
     pub use event_loop::{EventLoop, TaskResult};
 }
 
@@ -227,6 +226,7 @@ pub mod model {
     ///
     /// Thread-safe via Arc<Mutex<T>> for concurrent access from UI and background tasks.
     pub mod app_state;
+    pub use app_state::{AppHistoryEvent, AppState, PluginInfo};
 
     /// **Vim-style Command System** - Command parsing and execution
     ///
@@ -236,6 +236,7 @@ pub mod model {
     /// - Command history
     /// - Argument processing
     pub mod command_palette;
+    pub use command_palette::{Command, CommandAction, CommandPaletteState};
 
     /// **File System State** - Directory and file management
     ///
@@ -245,6 +246,7 @@ pub mod model {
     /// - Sorting and filtering options
     /// - Multi-pane support (future expansion)
     pub mod fs_state;
+    pub use fs_state::{EntryFilter, EntrySort, FSState, ObjectType, PaneState};
 
     /// **User Interface State** - UI-specific state management
     ///
@@ -255,6 +257,10 @@ pub mod model {
     /// - Notification and loading states
     /// - Redraw flags and optimization
     pub mod ui_state;
+    pub use ui_state::{
+        FileOperationProgress, LoadingState, Notification, NotificationLevel, RedrawFlag,
+        SearchType, UIMode, UIOverlay, UIState,
+    };
 }
 
 // =============================================================================
@@ -307,6 +313,7 @@ pub mod view {
     /// - Handles layout and responsive design
     /// - Manages redraw optimization
     pub mod ui;
+    pub use ui::View;
 
     /// **Reusable UI Components** - Modular widget system
     ///
@@ -314,18 +321,23 @@ pub mod view {
     pub mod components {
         /// Command auto-completion widget with Tab navigation
         pub mod command_completion;
+        pub use command_completion::CommandCompletion;
 
         /// Vim-style command palette interface
         pub mod command_palette;
+        pub use command_palette::CommandPalette;
 
         /// Content search overlay with ripgrep integration
         pub mod content_search_overlay;
+        pub use content_search_overlay::ContentSearchOverlay;
 
         /// File operations progress overlay with real-time progress tracking
         pub mod file_operations_overlay;
+        pub use file_operations_overlay::FileOperationsOverlay;
 
         /// Filename search overlay with real-time results
         pub mod filename_search_overlay;
+        pub use filename_search_overlay::FileNameSearchOverlay;
 
         /// Help system showing keybindings and commands
         pub mod help_overlay;
@@ -333,12 +345,15 @@ pub mod view {
 
         /// Modal input prompts for user text input
         pub mod input_prompt_overlay;
+        pub use input_prompt_overlay::InputPromptOverlay;
 
         /// Loading indicators with progress bars
         pub mod loading_overlay;
+        pub use loading_overlay::LoadingOverlay;
 
         /// Toast-style notifications for user feedback
         pub mod notification_overlay;
+        pub use notification_overlay::NotificationOverlay;
 
         /// **Main file/directory table** - Core UI component
         ///
@@ -348,24 +363,29 @@ pub mod view {
         /// - Selection highlighting
         /// - Sorting indicators
         pub mod object_table;
+        pub use object_table::ObjectTable;
 
         /// Bottom prompt bar for status and commands
         pub mod prompt_bar;
+        pub use prompt_bar::PromptBar;
 
         /// Generic search overlay base component
         pub mod search_overlay;
+        pub use search_overlay::SearchOverlay;
 
         /// Search results display with navigation
         pub mod search_results_overlay;
+        pub use search_results_overlay::SearchResultsOverlay;
 
         /// Status bar showing current directory and file counts
         pub mod status_bar;
+        pub use status_bar::StatusBar;
     }
 
-    // Re-export components for easy access
     pub use components::*;
-    pub use ui::*;
 }
+
+pub use view::*;
 
 // =============================================================================
 // FILESYSTEM - File system abstraction and operations

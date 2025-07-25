@@ -8,6 +8,7 @@
 
 use std::{
     io::{self, Stdout},
+    panic::PanicHookInfo,
     path::PathBuf,
     sync::Arc,
     time::Instant,
@@ -80,19 +81,20 @@ impl App {
         let config_handle = tokio::spawn(Config::load());
         let dir_handle = tokio::spawn(tokio::fs::canonicalize("."));
 
-        let config = Arc::new(config_handle.await?.unwrap_or_else(|e| {
+        let config: Arc<Config> = Arc::new(config_handle.await?.unwrap_or_else(|e| {
             info!("Failed to load config, using defaults: {}", e);
             Config::default()
         }));
 
-        let cache = Arc::new(ObjectInfoCache::with_config(config.cache.clone()));
-        let fs_state = FSState::default();
-        let ui_state = UIState::default();
+        let cache: Arc<ObjectInfoCache> =
+            Arc::new(ObjectInfoCache::with_config(config.cache.clone()));
+        let fs_state: FSState = FSState::default();
+        let ui_state: UIState = UIState::default();
 
         let (task_tx, task_rx) = mpsc::unbounded_channel::<TaskResult>();
         let (action_tx, action_rx) = mpsc::unbounded_channel::<Action>();
 
-        let app_state = Arc::new(Mutex::new(AppState::new(
+        let app_state: Arc<Mutex<AppState>> = Arc::new(Mutex::new(AppState::new(
             config,
             cache,
             fs_state,
@@ -101,15 +103,15 @@ impl App {
             action_tx,
         )));
 
-        let controller = EventLoop::new(app_state.clone(), task_rx, action_rx);
-        let shutdown = Arc::new(Notify::new());
+        let controller: EventLoop = EventLoop::new(app_state.clone(), task_rx, action_rx);
+        let shutdown: Arc<Notify> = Arc::new(Notify::new());
 
         let current_dir: PathBuf = dir_handle
             .await?
             .context("Failed to get current directory")?;
 
         {
-            let mut state = app_state.lock().await;
+            let mut state: MutexGuard<'_, AppState> = app_state.lock().await;
             state.enter_directory(current_dir).await;
             state.ui.request_redraw(RedrawFlag::All); // Use UI state for redraw management
         }
@@ -177,7 +179,7 @@ impl App {
         let mut state: MutexGuard<'_, AppState> = self.state.lock().await;
 
         if state.ui.needs_redraw() {
-            let start = Instant::now();
+            let start: Instant = Instant::now();
 
             self.terminal
                 .draw(|frame: &mut Frame<'_>| {
@@ -206,7 +208,7 @@ impl App {
 
     /// Check memory usage and log warnings if memory is getting low
     fn check_memory_usage(&mut self) {
-        let now = Instant::now();
+        let now: Instant = Instant::now();
 
         // Check memory every 5 seconds to avoid performance impact
         if now.duration_since(self.last_memory_check).as_secs() >= 5 {
@@ -214,9 +216,10 @@ impl App {
 
             match sys_info::mem_info() {
                 Ok(mem_info) => {
-                    let available_mb = mem_info.avail / 1024; // Convert KB to MB
-                    let total_mb = mem_info.total / 1024;
-                    let used_percent = ((total_mb - available_mb) as f64 / total_mb as f64) * 100.0;
+                    let available_mb: u64 = mem_info.avail / 1024; // Convert KB to MB
+                    let total_mb: u64 = mem_info.total / 1024;
+                    let used_percent: f64 =
+                        ((total_mb - available_mb) as f64 / total_mb as f64) * 100.0;
 
                     // Log memory warnings based on available memory
                     if available_mb < 100 {
@@ -248,7 +251,7 @@ impl App {
 
     /// Setup signal handlers for graceful shutdown
     async fn setup_shutdown_handler(&self) {
-        let shutdown = self.shutdown.clone();
+        let shutdown: Arc<Notify> = self.shutdown.clone();
 
         tokio::spawn(async move {
             #[cfg(unix)]
@@ -299,7 +302,7 @@ impl Drop for App {
 fn setup_terminal() -> Result<AppTerminal> {
     enable_raw_mode().context("Failed to enable raw mode")?;
 
-    let mut stdout = io::stdout();
+    let mut stdout: Stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen).context("Failed to enter alternate screen")?;
 
     let backend: Backend<Stdout> = Backend::new(stdout);
@@ -325,7 +328,8 @@ fn cleanup_terminal(terminal: &mut AppTerminal) -> Result<()> {
 
 /// Setup panic handler for graceful terminal restoration
 fn setup_panic_handler() {
-    let original_hook = std::panic::take_hook();
+    let original_hook: Box<dyn Fn(&PanicHookInfo<'_>) + Send + Sync + 'static> =
+        std::panic::take_hook();
 
     std::panic::set_hook(Box::new(move |panic_info| {
         // Try to restore terminal on panic

@@ -53,10 +53,10 @@ EventLoop -> dispatch_action() -> background tasks -> TaskResult -> UI updates
 - **Updates**: AI replaces entirely when phase completes
 - **Format**: Executive Summary → Context → Success Criteria → Technical Approach → Code Specs
 
-## Current Implementation Context (Phase 2.3)
-**Backend Complete:** Real-time progress tracking via UIState.active_file_operations HashMap
-**Missing:** FileOperationsOverlay UI component for progress visualization
-**Files:** Create `src/view/components/file_operations_overlay.rs` + integrate with main UI
+## Current Implementation Context (Phase 2.4)
+**Phase 2.3 Complete:** FileOperationsOverlay UI component with real-time progress visualization
+**Next:** ESC key cancellation + operation cleanup for user-initiated cancellation
+**Files:** Update event_loop.rs key handling + implement cancellation token cleanup
 
 ## Key System Knowledge
 - **TaskResult enum**: Legacy + FileOperationComplete + FileOperationProgress variants
@@ -78,7 +78,8 @@ RUST_LOG=debug cargo run
 ✅ **Search** - filename (/) + content (:search), ripgrep ANSI colors
 ✅ **Commands** - vim-style (:), auto-completion, input prompts
 ✅ **Progress infrastructure** - real-time tracking, cancellation tokens, state management
-⏳ **Progress UI** - FileOperationsOverlay component (Phase 2.3 IN PROGRESS)
+✅ **Progress UI** - FileOperationsOverlay component with real-time metrics
+⏳ **ESC Cancellation** - User-initiated operation cancellation (Phase 2.4 IN PROGRESS)
 
 ## AI Development Workflow (STRICT - CLEAN SESSION PROTOCOL)
 

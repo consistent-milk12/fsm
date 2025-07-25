@@ -138,6 +138,54 @@ file_ops_task → TaskResult::FileOperationProgress → event_loop → UIState.a
 
 ---
 
+## ✅ PHASE 2.3: FileOperationsOverlay UI Component (2024-07-25)
+
+**Implemented:** Visual progress indicators for file operations with real-time metrics
+
+### Core Component Architecture
+```rust
+// src/view/components/file_operations_overlay.rs - New component
+pub struct FileOperationsOverlay;
+
+impl FileOperationsOverlay {
+    pub fn render(f: &mut Frame, area: Rect, operations: &HashMap<String, FileOperationProgress>) {
+        // Real-time progress bars with throughput and ETA
+        // Color-coded by operation: Blue=Copy, Yellow=Move, Green=Rename
+        // Dynamic layout with ESC cancellation instruction
+    }
+}
+
+// src/view/ui.rs - Integration with main UI pipeline
+if !app.ui.active_file_operations.is_empty() {
+    let overlay_area = Self::calculate_progress_overlay_area(frame.area(), app.ui.active_file_operations.len());
+    FileOperationsOverlay::render(frame, overlay_area, &app.ui.active_file_operations);
+}
+```
+
+### Visual Features Delivered
+- **Real-time Progress Bars**: Gauge widgets showing percentage completion
+- **Performance Metrics**: Throughput (MB/s) and ETA calculations  
+- **Multi-operation Support**: Concurrent operations with separate progress bars
+- **Color Coding**: Blue (Copy), Yellow (Move), Green (Rename) for visual distinction
+- **Responsive Layout**: Adapts to terminal size, max 1/3 screen height
+- **Auto-hide Behavior**: Appears only when operations active
+- **Cancel Instruction**: Clear ESC key guidance displayed
+
+### Technical Implementation
+- **Conditional Rendering**: Zero performance impact when no operations active
+- **Dynamic Layout**: Height calculation based on operation count
+- **Path Truncation**: Smart file path display with ellipsis for long paths
+- **Unit Scaling**: Automatic B/KB/MB/GB/TB scaling for throughput display
+- **Time Formatting**: User-friendly ETA display with fallbacks
+
+### Integration Pattern
+- **UI State Binding**: Direct connection to UIState.active_file_operations HashMap
+- **Non-intrusive Positioning**: Bottom overlay above status bar
+- **Module System**: Clean component export through mod.rs
+- **Import Integration**: Added to main UI rendering pipeline
+
+---
+
 ## Technical Foundation Summary
 
 ### Architecture Pattern
