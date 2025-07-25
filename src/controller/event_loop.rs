@@ -534,17 +534,19 @@ impl EventLoop {
         match key.code {
             KeyCode::Char(c) => {
                 debug!("Filename search: adding character '{}'", c);
-                let mut app = self.app.lock().await;
+                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
                 app.ui.input.push(c);
-                let pattern = app.ui.input.clone();
+
+                let pattern: String = app.ui.input.clone();
                 trace!("Filename search pattern: '{}'", pattern);
                 Action::FileNameSearch(pattern)
             }
 
             KeyCode::Backspace => {
                 debug!("Filename search: backspace");
-                let mut app = self.app.lock().await;
+                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
                 app.ui.input.pop();
+
                 let pattern = app.ui.input.clone();
                 trace!("Filename search pattern: '{}' (after backspace)", pattern);
                 Action::FileNameSearch(pattern)
@@ -552,7 +554,7 @@ impl EventLoop {
 
             KeyCode::Enter => {
                 debug!("Filename search: enter pressed");
-                let app = self.app.lock().await;
+                let app: MutexGuard<'_, AppState> = self.app.lock().await;
 
                 // Try to open selected result
                 if !app.ui.filename_search_results.is_empty()
@@ -575,24 +577,29 @@ impl EventLoop {
 
             KeyCode::Up => {
                 debug!("Filename search: navigate up");
-                let mut app = self.app.lock().await;
-                let result_count = app.ui.filename_search_results.len();
+                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
+
+                let result_count: usize = app.ui.filename_search_results.len();
+
                 if result_count > 0 {
                     app.ui.selected = Some(app.ui.selected.unwrap_or(0).saturating_sub(1));
                     trace!("Filename search selection: {:?}", app.ui.selected);
                 }
+
                 Action::NoOp
             }
 
             KeyCode::Down => {
                 debug!("Filename search: navigate down");
-                let mut app = self.app.lock().await;
-                let result_count = app.ui.filename_search_results.len();
+                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
+                let result_count: usize = app.ui.filename_search_results.len();
+
                 if result_count > 0 {
-                    let current = app.ui.selected.unwrap_or(0);
+                    let current: usize = app.ui.selected.unwrap_or(0);
                     app.ui.selected = Some((current + 1).min(result_count.saturating_sub(1)));
                     trace!("Filename search selection: {:?}", app.ui.selected);
                 }
+
                 Action::NoOp
             }
 
@@ -610,8 +617,9 @@ impl EventLoop {
         match key.code {
             KeyCode::Char(c) => {
                 debug!("Content search: adding character '{}'", c);
-                let mut app = self.app.lock().await;
+                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
                 app.ui.input.push(c);
+
                 // Clear previous results for real-time search
                 self.clear_search_results(&mut app);
                 app.ui.request_redraw(RedrawFlag::All);
@@ -621,7 +629,7 @@ impl EventLoop {
 
             KeyCode::Backspace => {
                 debug!("Content search: backspace");
-                let mut app = self.app.lock().await;
+                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
                 app.ui.input.pop();
                 self.clear_search_results(&mut app);
                 app.ui.request_redraw(RedrawFlag::All);
@@ -631,7 +639,7 @@ impl EventLoop {
 
             KeyCode::Enter => {
                 debug!("Content search: enter pressed");
-                let app = self.app.lock().await;
+                let app: MutexGuard<'_, AppState> = self.app.lock().await;
 
                 // Try to open selected result first
                 if let Some(selected_idx) = app.ui.selected {
@@ -830,19 +838,23 @@ impl EventLoop {
 
             KeyCode::Enter => {
                 debug!("Search results: opening selected result");
-                let app = self.app.lock().await;
+                let app: MutexGuard<'_, AppState> = self.app.lock().await;
+
                 if let Some(selected_idx) = app.ui.selected
                     && let Some(result) = app.ui.search_results.get(selected_idx)
                 {
                     info!("Opening search result: {:?}", result.path);
+
                     return Action::OpenFile(result.path.clone(), None);
                 }
+
                 Action::NoOp
             }
 
             KeyCode::Up => {
                 debug!("Search results: navigate up");
-                let mut app = self.app.lock().await;
+                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
+
                 if !app.ui.search_results.is_empty() {
                     let current = app.ui.selected.unwrap_or(0);
                     app.ui.selected = Some(current.saturating_sub(1));
@@ -853,13 +865,15 @@ impl EventLoop {
 
             KeyCode::Down => {
                 debug!("Search results: navigate down");
-                let mut app = self.app.lock().await;
-                let result_count = app.ui.search_results.len();
+                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
+                let result_count: usize = app.ui.search_results.len();
+
                 if result_count > 0 {
                     let current = app.ui.selected.unwrap_or(0);
                     app.ui.selected = Some((current + 1).min(result_count.saturating_sub(1)));
                     app.ui.request_redraw(RedrawFlag::All);
                 }
+
                 Action::NoOp
             }
 
@@ -874,7 +888,7 @@ impl EventLoop {
     fn map_command_action_to_action(&self, cmd_action: CommandAction) -> Action {
         debug!("Mapping command action: {:?}", cmd_action);
 
-        let action = match cmd_action {
+        let action: Action = match cmd_action {
             CommandAction::OpenConfig => {
                 info!("Command: open config (opening system config file)");
                 // TODO: Open actual config file
@@ -1476,6 +1490,7 @@ impl EventLoop {
             Action::SimulateLoading => {
                 debug!("Simulating loading state");
                 let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
+
                 app.ui.loading = Some(LoadingState {
                     message: "Simulated loading...".into(),
                     progress: None,
@@ -1484,6 +1499,7 @@ impl EventLoop {
                     completed: Some(0),
                     total: Some(100),
                 });
+
                 app.ui.overlay = UIOverlay::Loading;
                 app.ui.request_redraw(RedrawFlag::All);
             }
@@ -1496,10 +1512,15 @@ impl EventLoop {
 
                 active_pane.sort = match active_pane.sort {
                     EntrySort::NameAsc => EntrySort::NameDesc,
+
                     EntrySort::NameDesc => EntrySort::SizeAsc,
+
                     EntrySort::SizeAsc => EntrySort::SizeDesc,
+
                     EntrySort::SizeDesc => EntrySort::ModifiedAsc,
+
                     EntrySort::ModifiedAsc => EntrySort::ModifiedDesc,
+
                     EntrySort::ModifiedDesc | EntrySort::Custom(_) => EntrySort::NameAsc,
                 };
 
