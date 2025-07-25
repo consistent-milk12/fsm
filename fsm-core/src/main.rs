@@ -26,7 +26,7 @@ use tokio::{
 };
 use tracing::{info, warn};
 
-use fsm::{
+use fsm_core::{
     Logger,
     cache::cache_manager::ObjectInfoCache,
     config::Config,

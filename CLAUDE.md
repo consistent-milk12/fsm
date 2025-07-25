@@ -14,10 +14,12 @@ EventLoop -> dispatch_action() -> background tasks -> TaskResult -> UI updates
 ```
 
 **Key Files:**
-- `src/controller/event_loop.rs` - Central dispatcher, action handlers
-- `src/tasks/file_ops_task.rs` - Background file operations with progress
-- `src/model/ui_state.rs` - UI state + active_file_operations HashMap
-- `src/controller/actions.rs` - Action enum (Copy/Move/Rename + progress variants)
+- `fsm-core/src/controller/event_loop.rs` - Central dispatcher, action handlers
+- `fsm-core/src/tasks/file_ops_task.rs` - Background file operations with progress
+- `fsm-core/src/model/ui_state.rs` - UI state + active_file_operations HashMap (needs clipr integration)
+- `fsm-core/src/controller/actions.rs` - Action enum (Copy/Move/Rename + progress variants)
+- `clipr/src/lib.rs` - Clipboard crate interface (in progress)
+- `clipr/src/clipboard.rs` - Core clipboard implementation (needs completion)
 
 ## Code Rules (CLAUDE-OPTIMIZED)
 1. **RESTRICTED FILE EDITING** - Claude can ONLY directly edit: CLAUDE.md, Design.md, Implementation.md
@@ -53,10 +55,11 @@ EventLoop -> dispatch_action() -> background tasks -> TaskResult -> UI updates
 - **Updates**: AI replaces entirely when phase completes
 - **Format**: Executive Summary → Context → Success Criteria → Technical Approach → Code Specs
 
-## Current Implementation Context (Next Phase)
+## Current Implementation Context (Active Phase)
 **Phase 2.4 Complete:** ESC key cancellation with comprehensive cleanup and user feedback
-**Progress System Complete:** Full file operations with visual progress and user cancellation
-**Next Phase Ready:** Multi-selection operations, dual-pane layout, or preview system
+**Progress System Complete:** Full file operations with visual progress and user cancellation  
+**Phase 3.1 In Progress:** Core Clipboard Infrastructure (`clipr` crate) - workspace setup partially complete
+**Current Status:** Workspace structure created, clipr crate foundation started, needs completion + UIState integration
 
 ## Key System Knowledge
 - **TaskResult enum**: Legacy + FileOperationComplete + FileOperationProgress variants
@@ -67,9 +70,13 @@ EventLoop -> dispatch_action() -> background tasks -> TaskResult -> UI updates
 
 ## Dependencies & Build
 ```bash
-ratatui tokio crossterm tracing moka serde anyhow thiserror ansi-to-tui tokio-util uuid
-cargo fmt && cargo check && cargo clippy && cargo build
-RUST_LOG=debug cargo run
+# Workspace dependencies
+ratatui tokio crossterm tracing moka serde anyhow thiserror ansi-to-tui tokio-util uuid walkdir
+
+# Build commands (from workspace root)
+cargo build --workspace
+cargo fmt --all && cargo check --workspace && cargo clippy --workspace
+RUST_LOG=debug cargo run -p fsm-core --bin fs
 ```
 
 ## Features Status

@@ -1,0 +1,46 @@
+[package]
+name = "fsm-core"
+version = "1.0.0"
+edition = "2024"
+
+[dependencies]
+# Clipboard crate dependency
+clipr = { path = "../clipr" }
+
+# UI and async runtime
+ratatui = { workspace = true }
+crossterm = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+futures = { workspace = true }
+
+# Serialization and configuration
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Utilities and system info
+uuid = { workspace = true }
+tracing = { workspace = true }
+tracing-appender = { workspace = true }
+tracing-subscriber = { workspace = true }
+chrono = { workspace = true }
+humantime-serde = { workspace = true }
+
+# File operations
+walkdir = { workspace = true }
+directories = { workspace = true }
+bytesize = { workspace = true }
+
+# Additional utilities
+ansi-to-tui = { workspace = true }
+moka = { workspace = true }
+sys-info = { workspace = true }
+
+[[bin]]
+name = "fs"
+path = "src/main.rs"

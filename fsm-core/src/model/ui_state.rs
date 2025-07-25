@@ -20,6 +20,8 @@ use crate::fs::object_info::ObjectInfo;
 use crate::model::command_palette::{Command, CommandAction, CommandPaletteState};
 use crate::tasks::search_task::RawSearchResult;
 
+use clipr::Clipboard;
+
 /// Granular redraw flags for selective UI updates
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RedrawFlag {
@@ -233,6 +235,19 @@ impl FileOperationProgress {
     }
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum ClipBoardViewMode {
+    /// Standard list view
+    #[default]
+    List,
+
+    /// Detailed view with metadata
+    Details,
+
+    /// Grid layout for many items
+    Grid,
+}
+
 /// Main UI state structure
 #[derive(Debug, Default, Clone)]
 pub struct UIState {
@@ -311,6 +326,14 @@ pub struct UIState {
 
     /// Track cancellation tokens for active operations
     pub operations_cancel_tokens: HashMap<String, CancellationToken>,
+
+    /// Integrated clipboard system
+    pub clipboard: Clipboard,
+
+    /// Clipboard overlay state
+    pub clipboard_overlay_active: bool,
+    pub selected_clipboard_item: Option<String>,
+    pub clipboard_view_mode: ClipBoardViewMode,
 }
 
 impl PartialEq for UIState {
@@ -368,6 +391,12 @@ impl UIState {
 
             // Operation cancel tracker
             operations_cancel_tokens: HashMap::new(),
+
+            // Clipboard Flag
+            clipboard: Clipboard::default(),
+            clipboard_overlay_active: false,
+            selected_clipboard_item: None,
+            clipboard_view_mode: ClipBoardViewMode::default(),
         }
     }
 
@@ -376,19 +405,23 @@ impl UIState {
         self.selected = idx;
         self.request_redraw(RedrawFlag::Main);
     }
+
     pub fn mark_index(&mut self, idx: usize) {
         self.marked_indices.insert(idx);
         self.request_redraw(RedrawFlag::Main);
     }
+
     pub fn unmark_index(&mut self, idx: usize) {
         self.marked_indices.remove(&idx);
         self.request_redraw(RedrawFlag::Main);
     }
+
     pub fn clear_marks(&mut self) {
         self.marked_indices.clear();
         self.visual_range = None;
         self.request_redraw(RedrawFlag::Main);
     }
+
     pub fn set_visual_range(&mut self, start: usize, end: usize) {
         self.visual_range = Some((start, end));
         self.request_redraw(RedrawFlag::Main);
@@ -417,15 +450,18 @@ impl UIState {
         self.mode = mode;
         self.request_redraw_all();
     }
+
     pub fn set_overlay(&mut self, overlay: UIOverlay) {
         self.overlay = overlay;
         self.request_redraw_all();
     }
+
     pub fn toggle_help_overlay(&mut self) {
         self.overlay = match self.overlay {
             UIOverlay::Help => UIOverlay::None,
             _ => UIOverlay::Help,
         };
+
         self.request_redraw_all();
     }
 
@@ -442,6 +478,7 @@ impl UIState {
         self.mode = UIMode::Browse;
         self.input.clear();
         self.command_palette.input.clear();
+
         // Reset completion state to prevent stale completions
         self.command_palette.hide_completions();
         self.command_palette.completions.clear();
@@ -655,5 +692,24 @@ impl UIState {
         self.operations_cancel_tokens.remove(operation_id);
 
         self.active_file_operations.remove(operation_id);
+    }
+
+    pub fn toggle_clipboard_overlay(&mut self) {
+        self.clipboard_overlay_active = !self.clipboard_overlay_active;
+
+        if !self.clipboard_overlay_active {
+            self.selected_clipboard_item = None;
+        }
+    }
+
+    pub fn show_clipboard_overlay(&mut self) {
+        self.clipboard_overlay_active = true;
+        self.request_redraw(RedrawFlag::Overlay);
+    }
+
+    pub fn close_clipboard_overlay(&mut self) {
+        self.clipboard_overlay_active = false;
+        self.selected_clipboard_item = None;
+        self.request_redraw(RedrawFlag::Overlay);
     }
 }

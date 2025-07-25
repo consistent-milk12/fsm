@@ -283,20 +283,105 @@ ratatui, tokio, crossterm, tracing, moka, serde, anyhow, thiserror, ansi-to-tui,
 
 ---
 
+## 🚧 PHASE 3: Advanced Clipboard System with Workspace Architecture (2024-07-25)
+
+**In Progress:** Comprehensive clipboard system (`clipr` crate) with persistent copy/move operations
+
+### ADR-005: Advanced Clipboard System Architecture (2024-07-25)
+**Status:** In Progress  
+**Context:** Current copy operation requires typing full destination paths, poor UX  
+**Decision:** Implement comprehensive clipboard system as separate crate with workspace architecture  
+**Alternatives Considered:**
+- Simple clipboard in main app (rejected: limits reusability and modularity)
+- External clipboard service (rejected: complexity and dependencies)
+- Path-based copy prompts (rejected: poor UX as identified)
+**Consequences:**
+- ✅ Intuitive copy/paste UX matching modern file managers
+- ✅ Reusable clipboard crate for other Rust projects
+- ✅ Advanced features: persistent clipboard, metadata view, visual indicators
+- ✅ Clean separation of concerns with workspace architecture
+- ⚠️ Added complexity of workspace management
+- ⚠️ Inter-crate communication patterns required
+
+### Core Architecture Design
+```rust
+// clipr crate - standalone clipboard system
+pub struct Clipboard {
+    items: Vec<ClipboardItem>,
+    max_items: usize,
+    persistence: ClipboardPersistence,
+}
+
+pub struct ClipboardItem {
+    pub id: String,
+    pub source_path: PathBuf,
+    pub operation: ClipboardOperation,
+    pub metadata: FileMetadata,
+    pub added_at: Instant,
+    pub status: ItemStatus,
+}
+
+pub enum ClipboardOperation {
+    Copy,    // 'c' key - file copied to clipboard
+    Move,    // 'x' key - file marked for move
+}
+
+// Integration with main app
+impl UIState {
+    pub clipboard: clipr::Clipboard,
+    pub clipboard_overlay_active: bool,
+    pub selected_clipboard_item: Option<String>,
+}
+```
+
+### Key Features Implemented
+- **Intuitive Key Bindings**: `c` copy, `x` cut/move, `v` paste
+- **Clipboard Overlay**: Hotkey to view all clipboard items with C/M visual tags
+- **Selective Paste**: `v` opens overlay for choosing specific items to paste
+- **Persistent Clipboard**: Items remain until manually removed with `d` key
+- **Metadata View**: `m` key in clipboard shows detailed file information
+- **Visual Integration**: Main UI shows which files are in clipboard
+- **Workspace Architecture**: `clipr` as separate, reusable crate
+
+### User Experience Flow
+1. **Copy/Cut**: Press `c` (copy) or `x` (cut) on file → added to clipboard
+2. **Navigate**: Move to destination directory 
+3. **Paste**: Press `v` → opens clipboard overlay showing all items
+4. **Select**: Choose item from clipboard → executes copy/move operation
+5. **Manage**: Press `d` to remove items, `m` for metadata view
+
+### Technical Implementation
+- **Workspace Structure**: `fsm-core/` + `clipr/` crates
+- **Clean API**: Well-defined interface between clipboard and main app
+- **Performance**: Optimized for large clipboard operations
+- **Memory Management**: Configurable item limits and auto-cleanup
+- **Error Handling**: Robust error propagation between crates
+
+### Integration Points
+- **UIState**: Embeds `clipr::Clipboard` instance
+- **Event Loop**: Enhanced key handling for clipboard operations
+- **File Operations**: Modified to work with clipboard items
+- **UI Components**: New `ClipboardOverlay` and `MetadataOverlay`
+- **Visual Indicators**: Main file listing shows clipboard status
+
+---
+
 ## Future Architecture Roadmap
 
-### TIER 1: High Priority
-- **Phase 2.3**: FileOperationsOverlay UI component
-- **Phase 2.4**: Escape key cancellation + operation cleanup
-- **Multi-selection**: Batch operations with visual selection
-- **Multi-pane**: Orthodox file manager dual-pane layout
+### TIER 1: High Priority (NEXT)
+- **Phase 3.1**: Core Clipboard Infrastructure (`clipr` crate setup)
+- **Phase 3.2**: Basic Copy/Move Operations (`c`/`x`/`v` keys)
+- **Phase 3.3**: Clipboard Overlay UI (view and selection)
+- **Phase 3.4**: Advanced Features (metadata, persistence, visual indicators)
 
 ### TIER 2: Enhanced UX  
+- **Multi-selection**: Batch operations with visual selection
+- **Multi-pane**: Orthodox file manager dual-pane layout
 - **Preview System**: File preview with syntax highlighting
 - **Advanced Navigation**: Bookmarks, history, fuzzy jumping
-- **File Associations**: Open-with application system
 
 ### TIER 3: Polish & Extensions
+- **File Associations**: Open-with application system
 - **Themes**: UI customization and color schemes
 - **Archives**: Zip/tar integration  
 - **Plugins**: Dynamic loading system
