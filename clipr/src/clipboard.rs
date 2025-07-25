@@ -144,7 +144,7 @@ impl ClipBoard {
         paths: Vec<PathBuf>,
         operation: ClipBoardOperation,
     ) -> Vec<ClipResult<u64>> {
-        let results: Vec<_> = paths
+        let items_results: Vec<_> = paths
             .into_par_iter() // Rayon parallel iterator for CPU scaling
             .map(|path| match operation {
                 ClipBoardOperation::Copy => ClipBoardItem::new_copy(path),
@@ -153,21 +153,31 @@ impl ClipBoard {
             .collect();
 
         // Process successful items in batch for lock-free efficiency
-        let mut successful_ids = Vec::new();
-        for result in &results {
-            if let Ok(item) = result {
-                if let Ok(()) = self.insert_item_optimized(item.clone()).await {
-                    successful_ids.push(item.id);
-                    match operation {
-                        ClipBoardOperation::Copy => self.stats.inc_copy_items(),
-                        ClipBoardOperation::Move => self.stats.inc_move_items(),
+        let mut final_results = Vec::with_capacity(items_results.len());
+
+        for item_result in items_results {
+            match item_result {
+                Ok(item) => {
+                    let id = item.id;
+                    if let Ok(()) = self.insert_item_optimized(item).await {
+                        match operation {
+                            ClipBoardOperation::Copy => self.stats.inc_copy_items(),
+                            ClipBoardOperation::Move => self.stats.inc_move_items(),
+                        }
+                        final_results.push(Ok(id));
+                    } else {
+                        // If insert_item_optimized fails, return the error
+                        final_results.push(Err(ClipError::FileSystemError {
+                            kind: std::io::ErrorKind::Other,
+                        })); // Placeholder, replace with actual error
                     }
+                }
+                Err(e) => {
+                    final_results.push(Err(e));
                 }
             }
         }
-
-        // Convert ClipBoardItem results to u64 IDs
-        results.into_iter().map(|r| r.map(|item| item.id)).collect()
+        final_results
     }
 
     /// Lock-free item removal with O(1) average performance
@@ -515,11 +525,7 @@ impl Clone for ClipBoard {
     fn clone(&self) -> Self {
         // Create new clipboard with same config
         let config = self.config.read().unwrap().clone();
-        let new_clipboard = Self::new(config);
-
-        // Note: In a real implementation, you might want to copy items as well
-        // For now, we create an empty clipboard with the same configuration
-        new_clipboard
+        Self::new(config)
     }
 }
 

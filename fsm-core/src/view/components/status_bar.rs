@@ -16,6 +16,8 @@
 
 use crate::AppState;
 use crate::view::theme;
+use core::fmt::Write;
+use heapless::String;
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
@@ -23,8 +25,6 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
 };
-use heapless::String;
-use core::fmt::Write;
 
 pub struct StatusBar;
 
@@ -37,10 +37,10 @@ impl StatusBar {
 
         let mut msg_buffer: String<256> = String::new();
         let style = if let Some(ref err) = app.last_error {
-            write!(&mut msg_buffer, "🔥 Error: {}", err).unwrap_or_default();
+            write!(&mut msg_buffer, "🔥 Error: {err}").unwrap_or_default();
             Style::default().fg(theme::RED).bold()
         } else if let Some(ref status) = app.ui.last_status {
-            write!(&mut msg_buffer, "{}", status).unwrap_or_default();
+            write!(&mut msg_buffer, "{status}").unwrap_or_default();
             Style::default().fg(theme::GREEN)
         } else {
             write!(&mut msg_buffer, "Ready").unwrap_or_default();
@@ -81,7 +81,12 @@ impl StatusBar {
         }
 
         let mut items_buffer: String<32> = String::new();
-        write!(&mut items_buffer, "{} items ", app.fs.active_pane().entries.len()).unwrap_or_default();
+        write!(
+            &mut items_buffer,
+            "{} items ",
+            app.fs.active_pane().entries.len()
+        )
+        .unwrap_or_default();
         right_spans.push(Span::styled(
             items_buffer.to_string(),
             Style::default().fg(theme::PURPLE),

@@ -7,7 +7,14 @@ pub struct ESimdMatcher {
     key_hash_cache: [u32; 256],
 
     /// SIMD-optimized modifier pattern table
+    #[allow(dead_code)]
     modifier_patterns: EAlignedModifierTable,
+}
+
+impl Default for ESimdMatcher {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ESimdMatcher {

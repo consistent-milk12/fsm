@@ -25,6 +25,7 @@ pub struct EKeyProcessor {
     pub clipboard: Arc<ClipBoard>,
 
     /// Cache-aligned current directory (hot path optimization)
+    #[allow(dead_code)]
     current_dir_cache: AtomicCell<CompactString>,
 }
 

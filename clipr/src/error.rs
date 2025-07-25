@@ -2,7 +2,6 @@
 
 use compact_str::CompactString;
 use std::io::ErrorKind;
-use std::path::PathBuf;
 use thiserror::Error;
 
 pub type ClipResult<T> = Result<T, ClipError>;
@@ -71,7 +70,7 @@ impl ClipError {
 
     /// Create metadata error with path conversion optimization
     #[inline]
-    pub fn metadata_error(path: &PathBuf, io_error: std::io::Error) -> Self {
+    pub fn metadata_error(path: &std::path::Path, io_error: std::io::Error) -> Self {
         Self::MetadataError {
             path: CompactString::from(path.to_string_lossy()),
             kind: io_error.kind(),
@@ -80,7 +79,7 @@ impl ClipError {
 
     /// Create duplicate error with path conversion optimization
     #[inline]
-    pub fn duplicate_item(path: &PathBuf) -> Self {
+    pub fn duplicate_item(path: &std::path::Path) -> Self {
         Self::DuplicateItem {
             path: CompactString::from(path.to_string_lossy()),
         }

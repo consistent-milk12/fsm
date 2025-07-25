@@ -215,7 +215,7 @@ impl CompactMetadata {
 
     /// Pack file type and flags with bit manipulation for single-byte storage
     #[inline(always)]
-    fn pack_file_info(metadata: &std::fs::Metadata, path: &PathBuf) -> (u8, u8) {
+    fn pack_file_info(metadata: &std::fs::Metadata, path: &std::path::Path) -> (u8, u8) {
         // File type determination with priority ordering
         let file_type = if metadata.is_dir() {
             1
@@ -238,9 +238,10 @@ impl CompactMetadata {
 
         // Check for hidden files (Unix dot files, Windows hidden attribute)
         if let Some(filename) = path.file_name()
-            && filename.to_string_lossy().starts_with('.') {
-                flags |= 0b0100; // Hidden flag
-            }
+            && filename.to_string_lossy().starts_with('.')
+        {
+            flags |= 0b0100; // Hidden flag
+        }
 
         #[cfg(windows)]
         {

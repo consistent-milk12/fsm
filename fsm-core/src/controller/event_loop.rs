@@ -189,7 +189,8 @@ impl EventLoop {
             if kp_exists {
                 match self.handle_key_event_performance(key_event).await {
                     Ok(action) => return action,
-                    Err(_) => { /* Key not handled by performance processor, continue standard handling */ }
+                    Err(_) => { /* Key not handled by performance processor, continue standard handling */
+                    }
                 }
             } else {
                 // One-time initialization
@@ -1882,8 +1883,6 @@ impl EventLoop {
                 app.ui.request_redraw(RedrawFlag::All);
             }
 
-
-
             Action::CancelFileOperation { operation_id } => {
                 info!("Cancelling file operation: {operation_id}");
 
@@ -1918,23 +1917,23 @@ impl EventLoop {
         let start_time = Instant::now();
 
         let mut app = self.app.lock().await;
-        if let Some(processor) = app.key_processor.as_mut() {
-            if let Some(action) = processor.process_key(key) {
-                // Drop the lock before calling dispatch_eaction, which might lock again
-                drop(app);
+        if let Some(processor) = app.key_processor.as_mut()
+            && let Some(action) = processor.process_key(key)
+        {
+            // Drop the lock before calling dispatch_eaction, which might lock again
+            drop(app);
 
-                // Dispatch action with lock-free atomic operations
-                self.dispatch_eaction(action).await;
+            // Dispatch action with lock-free atomic operations
+            self.dispatch_eaction(action).await;
 
-                // Re-acquire lock to update stats
-                let mut app = self.app.lock().await;
-                if let Some(processor) = app.key_processor.as_mut() {
-                    let latency_ns = start_time.elapsed().as_nanos() as u64;
-                    processor.stats.update_latency(latency_ns);
-                }
-
-                return Ok(Action::NoOp); // Handled
+            // Re-acquire lock to update stats
+            let mut app = self.app.lock().await;
+            if let Some(processor) = app.key_processor.as_mut() {
+                let latency_ns = start_time.elapsed().as_nanos() as u64;
+                processor.stats.update_latency(latency_ns);
             }
+
+            return Ok(Action::NoOp); // Handled
         }
 
         Err(()) // Not handled
@@ -1976,11 +1975,10 @@ impl EventLoop {
             if let Some(processor) = app.key_processor.as_mut() {
                 match processor.clipboard.add_copy(path).await {
                     Ok(id) => {
-                        app.ui
-                            .show_info(format!("Copied to clipboard: item {}", id));
+                        app.ui.show_info(format!("Copied to clipboard: item {id}"));
                     }
                     Err(e) => {
-                        let error_msg = format!("Clipboard copy error: {}", e);
+                        let error_msg = format!("Clipboard copy error: {e}");
                         app.ui.show_error(error_msg);
                     }
                 }
@@ -2002,11 +2000,10 @@ impl EventLoop {
             if let Some(processor) = app.key_processor.as_mut() {
                 match processor.clipboard.add_move(path).await {
                     Ok(id) => {
-                        app.ui
-                            .show_info(format!("Marked for move: item {}", id));
+                        app.ui.show_info(format!("Marked for move: item {id}"));
                     }
                     Err(e) => {
-                        let error_msg = format!("Clipboard move error: {}", e);
+                        let error_msg = format!("Clipboard move error: {e}");
                         app.ui.show_error(error_msg);
                     }
                 }
@@ -2048,8 +2045,7 @@ impl EventLoop {
 
         if op_count > 0 {
             let mut app = self.app.lock().await;
-            app.ui
-                .show_info(format!("Pasting {} item(s)...", op_count));
+            app.ui.show_info(format!("Pasting {op_count} item(s)..."));
         }
 
         // TODO: Implement clipboard.clear_on_paste() in clipr crate
@@ -2057,6 +2053,7 @@ impl EventLoop {
     }
 
     /// Lock-free error handling without allocations
+    #[allow(dead_code)]
     async fn handle_clipboard_error_performance(
         &mut self,
         error: ClipError,
@@ -2064,6 +2061,6 @@ impl EventLoop {
     ) {
         let mut app = self.app.lock().await;
         app.ui
-            .show_error(format!("Clipboard {} error: {}", operation, error));
+            .show_error(format!("Clipboard {operation} error: {error}"));
     }
 }

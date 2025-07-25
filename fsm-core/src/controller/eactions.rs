@@ -1,14 +1,14 @@
 // fsm-core/src/controller/eactions.rs - Zero-allocation action system
-use std::sync::atomic::{AtomicU8, AtomicU64, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering};
 
 /// Cache-aligned atomic action for zero-allocation dispatch
 #[repr(C, align(64))]
 pub struct AtomicAction {
-    action_type: AtomicU8,        // Action discriminant
-    param1: AtomicU64,            // First parameter (file ID, path hash, etc.)
-    param2: AtomicU64,            // Second parameter
-    flags: AtomicU32,             // Operation flags
-    _padding: [u8; 43],           // Cache line padding
+    action_type: AtomicU8, // Action discriminant
+    param1: AtomicU64,     // First parameter (file ID, path hash, etc.)
+    param2: AtomicU64,     // Second parameter
+    flags: AtomicU32,      // Operation flags
+    _padding: [u8; 43],    // Cache line padding
 }
 
 impl AtomicAction {
@@ -21,7 +21,7 @@ impl AtomicAction {
             _padding: [0; 43],
         }
     }
-    
+
     /// Load action atomically without allocations
     #[inline(always)]
     pub fn load_atomic(&self) -> (ActionType, u64, u64, u32) {
