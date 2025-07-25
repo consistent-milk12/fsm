@@ -11,6 +11,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tokio_util::sync::CancellationToken;
@@ -328,7 +329,7 @@ pub struct UIState {
     pub operations_cancel_tokens: HashMap<String, CancellationToken>,
 
     /// Integrated clipboard system
-    pub clipboard: ClipBoard,
+    pub clipboard: Arc<ClipBoard>,
 
     /// Clipboard overlay state
     pub clipboard_overlay_active: bool,
@@ -393,7 +394,7 @@ impl UIState {
             operations_cancel_tokens: HashMap::new(),
 
             // Clipboard Flag
-            clipboard: ClipBoard::default(),
+            clipboard: Arc::new(ClipBoard::default()),
             clipboard_overlay_active: false,
             selected_clipboard_item: None,
             clipboard_view_mode: ClipBoardViewMode::default(),
