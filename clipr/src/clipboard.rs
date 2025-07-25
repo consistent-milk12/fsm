@@ -263,6 +263,25 @@ impl ClipBoard {
         self.stats.total_items.load(Ordering::Relaxed) as usize
     }
 
+    /// Get all items for pasting.
+    pub async fn get_all_items(&self) -> Vec<ClipBoardItem> {
+        self.items().await
+    }
+
+    /// Clear items that were marked for move after a paste operation.
+    pub async fn clear_on_paste(&self) {
+        let items_to_remove: Vec<u64> = self
+            .items
+            .iter()
+            .filter(|guard| guard.val().operation == ClipBoardOperation::Move)
+            .map(|guard| *guard.key())
+            .collect();
+
+        for id in items_to_remove {
+            let _ = self.remove_item(id).await;
+        }
+    }
+
     /// Atomic clear operation with batch cleanup
     pub async fn clear(&mut self) {
         // Clear all data structures
