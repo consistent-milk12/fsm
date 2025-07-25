@@ -102,7 +102,7 @@ impl ClipBoardItem {
         let age_secs = age_ns / 1_000_000_000;
 
         if age_secs < 60 {
-            CompactString::from(format!("{}s", age_secs))
+            CompactString::from(format!("{age_secs}s"))
         } else if age_secs < 3600 {
             CompactString::from(format!("{}m", age_secs / 60))
         } else if age_secs < 86400 {
@@ -237,11 +237,10 @@ impl CompactMetadata {
         }
 
         // Check for hidden files (Unix dot files, Windows hidden attribute)
-        if let Some(filename) = path.file_name() {
-            if filename.to_string_lossy().starts_with('.') {
+        if let Some(filename) = path.file_name()
+            && filename.to_string_lossy().starts_with('.') {
                 flags |= 0b0100; // Hidden flag
             }
-        }
 
         #[cfg(windows)]
         {

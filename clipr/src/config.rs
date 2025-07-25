@@ -119,16 +119,14 @@ impl ClipBoardConfig {
     pub async fn load_from_file<P: AsRef<std::path::Path>>(path: P) -> ClipResult<Self> {
         let content = tokio::fs::read(path.as_ref()).await.map_err(|e| {
             ClipError::ConfigError(CompactString::from(format!(
-                "Failed to read config file: {}",
-                e
+                "Failed to read config file: {e}"
             )))
         })?;
 
         // Use MessagePack for faster deserialization
         let config: Self = rmp_serde::from_slice(&content).map_err(|e| {
             ClipError::ConfigError(CompactString::from(format!(
-                "Failed to parse config: {}",
-                e
+                "Failed to parse config: {e}"
             )))
         })?;
 
@@ -140,8 +138,7 @@ impl ClipBoardConfig {
         // Use MessagePack for faster serialization
         let content = rmp_serde::to_vec(self).map_err(|e| {
             ClipError::ConfigError(CompactString::from(format!(
-                "Failed to serialize config: {}",
-                e
+                "Failed to serialize config: {e}"
             )))
         })?;
 
@@ -149,8 +146,7 @@ impl ClipBoardConfig {
             .await
             .map_err(|e| {
                 ClipError::ConfigError(CompactString::from(format!(
-                    "Failed to write config file: {}",
-                    e
+                    "Failed to write config file: {e}"
                 )))
             })?;
 
@@ -238,11 +234,10 @@ impl ClipBoardConfig {
 
     #[inline]
     pub fn set_item_expiry_ns(&self, value: Option<u64>) {
-        if let Some(atomic) = &self.item_expiry_ns {
-            if let Some(ns) = value {
+        if let Some(atomic) = &self.item_expiry_ns
+            && let Some(ns) = value {
                 atomic.store(ns, Ordering::Relaxed);
             }
-        }
     }
 
     #[inline]
@@ -399,7 +394,7 @@ mod duration_ns_option {
         D: Deserializer<'de>,
     {
         let opt: Option<u64> = Option::deserialize(deserializer)?;
-        Ok(opt.map(|ns| AtomicU64::new(ns)))
+        Ok(opt.map(AtomicU64::new))
     }
 }
 
@@ -423,7 +418,7 @@ mod compact_string_option {
         D: Deserializer<'de>,
     {
         let opt: Option<String> = Option::deserialize(deserializer)?;
-        Ok(opt.map(|s| CompactString::from(s)))
+        Ok(opt.map(CompactString::from))
     }
 }
 
