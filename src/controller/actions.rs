@@ -181,4 +181,9 @@ pub enum Action {
         source: PathBuf,
         new_name: String,
     },
+
+    /// Cancel ongoing file operation
+    CancelFileOperation {
+        operation_id: String,
+    },
 }

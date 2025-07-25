@@ -7,9 +7,22 @@
 
 use crate::controller::event_loop::TaskResult;
 use crate::error::AppError;
-use std::path::{Path, PathBuf};
-use tokio::sync::mpsc;
+use std::{
+    fs::Metadata,
+    io::{Error, ErrorKind},
+    path::{Path, PathBuf},
+    time::Instant,
+};
+use tokio::{
+    fs::{File, ReadDir},
+    sync::mpsc::{self, error::SendError},
+};
 use uuid::Uuid;
+
+use tokio::fs as TokioFs;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+const BUFFER_SIZE: usize = 64 * 1024;
 
 /// File operation task for background processing
 #[derive(Debug)]
@@ -30,6 +43,25 @@ pub enum FileOperation {
     Rename { source: PathBuf, new_name: String },
 }
 
+impl std::fmt::Display for FileOperation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use super::file_ops_task::FileOperation::*;
+
+        let ret_str: &'static str = match *self {
+            Copy { source: _, dest: _ } => "Copy",
+
+            Move { source: _, dest: _ } => "Move",
+
+            Rename {
+                source: _,
+                new_name: _,
+            } => "Rename",
+        };
+
+        write!(f, "{ret_str}")
+    }
+}
+
 impl FileOperationTask {
     /// Create new file operation task with unique ID
     pub fn new(operation: FileOperation, task_tx: mpsc::UnboundedSender<TaskResult>) -> Self {
@@ -40,200 +72,428 @@ impl FileOperationTask {
         }
     }
 
-    /// Execute the file operation asynchronously
-    pub async fn execute(self) -> Result<(), AppError> {
-        let result = match &self.operation {
-            FileOperation::Copy { source, dest } => self.copy_file_or_directory(source, dest).await,
-            FileOperation::Move { source, dest } => self.move_file_or_directory(source, dest).await,
-            FileOperation::Rename { source, new_name } => {
-                self.rename_file_or_directory(source, new_name).await
+    /// Execute file operation with full progress reporting
+    pub async fn execute(&self) -> Result<(), AppError> {
+        use FileOperation::*;
+
+        // Calculate total operation size first
+        let (total_bytes, total_files) = self.calculate_operation_size().await?;
+        let mut current_bytes: u64 = 0;
+        let mut files_completed: u32 = 0;
+
+        // Report initial progress
+        let initial_file: &Path = match &self.operation {
+            Copy { source, .. } | Move { source, .. } | Rename { source, .. } => source,
+        };
+
+        self.report_progress(
+            0,
+            total_bytes,
+            initial_file,
+            &mut files_completed,
+            total_files,
+        )
+        .await?;
+
+        // Execute operation with progress tracking
+        let result: Result<(), AppError> = match &self.operation {
+            Copy { source, dest } => {
+                self.copy_file_with_progress(
+                    source,
+                    dest,
+                    &mut current_bytes,
+                    total_bytes,
+                    &mut files_completed,
+                    total_files,
+                )
+                .await
+            }
+
+            Move { source, dest } => {
+                self.move_file_with_progress(
+                    source,
+                    dest,
+                    &mut current_bytes,
+                    total_bytes,
+                    &mut files_completed,
+                    total_files,
+                )
+                .await
+            }
+
+            Rename { source, new_name } => {
+                self.rename_with_progress(
+                    source,
+                    new_name,
+                    &mut current_bytes,
+                    total_bytes,
+                    &mut files_completed,
+                    total_files,
+                )
+                .await
             }
         };
 
-        // Send completion notification
-        let task_result = TaskResult::FileOperationComplete {
-            operation_id: self.operation_id,
+        // Send completion result regardless of success/failure
+        let completion_result: TaskResult = TaskResult::FileOperationComplete {
+            operation_id: self.operation_id.clone(),
             result: result.clone(),
         };
 
-        if let Err(e) = self.task_tx.send(task_result) {
-            eprintln!("Failed to send task result: {e}");
-        }
+        let _send_result: Result<(), SendError<TaskResult>> = self.task_tx.send(completion_result);
 
         result
     }
 
-    /// Copy file or directory recursively
-    async fn copy_file_or_directory(&self, source: &PathBuf, dest: &Path) -> Result<(), AppError> {
-        if !source.exists() {
-            return Err(AppError::Io(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("Source path does not exist: {}", source.display()),
-            )));
+    /// Recursively calculate directory size and file count
+    async fn calculate_directory_size(&self, dir_path: &Path) -> Result<(u64, u32), AppError> {
+        let mut total_size: u64 = 0;
+        let mut file_count: u32 = 0;
+
+        let mut stack: Vec<PathBuf> = vec![dir_path.to_path_buf()];
+
+        while let Some(current_dir) = stack.pop() {
+            let mut entries: ReadDir = TokioFs::read_dir(&current_dir).await?;
+
+            while let Some(entry) = entries.next_entry().await? {
+                let path: PathBuf = entry.path();
+
+                if path.is_file() {
+                    let metadata: Metadata = TokioFs::metadata(&path).await?;
+                    total_size += metadata.len();
+                    file_count += 1;
+                } else if path.is_dir() {
+                    stack.push(path);
+                }
+            }
         }
 
-        if source.is_file() {
-            self.copy_file(source, dest).await
-        } else if source.is_dir() {
-            self.copy_directory(source, dest).await
-        } else {
-            Err(AppError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!("Unsupported file type: {}", source.display()),
-            )))
+        Ok((total_size, file_count))
+    }
+
+    /// Calculate total size and file count for progress tracking
+    async fn calculate_operation_size(&self) -> Result<(u64, u32), AppError> {
+        match &self.operation {
+            FileOperation::Copy { source, dest: _ } | FileOperation::Move { source, dest: _ } => {
+                if source.is_file() {
+                    let metadata: Metadata = TokioFs::metadata(source).await?;
+
+                    Ok((metadata.len(), 1))
+                } else if source.is_dir() {
+                    self.calculate_directory_size(source).await
+                } else {
+                    Ok((0, 0))
+                }
+            }
+
+            FileOperation::Rename {
+                source,
+                new_name: _,
+            } => {
+                // Rename is O(1), no progress tracker is needed.
+                let metadata: Metadata = TokioFs::metadata(source).await?;
+
+                Ok((metadata.len(), 1))
+            }
         }
     }
 
-    /// Copy single file
-    async fn copy_file(&self, source: &PathBuf, dest: &Path) -> Result<(), AppError> {
-        // Handle case where dest is a directory
-        let final_dest = if dest.is_dir() {
-            if let Some(filename) = source.file_name() {
-                dest.join(filename)
-            } else {
-                return Err(AppError::Io(std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    "Cannot determine filename from source",
-                )));
-            }
+    /// Report progress to UI
+    async fn report_progress(
+        &self,
+        current_bytes: u64,
+        total_bytes: u64,
+        current_file: &Path,
+        files_completed: &mut u32,
+        total_files: u32,
+    ) -> Result<(), AppError> {
+        let throughput = if current_bytes > 0 {
+            Some(current_bytes / 1)
         } else {
-            dest.to_path_buf()
+            None
         };
 
-        // Create parent directory if it doesn't exist
-        if let Some(parent) = final_dest.parent()
-            && !parent.exists()
-        {
-            tokio::fs::create_dir_all(parent)
-                .await
-                .map_err(AppError::Io)?;
-        }
+        let progress_result: TaskResult = TaskResult::FileOperationProgress {
+            operation_id: self.operation_id.clone(),
+            operation_type: self.operation.to_string(),
+            current_bytes,
+            total_bytes,
+            current_file: current_file.to_path_buf(),
+            files_completed: *files_completed,
+            total_files,
+            start_time: Instant::now(),
+            throughput_bps: throughput,
+        };
 
-        tokio::fs::copy(source, &final_dest)
-            .await
-            .map_err(AppError::Io)?;
+        self.task_tx
+            .send(progress_result)
+            .map_err(|e: SendError<TaskResult>| {
+                Error::new(ErrorKind::BrokenPipe, format!("Async send error: {e}"))
+            })?;
 
         Ok(())
     }
 
-    /// Copy directory recursively
-    fn copy_directory<'a>(
-        &'a self,
-        source: &'a PathBuf,
-        dest: &'a Path,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), AppError>> + Send + 'a>>
-    {
-        Box::pin(async move {
-            // Create destination directory
-            let dest_dir = if dest.exists() && dest.is_dir() {
-                if let Some(dir_name) = source.file_name() {
-                    dest.join(dir_name)
-                } else {
-                    return Err(AppError::Io(std::io::Error::new(
-                        std::io::ErrorKind::InvalidInput,
-                        "Cannot determine directory name from source",
-                    )));
-                }
-            } else {
-                dest.to_path_buf()
-            };
-
-            tokio::fs::create_dir_all(&dest_dir)
-                .await
-                .map_err(AppError::Io)?;
-
-            // Copy all entries in the directory
-            let mut entries = tokio::fs::read_dir(source).await.map_err(AppError::Io)?;
-            while let Some(entry) = entries.next_entry().await.map_err(AppError::Io)? {
-                let entry_path = entry.path();
-                let dest_path = dest_dir.join(entry.file_name());
-
-                if entry_path.is_file() {
-                    self.copy_file(&entry_path, &dest_path).await?;
-                } else if entry_path.is_dir() {
-                    self.copy_directory(&entry_path, &dest_path).await?;
-                }
-            }
-
-            Ok(())
-        })
-    }
-
-    /// Move file or directory
-    async fn move_file_or_directory(&self, source: &PathBuf, dest: &Path) -> Result<(), AppError> {
-        if !source.exists() {
-            return Err(AppError::Io(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("Source path does not exist: {}", source.display()),
-            )));
-        }
-
+    /// Copy file with progress reporting using streaming
+    async fn copy_file_with_progress(
+        &self,
+        source: &PathBuf,
+        dest: &Path,
+        current_bytes: &mut u64,
+        total_bytes: u64,
+        files_completed: &mut u32,
+        total_files: u32,
+    ) -> Result<(), AppError> {
         // Handle case where dest is a directory
-        let final_dest = if dest.is_dir() {
+        let final_dst: PathBuf = if dest.is_dir() {
             if let Some(filename) = source.file_name() {
-                dest.join(filename)
+                let new_dest: PathBuf = dest.join(filename);
+                new_dest
             } else {
-                return Err(AppError::Io(std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    "Cannot determine filename from source",
-                )));
+                let ekind: ErrorKind = ErrorKind::InvalidInput;
+                let emsg: &'static str = "Cannot determine filename from source.";
+                let err: Error = Error::new(ekind, emsg);
+                let app_err: AppError = AppError::Io(err);
+
+                return Err(app_err);
             }
         } else {
-            dest.to_path_buf()
+            let new_dest: PathBuf = dest.to_path_buf();
+            new_dest
         };
 
         // Create parent directory if it doesn't exist
-        if let Some(parent) = final_dest.parent()
+        if let Some(parent) = final_dst.parent()
             && !parent.exists()
         {
-            tokio::fs::create_dir_all(parent)
-                .await
-                .map_err(AppError::Io)?;
+            TokioFs::create_dir_all(parent).await?;
         }
 
-        // Try rename first (efficient for same filesystem)
-        match tokio::fs::rename(source, &final_dest).await {
-            Ok(()) => Ok(()),
+        // Get file size for progress tracking
+        let metadata: Metadata = TokioFs::metadata(source).await?;
+        let file_size: u64 = metadata.len();
+
+        // Report progress before starting file copy
+        self.report_progress(
+            *current_bytes,
+            total_bytes,
+            source,
+            files_completed,
+            total_files,
+        )
+        .await?;
+
+        let mut src_file: File = TokioFs::File::open(source).await?;
+        let mut dst_file: File = TokioFs::File::create(&final_dst).await?;
+
+        // 64KB buffer
+        let mut buffer: Vec<u8> = vec![0; BUFFER_SIZE];
+        let mut copied: u64 = 0;
+
+        let kib: u64 = 1024 * 1024;
+        let size: u64 = std::cmp::min(kib, file_size / 10);
+        let optimal_interval: u64 = std::cmp::max(size, 1);
+
+        'copy_file_bytes: loop {
+            let bytes_read: usize = src_file.read(&mut buffer).await?;
+
+            if bytes_read == 0 {
+                break 'copy_file_bytes;
+            }
+
+            dst_file.write_all(&buffer[..bytes_read]).await?;
+            copied += bytes_read as u64;
+            *current_bytes += bytes_read as u64;
+
+            // Report progress every 1MB or 10% of file
+            if copied % optimal_interval == 0 {
+                self.report_progress(
+                    *current_bytes,
+                    total_bytes,
+                    source,
+                    files_completed,
+                    total_files,
+                )
+                .await?;
+            }
+        }
+
+        dst_file.flush().await?;
+
+        *files_completed += 1;
+
+        // Final progress report for this file
+        self.report_progress(
+            *current_bytes,
+            total_bytes,
+            source,
+            files_completed,
+            total_files,
+        )
+        .await?;
+
+        Ok(())
+    }
+
+    async fn move_file_with_progress(
+        &self,
+        source: &PathBuf,
+        dest: &Path,
+        current_bytes: &mut u64,
+        total_bytes: u64,
+        files_completed: &mut u32,
+        total_files: u32,
+    ) -> Result<(), AppError> {
+        // Handle case where dest is a directory
+        let final_dst: PathBuf = if dest.is_dir() {
+            if let Some(filename) = source.file_name() {
+                let new_path: PathBuf = dest.join(filename);
+                new_path
+            } else {
+                let ekind: ErrorKind = ErrorKind::InvalidInput;
+                let emsg: &'static str =
+                    "Cannot determine filename from source for move operation.";
+                let err: Error = Error::new(ekind, emsg);
+                let app_err: AppError = AppError::Io(err);
+
+                return Err(app_err);
+            }
+        } else {
+            let new_path: PathBuf = dest.to_path_buf();
+            new_path
+        };
+
+        // Create parent directory if it doesn't exist
+        if let Some(parent) = final_dst.parent()
+            && !parent.exists()
+        {
+            TokioFs::create_dir_all(parent).await?;
+        }
+
+        // Get file size for progress tracking
+        let metadata: Metadata = TokioFs::metadata(source).await?;
+        let file_size: u64 = metadata.len();
+
+        *files_completed += 1;
+
+        // Report progress before starting move operation
+        self.report_progress(
+            *current_bytes,
+            total_bytes,
+            source,
+            files_completed,
+            total_files,
+        )
+        .await?;
+
+        // Try efficient rename first (same filesystem)
+        match TokioFs::rename(source, &final_dst).await {
+            Ok(()) => {
+                // Rename sucessful - update progress instantly
+                *current_bytes += file_size;
+
+                *files_completed += 1;
+
+                // Report completion for this file
+                self.report_progress(
+                    *current_bytes,
+                    total_bytes,
+                    source,
+                    files_completed,
+                    total_files,
+                )
+                .await?;
+
+                return Ok(());
+            }
+
             Err(_) => {
-                // If rename fails, fall back to copy + delete
-                self.copy_file_or_directory(source, &final_dest).await?;
+                // Rename failed, fall back to copy with progress + delete
+                self.copy_file_with_progress(
+                    source,
+                    &final_dst,
+                    current_bytes,
+                    total_bytes,
+                    files_completed,
+                    total_files,
+                )
+                .await?;
+
+                // Delete source after sucessfuly copy
                 if source.is_file() {
-                    tokio::fs::remove_file(source).await.map_err(AppError::Io)?;
+                    TokioFs::remove_file(source).await?;
                 } else if source.is_dir() {
-                    tokio::fs::remove_dir_all(source)
-                        .await
-                        .map_err(AppError::Io)?;
+                    TokioFs::remove_dir_all(source).await?;
                 }
-                Ok(())
+
+                return Ok(());
             }
         }
     }
 
-    /// Rename file or directory
-    async fn rename_file_or_directory(
+    /// Rename file or directory with progress reporting
+    async fn rename_with_progress(
         &self,
         source: &PathBuf,
         new_name: &str,
+        current_bytes: &mut u64,
+        total_bytes: u64,
+        files_completed: &mut u32,
+        total_files: u32,
     ) -> Result<(), AppError> {
+        // Validate source exists
         if !source.exists() {
-            return Err(AppError::Io(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("Source path does not exist: {}", source.display()),
-            )));
+            let ekind: ErrorKind = ErrorKind::NotFound;
+            let emsg: String = format!("Source path does not exist: {}", source.display());
+            let err: Error = Error::new(ekind, emsg);
+            let app_err: AppError = AppError::Io(err);
+
+            return Err(app_err);
         }
 
-        let parent = source.parent().ok_or_else(|| {
-            AppError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "Cannot rename root directory",
-            ))
+        // Get parent directory
+        let parent: &Path = source.parent().ok_or_else(|| {
+            let ekind: ErrorKind = ErrorKind::InvalidInput;
+            let emsg: &'static str = "Cannot rename root directory";
+            let err: Error = Error::new(ekind, emsg);
+            let app_err: AppError = AppError::Io(err);
+
+            app_err
         })?;
 
-        let new_path = parent.join(new_name);
+        let new_path: PathBuf = parent.join(new_name);
 
-        tokio::fs::rename(source, &new_path)
-            .await
-            .map_err(AppError::Io)?;
+        // Get file size for progress tracking
+        let metadata: Metadata = TokioFs::metadata(source).await?;
+        let file_size: u64 = metadata.len();
+
+        // Report progress before starting rename
+        self.report_progress(
+            *current_bytes,
+            total_bytes,
+            source,
+            files_completed,
+            total_files,
+        )
+        .await?;
+
+        // Perform rename operation
+        TokioFs::rename(source, &new_path).await?;
+
+        // Update progress after successful rename
+        *current_bytes += file_size;
+
+        *files_completed += 1;
+
+        // Report final progress
+        self.report_progress(
+            *current_bytes,
+            total_bytes,
+            &new_path,
+            files_completed,
+            total_files,
+        )
+        .await?;
 
         Ok(())
     }

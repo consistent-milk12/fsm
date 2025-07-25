@@ -417,3 +417,214 @@ TaskResult::FileOperationComplete { operation_id, result } => {
 **Next Phase:** Add progress bars and batch operations for multiple files.
 
 ---
+
+## TIER 1 - STEP 2: Phase 2 Progress Tracking Implementation
+
+### Overview
+
+Implement real-time progress tracking for file operations (copy/move/rename) with visual progress bars, cancellation support, and performance monitoring. This enhances the user experience for large file operations by providing feedback and control.
+
+### Current State Analysis
+
+**✅ Completed (Phase 1):**
+- `FileOperationTask` with unique operation IDs
+- `TaskResult::FileOperationComplete` variant
+- Background async processing via `tokio::spawn`
+- Basic error handling and completion notification
+
+**❌ Missing (Phase 2):**
+- Real-time progress reporting during operations
+- Visual progress indicators in UI
+- Operation cancellation support
+- ETA calculations and performance metrics
+- Multi-operation progress tracking
+
+### Architecture Changes Required
+
+#### 1. TaskResult Extensions (`src/controller/event_loop.rs`)
+
+```rust
+// Add new TaskResult variant for progress updates
+pub enum TaskResult {
+    Legacy { /* existing fields */ },
+    FileOperationComplete { /* existing fields */ },
+    
+    // NEW: Real-time progress reporting
+    FileOperationProgress {
+        operation_id: String,
+        operation_type: String,        // "copy", "move", "rename"
+        current_bytes: u64,           // Bytes processed so far
+        total_bytes: u64,             // Total bytes to process
+        current_file: PathBuf,        // Currently processing file
+        files_completed: u32,         // Files completed
+        total_files: u32,             // Total files to process
+        start_time: std::time::Instant, // For ETA calculation
+        throughput_bps: Option<u64>,  // Bytes per second
+    },
+}
+```
+
+#### 2. Action Extensions (`src/controller/actions.rs`)
+
+```rust
+// Add cancellation support
+pub enum Action {
+    // ... existing variants
+    
+    // NEW: Cancel ongoing file operation
+    CancelFileOperation { operation_id: String },
+}
+```
+
+#### 3. UI State Extensions (`src/model/ui_state.rs`)
+
+```rust
+// Add progress tracking to UIState
+pub struct UIState {
+    // ... existing fields
+    
+    // NEW: Track active file operations
+    pub active_file_operations: HashMap<String, FileOperationProgress>,
+}
+
+// NEW: Progress tracking structure
+#[derive(Debug, Clone)]
+pub struct FileOperationProgress {
+    pub operation_type: String,       // "copy", "move", "rename"
+    pub current_bytes: u64,
+    pub total_bytes: u64,
+    pub current_file: PathBuf,
+    pub files_completed: u32,
+    pub total_files: u32,
+    pub start_time: std::time::Instant,
+    pub throughput_bps: Option<u64>,
+    pub estimated_completion: Option<std::time::Instant>,
+}
+```
+
+#### 4. FileOperationTask Enhancement (`src/tasks/file_ops_task.rs`)
+
+```rust
+impl FileOperationTask {
+    // NEW: Progress calculation and reporting
+    async fn calculate_operation_size(&self) -> Result<(u64, u32), AppError> {
+        // Calculate total bytes and file count for progress tracking
+    }
+    
+    async fn report_progress(&self, 
+        current_bytes: u64, 
+        total_bytes: u64,
+        current_file: &Path,
+        files_completed: u32,
+        total_files: u32
+    ) -> Result<(), AppError> {
+        // Send progress update to UI
+    }
+    
+    // Enhanced copy with progress reporting
+    async fn copy_file_with_progress(&self, source: &Path, dest: &Path) -> Result<(), AppError> {
+        // Stream copy with periodic progress updates
+    }
+}
+```
+
+#### 5. New UI Component (`src/view/components/file_operations_overlay.rs`)
+
+```rust
+// NEW FILE: Progress overlay component
+pub struct FileOperationsOverlay {
+    operations: HashMap<String, FileOperationProgress>,
+}
+
+impl FileOperationsOverlay {
+    pub fn render_progress_bars(&self, f: &mut Frame, area: Rect) {
+        // Multi-operation progress display with:
+        // - Progress bars with percentage
+        // - Current file indicator
+        // - ETA and throughput display
+        // - Cancel buttons/instructions
+    }
+    
+    pub fn render_single_operation(&self, f: &mut Frame, area: Rect, progress: &FileOperationProgress) {
+        // Single operation progress bar
+        // Format: "Copying file.txt... [████████████████████████████████] 75% (2.1 MB/s, 30s remaining)"
+    }
+}
+```
+
+#### 6. Cancellation Token System
+
+```rust
+// Add to FileOperationTask
+use tokio_util::sync::CancellationToken;
+
+pub struct FileOperationTask {
+    pub operation_id: String,
+    pub operation: FileOperation,
+    pub task_tx: mpsc::UnboundedSender<TaskResult>,
+    pub cancel_token: CancellationToken, // NEW: Cancellation support
+}
+```
+
+### Implementation Phases
+
+#### Phase 2.1: Progress Infrastructure
+1. ✅ Add `TaskResult::FileOperationProgress` variant
+2. ✅ Add `Action::CancelFileOperation` variant  
+3. ✅ Extend UIState with progress tracking
+4. ✅ Update event loop to handle progress updates
+
+#### Phase 2.2: Task Progress Reporting
+1. ✅ Enhance FileOperationTask with size calculation
+2. ✅ Implement streaming copy with progress updates
+3. ✅ Add periodic progress reporting during operations
+4. ✅ Handle cancellation token integration
+
+#### Phase 2.3: UI Progress Display
+1. ✅ Create FileOperationsOverlay component
+2. ✅ Implement progress bar rendering
+3. ✅ Add ETA and throughput calculations
+4. ✅ Integrate overlay with main UI
+
+#### Phase 2.4: Cancellation & Polish
+1. ✅ Add Escape key cancellation handling
+2. ✅ Implement graceful operation cleanup
+3. ✅ Error handling for cancelled operations
+4. ✅ Performance optimization and testing
+
+### Success Criteria
+
+- [ ] **Real-time Progress**: Visual progress bars update during long operations
+- [ ] **Multiple Operations**: Support concurrent operations with separate progress bars
+- [ ] **Cancellation**: Escape key cancels current operation gracefully
+- [ ] **Performance Metrics**: Display throughput (MB/s) and ETA
+- [ ] **File-level Progress**: Show current file being processed
+- [ ] **Error Resilience**: Handle cancellation and errors without UI corruption
+- [ ] **Memory Efficient**: Progress tracking doesn't significantly increase memory usage
+- [ ] **Responsive UI**: Progress updates don't block UI rendering (60fps target)
+
+### Technical Considerations
+
+#### Performance Optimizations
+- **Batched Updates**: Limit progress updates to ~10Hz to avoid UI spam
+- **Streaming Copy**: Use buffered copying to avoid loading entire files into memory
+- **Background Calculation**: Pre-calculate operation size in background thread
+- **Efficient Rendering**: Only redraw progress areas when values change
+
+#### Cross-Platform Compatibility
+- **File Size Calculation**: Handle symlinks and special files correctly
+- **Cancellation**: Ensure proper cleanup on Windows/Unix systems
+- **Path Display**: Truncate long paths for UI display
+
+#### Error Handling
+- **Partial Operations**: Handle cancellation mid-file gracefully
+- **Permission Errors**: Continue operation on individual file failures
+- **Disk Space**: Detect and handle insufficient disk space
+- **Network Operations**: Handle slow network filesystem operations
+
+#### Memory Management  
+- **Progress Buffer**: Limit active operation tracking to prevent memory growth
+- **Cleanup**: Automatic cleanup of completed operation progress data
+- **Efficient Updates**: Minimize allocations during progress reporting
+
+---

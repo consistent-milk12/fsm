@@ -67,7 +67,10 @@ pub enum AppError {
 
     /// Search operation specific errors
     #[error("Search failed in {path:?}: {reason}")]
-    SearchFailed { path: PathBuf, reason: String },
+    SearchFailed {
+        path: PathBuf,
+        reason: String,
+    },
 
     /// File operation specific errors  
     #[error("File operation '{operation}' failed on {path:?}: {reason}")]
@@ -79,7 +82,10 @@ pub enum AppError {
 
     /// Directory navigation errors
     #[error("Navigation failed: cannot access {path:?}: {reason}")]
-    NavigationFailed { path: PathBuf, reason: String },
+    NavigationFailed {
+        path: PathBuf,
+        reason: String,
+    },
 
     /// UI component errors
     #[error("UI component error in {component}: {message}")]
@@ -97,7 +103,10 @@ pub enum AppError {
 
     /// Task management errors  
     #[error("Task {task_id} failed: {reason}")]
-    TaskFailed { task_id: u64, reason: String },
+    TaskFailed {
+        task_id: u64,
+        reason: String,
+    },
 
     /// Background task timeout
     #[error("Task {task_type} timed out after {timeout_secs}s")]
@@ -239,6 +248,7 @@ impl Clone for AppError {
                 source: io::Error::new(source.kind(), source.to_string()),
             },
             AppError::Serde(e) => AppError::Other(format!("Serde error: {e}")),
+
             AppError::ExternalCmd { cmd, code, stderr } => AppError::ExternalCmd {
                 cmd: cmd.clone(),
                 code: *code,

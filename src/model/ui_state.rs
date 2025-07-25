@@ -9,7 +9,10 @@
 //! - Extensible for new overlays/plugins (search, scripting, batch, etc.)
 //! - Optimized for immediate-mode TUI, multi-pane and batch ops
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
+
 
 use crate::controller::actions::InputPromptType;
 use crate::fs::object_info::ObjectInfo;
@@ -45,30 +48,48 @@ impl RedrawFlag {
 }
 
 // UI modes for keyboard-driven workflows, selections, and plugins
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum UIMode {
+    #[default]
     Browse,
+    
     Visual, // for multi-select/range
+    
     Search,
+    
     Prompt,
+    
     Command,   // vim-style command input mode
+    
     Scripting, // for scripting/plugins
+    
     BatchOp,   // show/cancel batch operation
 }
 
 // All overlays (mutually exclusive modals)
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum UIOverlay {
+    #[default]
     None,
+    
     Help,
+    
     Search,
+    
     FileNameSearch,
+    
     ContentSearch,
+    
     SearchResults,
+    
     Loading,
+    
     Status,
+    
     Prompt,
+    
     Batch,
+    
     Scripting,
 }
 
@@ -76,6 +97,7 @@ pub enum UIOverlay {
 pub enum SearchType {
     /// Search for file and folder names (fast, local)
     FileName,
+
     /// Search for content within files using ripgrep (slower, recursive)
     ContentGrep,
 }
@@ -83,16 +105,22 @@ pub enum SearchType {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NotificationLevel {
     Info,
+    
     Warning,
+    
     Error,
+    
     Success,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Notification {
     pub message: String,
+    
     pub level: NotificationLevel,
-    pub timestamp: std::time::Instant,
+    
+    pub timestamp: Instant,
+    
     pub auto_dismiss_ms: Option<u64>,
 }
 
@@ -101,74 +129,184 @@ pub struct Notification {
 pub struct LoadingState {
     /// Human-readable operation (e.g. "Copying", "Scanning", "Loading Cache")
     pub message: String,
+
     /// Progress: 0.0–1.0, or None for indeterminate/spinner
     pub progress: Option<f64>,
+
     /// For animated spinner: increments every tick
     pub spinner_frame: usize,
+
     /// Optional: current file or item name
     pub current_item: Option<String>,
+
     /// Optional: total and completed counts for batch ops
     pub completed: Option<u64>,
+
     pub total: Option<u64>,
 }
 
+/// Progress tracking structure for file operations
+#[derive(Clone, Debug, PartialEq)]
+pub struct FileOperationProgress {
+    /// Operation type: "copy", "move", "rename"
+    pub operation_type: String,
+
+    /// Bytes processed so far
+    pub current_bytes: u64,
+
+    /// Total bytes to process
+    pub total_bytes: u64,
+
+    /// Current processing file
+    pub current_file: PathBuf,
+
+    /// Files processed
+    pub files_completed: u32,
+
+    /// Total files to process
+    pub total_files: u32,
+
+    /// Start time for ETA computation
+    pub start_time: Instant,
+
+    /// Bytes per second throughput
+    pub throughput_bps: Option<u64>,
+
+    /// Estimated completion time
+    pub estimated_completion: Option<Instant>,
+}
+
+impl FileOperationProgress {
+    /// Create new progress tracker
+    pub fn new(operation_type: String, total_bytes: u64, total_files: u32) -> Self {
+        Self {
+            operation_type,
+            current_bytes: 0,
+            total_bytes,
+            current_file: PathBuf::new(),
+            files_completed: 0,
+            total_files,
+            start_time: Instant::now(),
+            throughput_bps: None,
+            estimated_completion: None,
+        }
+    }
+
+    /// Update progress and calculate throughput/ETA
+    pub fn update(&mut self, current_bytes: u64, current_file: PathBuf, files_completed: u32) {
+        self.current_bytes = current_bytes;
+        self.current_file = current_file;
+        self.files_completed = files_completed;
+
+        // Calculate throughput
+        let elapsed: Duration = self.start_time.elapsed();
+
+        if elapsed.as_secs() > 0 && current_bytes > 0 {
+            self.throughput_bps = Some(current_bytes / elapsed.as_secs());
+
+            // Estimate completion time
+            if let Some(bps) = self.throughput_bps
+                && bps > 0
+            {
+                let rem_bytes: u64 = self.total_bytes.saturating_sub(current_bytes);
+
+                // Approx. seconds needed to finish
+                let rem_secs: u64 = rem_bytes / bps;
+
+                let now: Instant = Instant::now();
+                let rem_time: Duration = Duration::from_secs(rem_secs);
+                let eta: Instant = now + rem_time;
+
+                self.estimated_completion = Some(eta);
+            }
+        }
+    }
+
+    /// Get progress percentage (0.0 to 1.0)
+    pub fn progress_ratio(&self) -> f64 {
+        if self.total_bytes == 0 {
+            0.0
+        } else {
+            self.current_bytes as f64 / self.total_bytes as f64
+        }
+    }
+}
+
 /// Main UI state structure
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub struct UIState {
     pub redraw_flags: u8,
     // --- Selection and Navigation State ---
     /// Current selected entry in the active pane.
     pub selected: Option<usize>,
+
     /// Multi-selection (indices) for batch ops in current pane.
     pub marked_indices: HashSet<usize>,
+
     /// Visual/range selection, if active: (start, end)
     pub visual_range: Option<(usize, usize)>,
+
     /// Index of active pane.
     pub active_pane: usize,
 
     // --- Mode and Overlay State ---
     /// High-level UI mode (browse, search, scripting, etc).
     pub mode: UIMode,
+
     /// Currently active overlay/modal.
     pub overlay: UIOverlay,
 
     // --- Input and Interaction State ---
     /// User input buffer (prompt/search/command).
     pub input: String,
+
     /// Last search/filter query.
     pub last_query: Option<String>,
+
     /// Command palette modal state.
     pub command_palette: CommandPaletteState,
+
     /// Type of input prompt currently active.
     pub input_prompt_type: Option<InputPromptType>,
 
     // --- Visual and Display State ---
     /// Show hidden files flag.
     pub show_hidden: bool,
+
     /// Current theme (theme name).
     pub theme: String,
 
     // --- Search Results State (moved from AppState) ---
     /// Generic search results for file listing
     pub search_results: Vec<ObjectInfo>,
+
     /// Filename-specific search results  
     pub filename_search_results: Vec<ObjectInfo>,
+
     /// Rich text search results (formatted strings)
     pub rich_search_results: Vec<String>,
+
     /// Raw search results from ripgrep
     pub raw_search_results: Option<RawSearchResult>,
+
     /// Currently selected index in raw search results
     pub raw_search_selected: usize,
 
     // --- Feedback and Status State (consolidated) ---
     /// Current loading overlay state (if active).
     pub loading: Option<LoadingState>,
+
     /// Current notification (if any).
     pub notification: Option<Notification>,
+
     /// Last status/info message
     pub last_status: Option<String>,
+
     /// Recent quick actions (for palette/undo).
     pub recent_actions: Vec<String>,
+
+    /// Track active file operations with progress
+    pub active_file_opeartions: HashMap<String, FileOperationProgress>,
 }
 
 impl UIState {
@@ -214,6 +352,9 @@ impl UIState {
             notification: None,
             last_status: None,
             recent_actions: Vec::with_capacity(16),
+
+            // File operation tracker
+            active_file_opeartions: HashMap::new(),
         }
     }
 
@@ -473,11 +614,5 @@ impl UIState {
             self.recent_actions.remove(0);
         }
         self.recent_actions.push(action.into());
-    }
-}
-
-impl Default for UIState {
-    fn default() -> Self {
-        Self::new()
     }
 }

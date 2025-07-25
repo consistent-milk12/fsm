@@ -13,17 +13,20 @@
 
 use crate::controller::actions::{Action, InputPromptType};
 use crate::fs::dir_scanner::ScanUpdate;
+use crate::fs::object_info::ObjectInfo;
 use crate::model::app_state::AppState;
 use crate::model::command_palette::CommandAction;
-use crate::model::fs_state::{EntryFilter, EntrySort};
+use crate::model::fs_state::{EntryFilter, EntrySort, PaneState};
 use crate::model::ui_state::{LoadingState, NotificationLevel, RedrawFlag, UIMode, UIOverlay};
 use crate::tasks::search_task::RawSearchResult;
 use crossterm::event::{Event as TermEvent, EventStream, KeyCode, KeyModifiers};
 use futures::StreamExt;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::process::Command;
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::{Mutex, MutexGuard, mpsc};
 use tracing::{debug, info, trace, warn};
 
 /// Enhanced task result with performance metrics
@@ -41,10 +44,40 @@ pub enum TaskResult {
         execution_time: Option<std::time::Duration>,
         memory_usage: Option<u64>,
     },
+
     /// File operation completion
     FileOperationComplete {
         operation_id: String,
         result: Result<(), crate::error::AppError>,
+    },
+
+    /// Real-time progress reporting for file operations
+    FileOperationProgress {
+        operation_id: String,
+
+        /// "Copy", "Move", "Rename"
+        operation_type: String,
+
+        /// Bytes processed so far
+        current_bytes: u64,
+
+        /// Total bytes to process
+        total_bytes: u64,
+
+        /// Currently processing file
+        current_file: PathBuf,
+
+        /// Files completely processed
+        files_completed: u32,
+
+        /// Total files to process
+        total_files: u32,
+
+        /// For ETA calculation
+        start_time: Instant,
+
+        /// Bytes per second
+        throughput_bps: Option<u64>,
     },
 }
 
@@ -1225,6 +1258,44 @@ impl EventLoop {
                             app.ui.show_error(format!("File operation failed: {e}"));
                         }
                     },
+
+                    TaskResult::FileOperationProgress {
+                        operation_id,
+                        operation_type: _,
+                        current_bytes,
+                        total_bytes,
+                        current_file,
+                        files_completed,
+                        total_files,
+                        start_time: _,
+                        throughput_bps: _,
+                    } => {
+                        info!(
+                            "File operation progress: {operation_id} - {current_bytes}/{total_bytes} bytes ({files_completed} files)"
+                        );
+
+                        // TODO: Update progress overlay UI in Phase 2.3
+                        // For now, just update any loading state
+                        if let Some(ref mut loading) = app.ui.loading {
+                            if total_bytes > 0 {
+                                let curr: f64 = current_bytes as f64;
+                                let total: f64 = total_bytes as f64;
+
+                                loading.progress = Some(curr / total);
+                            }
+
+                            loading.current_item = Some(
+                                current_file
+                                    .file_name()
+                                    .unwrap_or_default()
+                                    .to_string_lossy()
+                                    .to_string(),
+                            );
+
+                            loading.completed = Some(files_completed as u64);
+                            loading.total = Some(total_files as u64);
+                        }
+                    }
                 }
 
                 app.ui.request_redraw(RedrawFlag::All);
@@ -1233,7 +1304,7 @@ impl EventLoop {
             // Enhanced directory scan processing
             Action::DirectoryScanUpdate { path, update } => {
                 debug!("Directory scan update for path: {:?}", path);
-                let mut app = self.app.lock().await;
+                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
 
                 if app.fs.active_pane().cwd == path {
                     match update {
@@ -1245,7 +1316,7 @@ impl EventLoop {
 
                         ScanUpdate::Completed(count) => {
                             info!("Directory scan completed with {} entries", count);
-                            let entries = app.fs.active_pane().entries.clone();
+                            let entries: Vec<ObjectInfo> = app.fs.active_pane().entries.clone();
 
                             app.fs
                                 .active_pane_mut()
@@ -1253,8 +1324,9 @@ impl EventLoop {
                             app.fs.add_recent_dir(path.clone());
 
                             // Start background size calculation tasks
-                            let action_tx = app.action_tx.clone();
-                            let entries_for_size = app.fs.active_pane().entries.clone();
+                            let action_tx: UnboundedSender<Action> = app.action_tx.clone();
+                            let entries_for_size: Vec<ObjectInfo> =
+                                app.fs.active_pane().entries.clone();
 
                             for entry in entries_for_size {
                                 if entry.is_dir {
@@ -1271,11 +1343,11 @@ impl EventLoop {
 
                         ScanUpdate::Error(e) => {
                             warn!("Directory scan error: {}", e);
-                            let current_pane = app.fs.active_pane_mut();
+                            let current_pane: &mut PaneState = app.fs.active_pane_mut();
                             current_pane.is_loading = false;
                             current_pane.is_incremental_loading = false;
 
-                            let err_msg = format!("Error scanning directory: {e}");
+                            let err_msg: String = format!("Error scanning directory: {e}");
                             current_pane.last_error = Some(err_msg.clone());
                             app.set_error(err_msg);
                             app.ui.request_redraw(RedrawFlag::All);
@@ -1287,14 +1359,14 @@ impl EventLoop {
             // Development/debug actions
             Action::ToggleShowHidden => {
                 debug!("Toggling hidden files visibility");
-                let mut app = self.app.lock().await;
+                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
                 app.ui.toggle_show_hidden();
                 app.ui.request_redraw(RedrawFlag::All);
             }
 
             Action::SimulateLoading => {
                 debug!("Simulating loading state");
-                let mut app = self.app.lock().await;
+                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
                 app.ui.loading = Some(LoadingState {
                     message: "Simulated loading...".into(),
                     progress: None,
@@ -1310,8 +1382,9 @@ impl EventLoop {
             // Legacy actions - maintained for compatibility
             Action::Sort(_) => {
                 info!("Sort action should now be command-driven (:sort)");
-                let mut app = self.app.lock().await;
-                let active_pane = app.fs.active_pane_mut();
+                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
+                let active_pane: &mut PaneState = app.fs.active_pane_mut();
+
                 active_pane.sort = match active_pane.sort {
                     EntrySort::NameAsc => EntrySort::NameDesc,
                     EntrySort::NameDesc => EntrySort::SizeAsc,
@@ -1320,15 +1393,16 @@ impl EventLoop {
                     EntrySort::ModifiedAsc => EntrySort::ModifiedDesc,
                     EntrySort::ModifiedDesc | EntrySort::Custom(_) => EntrySort::NameAsc,
                 };
-                let sort_criteria = active_pane.sort.to_string();
+
+                let sort_criteria: String = active_pane.sort.to_string();
                 app.sort_entries(&sort_criteria);
                 app.ui.request_redraw(RedrawFlag::All);
             }
 
             Action::Filter(_) => {
                 info!("Filter action should now be command-driven (:filter)");
-                let mut app = self.app.lock().await;
-                let active_pane = app.fs.active_pane_mut();
+                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
+                let active_pane: &mut PaneState = app.fs.active_pane_mut();
 
                 active_pane.filter = match active_pane.filter {
                     EntryFilter::All => EntryFilter::FilesOnly,
@@ -1339,21 +1413,21 @@ impl EventLoop {
                     | EntryFilter::Custom(_) => EntryFilter::All,
                 };
 
-                let filter_criteria = active_pane.filter.to_string();
+                let filter_criteria: String = active_pane.filter.to_string();
                 app.filter_entries(&filter_criteria);
                 app.ui.request_redraw(RedrawFlag::All);
             }
 
             Action::UpdateObjectInfo { parent_dir, info } => {
                 trace!("Updating object info for {:?}", info.path);
-                let mut app = self.app.lock().await;
+                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
                 app.update_object_info(parent_dir, info);
                 app.ui.request_redraw(RedrawFlag::All);
             }
 
             Action::ShowInputPrompt(prompt_type) => {
                 info!("Showing input prompt: {:?}", prompt_type);
-                let mut app = self.app.lock().await;
+                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
                 app.ui.show_input_prompt(prompt_type);
                 app.ui.request_redraw(RedrawFlag::All);
             }
@@ -1361,8 +1435,8 @@ impl EventLoop {
             // ENHANCED INPUT PROMPT HANDLING - All TODOs implemented
             Action::SubmitInputPrompt(input) => {
                 info!("Submitting input prompt: '{}'", input);
-                let mut app = self.app.lock().await;
-                let prompt_type = app.ui.input_prompt_type.clone();
+                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
+                let prompt_type: Option<InputPromptType> = app.ui.input_prompt_type.clone();
                 app.ui.hide_input_prompt();
 
                 match prompt_type {
@@ -1609,6 +1683,18 @@ impl EventLoop {
                     source.file_name().unwrap_or_default().to_string_lossy(),
                     new_name
                 ));
+
+                app.ui.request_redraw(RedrawFlag::All);
+            }
+
+            Action::CancelFileOperation { operation_id } => {
+                info!("Cancelling file operation: {operation_id}");
+
+                // TODO: Implement actual cancellation logic in phase 2.4
+                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
+
+                app.ui
+                    .show_info(format!("Cancellation operations {operation_id}"));
 
                 app.ui.request_redraw(RedrawFlag::All);
             }

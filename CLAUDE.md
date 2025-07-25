@@ -32,6 +32,16 @@ After ANY source edit:
 5. Compactify CLAUDE.md when lengthy
 - Always organize rust functions into structs
 
+## Performance Optimization Patterns (2024-07-25)
+**Learned from file_ops_task.rs implementation:**
+- **Pre-calculated intervals**: Compute adaptive progress intervals outside hot loops
+- **Explicit types**: Use explicit type annotations for self-documenting code
+- **Structured errors**: Break complex error construction into readable steps
+- **Constants**: Use `const` for fixed values like `BUFFER_SIZE = 64 * 1024`
+- **Loop labels**: Use labeled loops for clear control flow (`'copy_file_bytes: loop`)
+- **Adaptive algorithms**: Scale with input size (min(1MB, file_size/10))
+- **Hot loop optimization**: Minimize function calls and repeated calculations
+
 ## Features
 ✅ Async dir navigation, incremental loading
 ✅ File ops: create/delete/copy/move/rename with input prompts  
@@ -115,3 +125,6 @@ Run: `RUST_LOG=debug cargo run`
 
 ## Update Instructions
 - Update project instructions to show the default diff on terminal for user approval, don't use external editor
+
+## General Workflow Notes
+- Always generate the code in the terminal don't add directly if you are not adding to @Design.md or @CLAUDE.md. I will write the edits to the code base by myself. After I am done I will tell you so that you can do a read again to make sure that it was added/changed properly.
