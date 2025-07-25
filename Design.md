@@ -186,6 +186,77 @@ if !app.ui.active_file_operations.is_empty() {
 
 ---
 
+## ✅ PHASE 2.4: ESC Key Cancellation & Operation Cleanup (2024-07-25)
+
+**Implemented:** User-initiated cancellation of file operations via ESC key with comprehensive cleanup
+
+### Core Cancellation Architecture
+```rust
+// src/model/ui_state.rs - Cancellation token management
+pub struct UIState {
+    pub operations_cancel_tokens: HashMap<String, CancellationToken>,
+}
+
+impl UIState {
+    /// Cancel all active file operations
+    pub fn cancel_all_operations(&mut self) -> usize {
+        let count = self.operations_cancel_tokens.len();
+        
+        // Cancel all tokens
+        for token in self.operations_cancel_tokens.values() {
+            token.cancel();
+        }
+        
+        // Clear tracking data
+        self.operations_cancel_tokens.clear();
+        self.active_file_operations.clear();
+        
+        count
+    }
+}
+
+// src/controller/event_loop.rs - ESC key prioritization
+async fn handle_escape_key(&self, mode: UIMode, overlay: UIOverlay, has_notification: bool) -> Action {
+    // HIGHEST PRIORITY: Cancel active file operations
+    if !app.ui.active_file_operations.is_empty() {
+        let cancelled_count = app.ui.cancel_all_operations();
+        if cancelled_count > 0 {
+            app.ui.show_info(format!("Cancelled {cancelled_count} file operations"));
+            return Action::NoOp;
+        }
+    }
+    // ... other ESC handling
+}
+```
+
+### Enhanced User Experience
+- **Highest Priority ESC Handling**: File operation cancellation takes absolute precedence over overlay closures
+- **Multi-operation Cancellation**: Single ESC press cancels all concurrent operations instantly
+- **Clear User Feedback**: Immediate notification showing exact count of cancelled operations
+- **No Error Noise**: User-initiated cancellations don't show as error messages
+- **Visual Consistency**: Progress bars disappear immediately upon cancellation
+
+### Technical Implementation
+- **Thread-Safe Cancellation**: Proper async/await coordination with Arc<Mutex<AppState>>
+- **Resource Cleanup**: Automatic removal from both cancel tokens and progress tracking HashMaps
+- **Memory Efficiency**: Complete cleanup prevents memory leaks from abandoned operations
+- **Error Differentiation**: Distinguishes user cancellation from operation failures
+- **Graceful Degradation**: Handles partial completion before cancellation
+
+### Integration Points
+- **Token Storage**: Cancellation tokens stored in UIState during operation spawning
+- **Task Completion**: Enhanced TaskResult handling with proper cleanup
+- **Progress Tracking**: FileOperationsOverlay automatically reflects cancellations
+- **Event Priority**: ESC key handling restructured with clear priority hierarchy
+
+### Performance Characteristics
+- **Minimal Overhead**: Cancellation token storage only during active operations
+- **Instant Response**: ESC key handling prioritizes cancellation before other actions
+- **Efficient Cleanup**: HashMap operations for O(1) token lookup and removal
+- **No UI Blocking**: Cancellation process maintains responsive UI interaction
+
+---
+
 ## Technical Foundation Summary
 
 ### Architecture Pattern

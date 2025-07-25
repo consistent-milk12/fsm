@@ -481,10 +481,12 @@ impl EventLoop {
                 info!("Copy file - requesting destination");
                 Action::ShowInputPrompt(InputPromptType::CopyDestination)
             }
+
             (KeyCode::Char('m'), _) => {
                 info!("Move file - requesting destination");
                 Action::ShowInputPrompt(InputPromptType::MoveDestination)
             }
+
             (KeyCode::Char('r'), _) => {
                 info!("Rename file - requesting new name");
                 Action::ShowInputPrompt(InputPromptType::RenameFile)
@@ -492,12 +494,19 @@ impl EventLoop {
 
             // Navigation keys
             (KeyCode::Up, _) => Action::MoveSelectionUp,
+
             (KeyCode::Down, _) => Action::MoveSelectionDown,
+
             (KeyCode::PageUp, _) => Action::PageUp,
+
             (KeyCode::PageDown, _) => Action::PageDown,
+
             (KeyCode::Home, _) => Action::SelectFirst,
+
             (KeyCode::End, _) => Action::SelectLast,
+
             (KeyCode::Enter, _) => Action::EnterSelected,
+
             (KeyCode::Backspace, _) => Action::GoToParent,
 
             // System controls
@@ -508,6 +517,7 @@ impl EventLoop {
 
             // Developer shortcuts
             (KeyCode::Char('.'), KeyModifiers::CONTROL) => Action::ToggleShowHidden,
+
             (KeyCode::Char('l'), KeyModifiers::CONTROL) => Action::SimulateLoading,
 
             _ => {
