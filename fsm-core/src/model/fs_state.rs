@@ -409,6 +409,12 @@ impl FSState {
     pub fn remove_favorite(&mut self, path: &PathBuf) {
         self.favorite_dirs.remove(path);
     }
+
+    pub fn get_selected_path(&self) -> Option<PathBuf> {
+        self.active_pane()
+            .selected_entry()
+            .map(|entry| entry.path.clone())
+    }
 }
 
 impl Default for FSState {
