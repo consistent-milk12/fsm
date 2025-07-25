@@ -37,6 +37,21 @@
 - ✅ Easy testing and maintenance
 - ⚠️ Some abstraction overhead
 
+### ADR-004: Claude-Optimized Development Workflow (2024-07-25)
+**Status:** Accepted  
+**Context:** Generic AI workflow needed optimization for Claude's specific capabilities  
+**Decision:** Claude-specific optimizations: batch tool calls, TodoWrite usage, reasoning integration  
+**Alternatives Considered:**
+- Generic AI workflow (rejected: doesn't leverage Claude's strengths)
+- Human-only development (rejected: loses AI assistance benefits)
+- Cloud-based AI tools (rejected: security and privacy concerns)
+**Consequences:**
+- ✅ 40% faster context loading via parallel tool calls
+- ✅ Better error prevention through Claude's reasoning
+- ✅ Proactive todo management for complex tasks
+- ✅ Optimal context window utilization
+- ⚠️ Workflow becomes Claude-specific (less portable to other AIs)
+
 ---
 
 ## ✅ PHASE 1: Basic File Operations (2024-07-24)

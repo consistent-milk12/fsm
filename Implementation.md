@@ -250,12 +250,30 @@ pub use file_operations_overlay::FileOperationsOverlay;
 **Performance Tests:** Memory usage with multiple concurrent operations  
 **User Acceptance:** Manual testing with large file operations  
 
-## 6. Risk Assessment
-**High Risk:** Real-time UI updates causing performance degradation  
-**Medium Risk:** Terminal resize handling during active operations  
-**Low Risk:** Color coding not displaying correctly on all terminals  
+## 6. Risk Assessment (Claude-Enhanced)
+### High Risk (Project Impact)
+- **Real-time UI updates causing performance degradation**
+  - *Claude Analysis*: UI blocking during rapid progress updates
+  - *Mitigation*: Conditional rendering with update throttling
+  - *Detection*: Monitor render times during large file operations
 
-**Mitigation:** Conditional rendering, responsive layout calculations, fallback colors
+### Medium Risk (User Experience)  
+- **Terminal resize handling during active operations**
+  - *Claude Analysis*: Layout corruption when terminal resized mid-operation
+  - *Mitigation*: Responsive layout recalculation on resize events
+  - *Detection*: Manual testing across different terminal sizes
+
+### Low Risk (Cosmetic)
+- **Color coding not displaying correctly on all terminals**
+  - *Claude Analysis*: Some terminals don't support full color palette
+  - *Mitigation*: Fallback colors for basic terminal compatibility
+  - *Detection*: Testing on minimal terminal emulators
+
+### Edge Cases (Claude-Identified)
+- **Extremely long file paths breaking layout**
+- **Concurrent operations exceeding screen height**
+- **Zero-byte files causing division by zero in progress calculation**
+- **Network mounted files with inconsistent progress reporting**
 
 ## 7. Rollback Plan
 **Failure Condition:** UI performance degradation or rendering issues  
@@ -265,13 +283,30 @@ pub use file_operations_overlay::FileOperationsOverlay;
 3. Delete overlay component file
 4. Operations continue with backend-only progress tracking
 
-## 8. Definition of Done
+## 8. Definition of Done (Claude-Enhanced)
+### Code Quality
 - [ ] All P0 success criteria met and tested
 - [ ] Code passes cargo fmt + check + clippy + build
+- [ ] Claude-identified edge cases handled
+- [ ] Error scenarios analyzed and mitigated
+
+### Integration Testing  
 - [ ] Manual testing completed across different terminal sizes
 - [ ] Integration with existing UI verified
-- [ ] Documentation updated in Design.md
+- [ ] Performance impact measured and acceptable
+- [ ] Rollback plan tested and verified
+
+### Documentation & Continuity
+- [ ] Documentation updated in Design.md with technical details
+- [ ] ADR created for any architectural decisions made
 - [ ] Next phase specification prepared
+- [ ] CLAUDE.md updated with any workflow improvements discovered
+
+### Claude-Specific Validation
+- [ ] Implementation leverages Claude's reasoning for error prevention
+- [ ] Code generated via terminal diffs (not direct editing)
+- [ ] Complex tasks tracked via TodoWrite throughout development
+- [ ] Context window efficiently utilized during implementation
 
 ---
 

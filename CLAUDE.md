@@ -19,16 +19,18 @@ EventLoop -> dispatch_action() -> background tasks -> TaskResult -> UI updates
 - `src/model/ui_state.rs` - UI state + active_file_operations HashMap
 - `src/controller/actions.rs` - Action enum (Copy/Move/Rename + progress variants)
 
-## Code Rules (MANDATORY)
-1. **RESTRICTED FILE EDITING** - AI can ONLY directly edit: CLAUDE.md, Design.md, Implementation.md
+## Code Rules (CLAUDE-OPTIMIZED)
+1. **RESTRICTED FILE EDITING** - Claude can ONLY directly edit: CLAUDE.md, Design.md, Implementation.md
 2. **ALL OTHER FILES** - Generate terminal diffs/code for user to implement manually  
 3. **SUDO Override** - User can override with "SUDO: Update {filename} directly."
-4. **Read Access** - AI can read ANY file as needed for analysis and context
-5. **Display Only** - AI displays generated diffs/code directly in terminal
-6. **cargo fmt → check → clippy → build** after any code change
-7. **Modern Rust 2024** - explicit types, structured errors, const values
-8. **Performance patterns**: pre-calculated intervals, labeled loops, adaptive algorithms
-9. **Quality > speed** - robust error handling, proper lifetimes
+4. **BATCH TOOL CALLS** - Claude MUST use parallel tool calls for efficiency (Read multiple files simultaneously)
+5. **CONTEXT WINDOW OPTIMIZATION** - Use TodoWrite for complex tasks, offload searches to Task tool
+6. **MINIMAL OUTPUT** - Concise responses unless detail requested (Claude's strength)
+7. **COMPREHENSIVE ANALYSIS** - Use Claude's reasoning for edge cases and error scenarios
+8. **cargo fmt → check → clippy → build** after any code change
+9. **Modern Rust 2024** - explicit types, structured errors, const values
+10. **Performance patterns** - pre-calculated intervals, labeled loops, adaptive algorithms
+11. **Quality > speed** - robust error handling, proper lifetimes
 
 ## AI Session Continuity Protocol (MANDATORY)
 **Professional 3-file system for persistent AI development:**
@@ -80,21 +82,23 @@ RUST_LOG=debug cargo run
 
 ## AI Development Workflow (STRICT - CLEAN SESSION PROTOCOL)
 
-### New Session Initialization
-1. **MANDATORY**: User loads CLAUDE.md first for AI context
-2. **Auto-read**: AI reads Design.md for historical context + ADRs
-3. **Auto-read**: AI reads Implementation.md for current active work
-4. **Context Load**: AI reads key system files as specified in project context
+### New Session Initialization (Claude-Optimized)
+1. **MANDATORY**: User loads CLAUDE.md first for Claude context
+2. **BATCH READ**: Claude reads Design.md + Implementation.md simultaneously (parallel tool calls)
+3. **SMART CONTEXT**: Claude analyzes current phase and reads only relevant system files
+4. **PROACTIVE TODO**: Claude creates TodoWrite for complex multi-step tasks immediately
+5. **CONTEXT SUMMARY**: Claude provides 2-line summary of current state for user confirmation
 
-### Development Cycle (Every Session)
-1. **Analyze**: Read current Implementation.md specification  
-2. **Research**: Read codebase files for understanding context
-3. **Generate**: Create terminal diffs/code showing exact changes
-4. **Display**: Show implementation code in terminal for user
-5. **Restrict**: NO direct file edits except CLAUDE.md, Design.md, Implementation.md
-6. **Override**: SUDO token allows direct edits: "SUDO: Update {filename} directly"
-7. **Verify**: Read updated files after user implements changes
-8. **Complete**: Check all success criteria, update todos
+### Development Cycle (Claude-Optimized)
+1. **SMART ANALYSIS**: Claude reads Implementation.md + uses reasoning to identify key dependencies
+2. **BATCH RESEARCH**: Claude reads multiple relevant files simultaneously (parallel tool calls)
+3. **STRUCTURED GENERATION**: Claude creates terminal diffs with clear change explanations
+4. **CONCISE DISPLAY**: Claude shows implementation with minimal commentary (leverage brevity strength)
+5. **SAFETY RESTRICTION**: NO direct file edits except CLAUDE.md, Design.md, Implementation.md
+6. **SUDO OVERRIDE**: "SUDO: Update {filename} directly" allows controlled exceptions
+7. **EFFICIENT VERIFICATION**: Claude batch-reads updated files to verify implementation
+8. **TODO MANAGEMENT**: Claude actively uses TodoWrite to track complex multi-step processes
+9. **COMPLETION ANALYSIS**: Claude uses reasoning to check success criteria and edge cases
 
 ### Phase Completion Protocol
 1. **Archive**: Add completed phase to Design.md with technical details
@@ -108,4 +112,32 @@ RUST_LOG=debug cargo run
 - **Post-implementation**: cargo build && integration tests
 - **Documentation**: All changes reflected in Design.md archive
 
-**This context enables seamless AI session continuity with full project knowledge retention.**
+## Claude-Specific Optimizations
+
+### Context Window Management
+- **Prioritized Loading**: Load CLAUDE.md → Design.md ADRs → Implementation.md → key system files only
+- **Smart File Selection**: Claude analyzes current phase to determine which files are actually needed
+- **Chunked Analysis**: Use Task tool for complex searches to preserve context space
+- **Context Efficiency**: Batch read related files simultaneously rather than sequential reads
+
+### Leverage Claude's Strengths
+- **Reasoning Power**: Use for architectural analysis, edge case detection, error scenario planning
+- **Code Analysis**: Deep understanding of code relationships and dependencies
+- **Concise Communication**: Minimal output unless detail specifically requested
+- **Safety Focus**: Conservative approach to file editing with clear change explanations
+- **Parallel Processing**: Simultaneous tool calls for efficient information gathering
+
+### Claude Limitations Mitigations
+- **No Memory Between Sessions**: CLAUDE.md system provides persistent context
+- **Context Window Limits**: Task tool offloading for complex searches
+- **File Editing Restrictions**: Terminal diff system for safe code changes
+- **Batch Operations**: Parallel tool calls instead of sequential operations
+
+### Performance Patterns for Claude
+- **Single Message Multi-Tool**: Batch multiple tool calls in one response
+- **Context Preservation**: Read all needed files upfront, not as-needed
+- **Structured Output**: Use markdown formatting for clear diffs and explanations
+- **Proactive Todo Management**: Create todos immediately for multi-step processes
+- **Error Anticipation**: Use reasoning to predict and prevent common issues
+
+**This context enables seamless Claude session continuity with optimized performance and safety.**
