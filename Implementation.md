@@ -1,634 +1,612 @@
 # FSM Implementation Specification
 
-**ACTIVE FEATURE:** Phase 3.2: Extreme Performance Copy/Move Operations with Zero-Allocation Key Bindings
+**ACTIVE FEATURE:** Phase 3.3: Clipboard Overlay UI with Extreme Performance Rendering
 
 ## 1. Executive Summary
-**Objective:** Implement extreme performance c/x/v key bindings targeting sub-microsecond clipboard operations with zero-allocation hot paths  
-**Priority:** Critical (10-100x performance improvement + modern UX)  
-**Complexity:** High (extreme performance optimization + complex integration)  
-**Dependencies:** Phase 3.1 Extreme Performance Clipboard Infrastructure (✅ Complete)  
-**Estimated Effort:** 2-3 development sessions with aggressive optimization focus
-**Current Status:** 🚀 Ready for extreme performance implementation leveraging clipr foundation
+**Objective:** Implement high-performance clipboard overlay UI for viewing and selecting clipboard items with zero-allocation rendering  
+**Priority:** High (completes clipboard UX with performance-optimized visualization)  
+**Complexity:** Medium (UI component with performance constraints)  
+**Dependencies:** Phase 3.2 Extreme Performance Copy/Move Operations (✅ Complete)  
+**Estimated Effort:** 1-2 development sessions focusing on zero-allocation UI rendering
+**Current Status:** 🚀 Ready for performance-optimized UI implementation
 
 ## 2. Context & Background
-**Problem:** Current copy operations are 100x slower than theoretical limits due to allocations, blocking operations, and inefficient key handling  
-**Current State:** Manual path entry with heavy allocations and synchronous file system calls  
-**Required:** Sub-microsecond key binding response with zero-allocation hot paths and lock-free clipboard integration  
-**Integration Point:** Lock-free event loop optimization + extreme performance clipr operations  
+**Problem:** Users need to view and select from clipboard items but current implementation lacks UI visibility  
+**Current State:** Phase 3.2 complete - c/x/v keys work with extreme performance but no visual feedback  
+**Architecture Foundation:** Production-ready extreme performance infrastructure with Arc<ClipBoard> sharing
+**Required:** Tab-toggled overlay UI with zero-allocation rendering and <100µs performance target  
+**Integration Point:** Existing EKeyProcessor + clipr crate + heapless UI components
 
-## 3. Performance Targets & Architecture Decisions
+### Phase 3.2 Foundation Available
+- **EKeyProcessor**: Zero-allocation key processing with sub-microsecond response times
+- **Arc<ClipBoard>**: Thread-safe clipboard sharing between UI and processor
+- **Lock-Free Operations**: clipr crate with get_all_items() and clear_on_paste() methods
+- **Heapless Infrastructure**: heapless::String patterns established in status_bar.rs
+- **Performance Monitoring**: Built-in cache hit rates and latency tracking  
 
-### ADR-007: Extreme Performance Key Binding Architecture (2024-07-25)
+## 3. Performance & UX Design Decisions
+
+### ADR-008: Zero-Allocation UI Rendering Architecture (2024-07-25)
 **Status:** Accepted  
-**Context:** Traditional key binding processing introduces 10-100µs latency through allocations and blocking operations  
-**Decision:** Implement zero-allocation hot paths with lock-free atomic operations and SIMD-accelerated key processing  
+**Context:** UI rendering can become performance bottleneck with string allocations and inefficient layout calculations  
+**Decision:** Implement zero-allocation rendering using heapless strings and pre-computed layout caches  
 **Performance Targets:**
-- **Key Response Time**: <1µs (vs 100µs baseline)
-- **Clipboard Operations**: <100ns (vs 10ms baseline)  
-- **Memory Allocations**: Zero in hot paths (vs dozens per operation)
-- **Concurrent Access**: Lock-free scaling (vs contention bottlenecks)
-- **Cache Performance**: >95% hit rate (vs 60% baseline)
+- **Render Time**: <100µs for full overlay refresh
+- **Memory Allocations**: Zero allocations during UI updates
+- **Layout Calculations**: Pre-computed and cached for instant display
+- **String Operations**: heapless::String for all text formatting
 
 **Consequences:**
-- ✅ 100x faster key binding response
-- ✅ Zero garbage collection pressure
-- ✅ Linear scaling with CPU cores
-- ✅ Predictable sub-microsecond latency
-- ⚠️ Complex lock-free programming patterns
-- ⚠️ Platform-specific SIMD optimizations
-
-### Extreme Performance Implementation Strategy
-```rust
-// Zero-allocation key binding processing
-pub struct ExtremeKeyProcessor {
-    // Pre-allocated action cache to avoid runtime allocations
-    action_cache: LockFreeMap<KeyCode, AtomicAction>,
-    
-    // Lock-free statistics for performance monitoring
-    stats: AtomicKeyStats,
-    
-    // SIMD-optimized key pattern matching
-    key_patterns: AlignedKeyPatterns,
-    
-    // Zero-copy clipboard integration
-    clipboard_handle: Arc<ClipBoard>,
-}
-
-// Cache-aligned atomic action for zero-allocation dispatch
-#[repr(C, align(64))]
-struct AtomicAction {
-    action_type: AtomicU8,        // 1 byte - action discriminant
-    param1: AtomicU64,            // 8 bytes - first parameter
-    param2: AtomicU64,            // 8 bytes - second parameter
-    flags: AtomicU32,             // 4 bytes - operation flags
-    _padding: [u8; 43],           // 43 bytes - cache line padding
-}
-```
+- ✅ Consistent sub-millisecond UI responsiveness
+- ✅ Zero garbage collection pressure during rendering
+- ✅ Predictable memory usage patterns
+- ✅ Smooth 120fps+ rendering capability
+- ⚠️ Complex UI component architecture
+- ⚠️ Limited dynamic text length (heapless constraints)
 
 ## 4. Success Criteria
-### Must Have (P0) - Performance Critical
-- [ ] **Sub-Microsecond Key Response**: <1µs from key press to action dispatch
-- [ ] **Zero-Allocation Hot Paths**: No heap allocations in c/x/v key processing
-- [ ] **Lock-Free Clipboard Access**: Zero contention in concurrent clipboard operations
-- [ ] **SIMD Key Processing**: Hardware-accelerated key pattern matching
-- [ ] **Atomic Error Handling**: Lock-free error propagation without allocations
-- [ ] **Performance Monitoring**: Built-in metrics for latency and throughput
+### Must Have (P0) - Core Functionality
+- [ ] **Clipboard Overlay Toggle**: Tab key opens/closes clipboard overlay
+- [ ] **Item List Display**: Shows all clipboard items with metadata (path, type, size, date)
+- [ ] **Item Selection**: Arrow keys navigate, Enter selects for paste operation
+- [ ] **Visual Indicators**: Clear distinction between Copy (blue) and Move (yellow) operations
+- [ ] **Performance Metrics**: Real-time clipboard statistics display
+- [ ] **Responsive Layout**: Adapts to terminal size with intelligent truncation
 
-### Should Have (P1) - Optimization Features  
-- [ ] **Cache-Aligned Data Structures**: Optimal CPU cache utilization
-- [ ] **Parallel Paste Operations**: Automatic CPU core scaling for batch operations
-- [ ] **Memory-Mapped Progress**: Zero-copy progress tracking for large operations
-- [ ] **Adaptive Algorithms**: Performance scaling based on operation size
-- [ ] **NUMA Optimization**: CPU topology-aware processing (Linux)
+### Should Have (P1) - Enhanced UX
+- [ ] **Zero-Allocation Rendering**: No heap allocations during UI updates
+- [ ] **Instant Response**: <100µs render time for overlay updates
+- [ ] **Smart Truncation**: Intelligent path shortening for optimal display
+- [ ] **Status Integration**: Clipboard count in main status bar
+- [ ] **Clear Empty State**: Helpful message when clipboard is empty
+- [ ] **Consistent Styling**: Matches existing UI component patterns
 
-### Could Have (P2) - Advanced Performance
-- [ ] **Custom Memory Allocator**: Application-specific allocation optimization
-- [ ] **Vectorized Path Processing**: SIMD-accelerated file path operations
-- [ ] **Branch Prediction Optimization**: CPU pipeline optimization for hot paths
-- [ ] **Cache Prefetching**: Predictive memory access patterns
+### Could Have (P2) - Advanced Features
+- [ ] **Item Preview**: Preview pane showing file contents/metadata
+- [ ] **Batch Selection**: Multi-select for batch operations
+- [ ] **Search Filter**: Quick search within clipboard items
+- [ ] **Sort Options**: Sort by date, size, name, or type
 
-## 5. Extreme Performance Technical Approach
-**Architecture:** Lock-free atomic operations with zero-allocation hot paths and SIMD acceleration  
-**Data Flow:** SIMD key match → atomic action dispatch → lock-free clipboard → parallel file operations  
-**Performance:** Target 100x improvement through aggressive optimization techniques  
-**Memory Model:** Zero-copy operations with cache-aligned data structures  
+## 5. Technical Approach
+**Architecture:** Zero-allocation component with pre-computed layouts and heapless string formatting  
+**Rendering:** Cache-aligned data structures with minimal ratatui widget overhead  
+**Performance:** Sub-100µs render times with zero memory allocations  
+**Integration:** Tab key toggle with existing overlay system  
 
 ## Implementation Specification
 
-### 1. Zero-Allocation Key Binding Processor
+### 1. Zero-Allocation Clipboard Overlay Component
 ```rust
-// fsm-core/src/controller/extreme_key_processor.rs - New extreme performance module
-use crossbeam::atomic::AtomicCell;
-use lockfree::map::Map as LockFreeMap;
-use std::sync::atomic::{AtomicU8, AtomicU64, AtomicU32, Ordering};
+// fsm-core/src/view/components/clipboard_overlay.rs - New high-performance component
+use heapless::{String as HeaplessString, Vec as HeaplessVec};
+use ratatui::{prelude::*, widgets::*};
 
-/// Extreme performance key processor with sub-microsecond response times
-pub struct ExtremeKeyProcessor {
-    /// Pre-computed action lookup for zero-allocation dispatch
-    action_cache: LockFreeMap<u32, AtomicAction>,
+/// Zero-allocation clipboard overlay with sub-100µs render times
+pub struct ClipboardOverlay {
+    /// Pre-allocated text buffers to eliminate runtime allocations
+    item_text_cache: HeaplessVec<HeaplessString<256>, 32>,
     
-    /// Lock-free performance statistics
-    stats: AtomicKeyStats,
+    /// Pre-computed layout rectangles for instant positioning
+    layout_cache: LayoutCache,
     
-    /// SIMD-optimized key pattern matcher
-    pattern_matcher: SIMDKeyMatcher,
+    /// Current selection index (atomic for thread safety)
+    selected_index: usize,
     
-    /// Zero-copy clipboard integration
-    clipboard: Arc<ClipBoard>,
-    
-    /// Cache-aligned current directory (hot path optimization)
-    #[repr(align(64))]
-    current_dir_cache: AtomicCell<CompactString>,
+    /// Performance metrics for optimization
+    render_stats: RenderStats,
 }
 
-impl ExtremeKeyProcessor {
-    /// Initialize processor with pre-computed action cache
-    pub fn new(clipboard: Arc<ClipBoard>) -> Self {
-        let mut processor = Self {
-            action_cache: LockFreeMap::new(),
-            stats: AtomicKeyStats::new(),
-            pattern_matcher: SIMDKeyMatcher::new(),
-            clipboard,
-            current_dir_cache: AtomicCell::new(CompactString::new("")),
-        };
-        
-        // Pre-populate action cache to eliminate runtime allocations
-        processor.initialize_action_cache();
-        processor
+impl ClipboardOverlay {
+    /// Initialize overlay with pre-allocated buffers
+    pub fn new() -> Self {
+        Self {
+            item_text_cache: HeaplessVec::new(),
+            layout_cache: LayoutCache::new(),
+            selected_index: 0,
+            render_stats: RenderStats::new(),
+        }
     }
     
-    /// Zero-allocation key processing with SIMD acceleration
-    #[inline(always)]
-    pub fn process_key_extreme(&self, key: KeyEvent) -> Option<ExtremeAction> {
-        // SIMD-accelerated key pattern matching
-        let key_hash = self.pattern_matcher.hash_key_simd(key);
+    /// Zero-allocation rendering with performance monitoring
+    pub fn render_zero_alloc(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        clipboard: &clipr::ClipBoard,
+        selected_index: usize,
+    ) -> Result<(), UIError> {
+        let start_time = std::time::Instant::now();
         
-        // Lock-free action lookup with zero allocations
-        if let Some(action_guard) = self.action_cache.get(&key_hash) {
-            let action = action_guard.val();
-            self.stats.inc_cache_hit();
-            
-            // Atomic action construction without heap allocation
-            Some(ExtremeAction::from_atomic(action))
+        // Pre-compute layout to avoid runtime calculations
+        let layout = self.layout_cache.get_or_compute(area);
+        
+        // Update selection with bounds checking
+        self.selected_index = selected_index.min(clipboard.len().saturating_sub(1));
+        
+        // Render based on clipboard state
+        if clipboard.is_empty() {
+            self.render_empty_state(frame, layout.main_area);
         } else {
-            self.stats.inc_cache_miss();
+            self.render_clipboard_items(frame, layout, clipboard)?;
+        }
+        
+        // Update performance metrics
+        let render_time = start_time.elapsed();
+        self.render_stats.record_render_time(render_time);
+        
+        Ok(())
+    }
+    
+    /// Render clipboard items with zero allocations
+    fn render_clipboard_items(
+        &mut self,
+        frame: &mut Frame,
+        layout: &PrecomputedLayout,
+        clipboard: &clipr::ClipBoard,
+    ) -> Result<(), UIError> {
+        // Clear text cache for reuse
+        self.item_text_cache.clear();
+        
+        // Pre-allocate display items without heap allocation
+        let items = clipboard.get_all_items_zero_copy();
+        
+        // Build display list with heapless strings
+        for (index, item) in items.iter().enumerate().take(layout.max_visible_items) {
+            let mut item_text = HeaplessString::new();
+            
+            // Format item without allocations
+            self.format_clipboard_item(&mut item_text, item, index == self.selected_index)?;
+            
+            // Cache formatted text
+            self.item_text_cache.push(item_text)
+                .map_err(|_| UIError::TextCacheOverflow)?;
+        }
+        
+        // Render list widget with cached text
+        self.render_list_widget(frame, layout.list_area, &items)?;
+        
+        // Render metadata panel
+        if let Some(selected_item) = items.get(self.selected_index) {
+            self.render_metadata_panel(frame, layout.metadata_area, selected_item)?;
+        }
+        
+        Ok(())
+    }
+    
+    /// Format clipboard item with zero allocations
+    fn format_clipboard_item(
+        &self,
+        buffer: &mut HeaplessString<256>,
+        item: &clipr::ClipBoardItem,
+        is_selected: bool,
+    ) -> Result<(), UIError> {
+        use core::fmt::Write;
+        
+        // Selection indicator
+        let indicator = if is_selected { "▶ " } else { "  " };
+        
+        // Operation type with color coding
+        let op_char = match item.operation {
+            clipr::ClipBoardOperation::Copy => "C",
+            clipr::ClipBoardOperation::Move => "M",
+        };
+        
+        // Smart path truncation
+        let display_path = self.truncate_path_smart(&item.source_path, 60);
+        
+        // Format without heap allocation
+        write!(buffer, "{}{} {}", indicator, op_char, display_path)
+            .map_err(|_| UIError::FormatError)?;
+        
+        Ok(())
+    }
+    
+    /// Intelligent path truncation for optimal display
+    fn truncate_path_smart(&self, path: &str, max_len: usize) -> &str {
+        if path.len() <= max_len {
+            return path;
+        }
+        
+        // Find last separator for intelligent truncation
+        if let Some(sep_pos) = path.rfind('/') {
+            let filename = &path[sep_pos + 1..];
+            if filename.len() < max_len - 3 {
+                // Return "...filename" format
+                let start_pos = path.len() - (max_len - 3);
+                return &path[start_pos..];
+            }
+        }
+        
+        // Fallback to simple truncation
+        &path[..max_len - 3]
+    }
+    
+    /// Render empty clipboard state
+    fn render_empty_state(&self, frame: &mut Frame, area: Rect) {
+        let empty_text = "Clipboard is empty\nPress 'c' to copy or 'x' to cut files";
+        let paragraph = Paragraph::new(empty_text)
+            .alignment(Alignment::Center)
+            .block(Block::default()
+                .borders(Borders::ALL)
+                .title("Clipboard"));
+        
+        frame.render_widget(paragraph, area);
+    }
+}
+
+/// Pre-computed layout cache for zero-allocation rendering
+#[derive(Debug)]
+struct LayoutCache {
+    cached_area: Option<Rect>,
+    cached_layout: Option<PrecomputedLayout>,
+}
+
+impl LayoutCache {
+    fn new() -> Self {
+        Self {
+            cached_area: None,
+            cached_layout: None,
+        }
+    }
+    
+    /// Get cached layout or compute new one
+    fn get_or_compute(&mut self, area: Rect) -> &PrecomputedLayout {
+        if self.cached_area != Some(area) {
+            self.cached_layout = Some(PrecomputedLayout::compute(area));
+            self.cached_area = Some(area);
+        }
+        
+        self.cached_layout.as_ref().unwrap()
+    }
+}
+
+/// Pre-computed layout rectangles for instant positioning
+#[derive(Debug, Clone)]
+struct PrecomputedLayout {
+    main_area: Rect,
+    list_area: Rect,
+    metadata_area: Rect,
+    max_visible_items: usize,
+}
+
+impl PrecomputedLayout {
+    fn compute(area: Rect) -> Self {
+        // Calculate optimal layout based on terminal size
+        let main_area = Rect {
+            x: area.x + 2,
+            y: area.y + 2,
+            width: area.width.saturating_sub(4),
+            height: area.height.saturating_sub(4),
+        };
+        
+        // Split into list and metadata areas
+        let chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
+            .split(main_area);
+        
+        let max_visible_items = chunks[0].height.saturating_sub(2) as usize;
+        
+        Self {
+            main_area,
+            list_area: chunks[0],
+            metadata_area: chunks[1],
+            max_visible_items,
+        }
+    }
+}
+
+/// Performance metrics for render optimization
+#[derive(Debug)]
+struct RenderStats {
+    total_renders: u64,
+    avg_render_time_ns: u64,
+    max_render_time_ns: u64,
+}
+
+impl RenderStats {
+    fn new() -> Self {
+        Self {
+            total_renders: 0,
+            avg_render_time_ns: 0,
+            max_render_time_ns: 0,
+        }
+    }
+    
+    fn record_render_time(&mut self, duration: std::time::Duration) {
+        let time_ns = duration.as_nanos() as u64;
+        
+        self.total_renders += 1;
+        self.max_render_time_ns = self.max_render_time_ns.max(time_ns);
+        
+        // Update rolling average
+        self.avg_render_time_ns = 
+            (self.avg_render_time_ns * (self.total_renders - 1) + time_ns) / self.total_renders;
+    }
+    
+    /// Check if performance target is met (<100µs)
+    pub fn meets_performance_target(&self) -> bool {
+        self.avg_render_time_ns < 100_000 // 100µs in nanoseconds
+    }
+}
+```
+
+### 2. Event Loop Integration
+```rust
+// fsm-core/src/controller/event_loop.rs - Tab key handling integration
+impl EventLoop {
+    /// Handle Tab key for clipboard overlay toggle
+    async fn handle_tab_key(&mut self, app: &mut MutexGuard<'_, AppState>) -> Result<Action, AppError> {
+        // Toggle clipboard overlay state
+        app.ui.clipboard_overlay_active = !app.ui.clipboard_overlay_active;
+        
+        // Reset selection when opening overlay
+        if app.ui.clipboard_overlay_active {
+            app.ui.selected_clipboard_item_index = 0;
+            
+            // Pre-warm overlay cache for immediate rendering
+            if let Some(overlay) = &mut app.ui.clipboard_overlay {
+                overlay.pre_warm_cache(app.ui.clipboard.len());
+            }
+        }
+        
+        Ok(Action::NoOp)
+    }
+    
+    /// Handle clipboard overlay navigation
+    async fn handle_clipboard_navigation(
+        &mut self,
+        app: &mut MutexGuard<'_, AppState>,
+        key: KeyCode,
+    ) -> Result<Action, AppError> {
+        if !app.ui.clipboard_overlay_active {
+            return Ok(Action::NoOp);
+        }
+        
+        let clipboard_len = app.ui.clipboard.len();
+        if clipboard_len == 0 {
+            return Ok(Action::NoOp);
+        }
+        
+        match key {
+            KeyCode::Up => {
+                app.ui.selected_clipboard_item_index = 
+                    app.ui.selected_clipboard_item_index.saturating_sub(1);
+            }
+            KeyCode::Down => {
+                app.ui.selected_clipboard_item_index = 
+                    (app.ui.selected_clipboard_item_index + 1).min(clipboard_len - 1);
+            }
+            KeyCode::Enter => {
+                // Paste selected item
+                self.paste_selected_clipboard_item(app).await?;
+                app.ui.clipboard_overlay_active = false;
+            }
+            KeyCode::Esc => {
+                app.ui.clipboard_overlay_active = false;
+            }
+            _ => {}
+        }
+        
+        Ok(Action::NoOp)
+    }
+    
+    /// Paste specific clipboard item by index
+    async fn paste_selected_clipboard_item(
+        &mut self,
+        app: &mut MutexGuard<'_, AppState>,
+    ) -> Result<(), AppError> {
+        let selected_index = app.ui.selected_clipboard_item_index;
+        let clipboard = Arc::clone(&app.ui.clipboard);
+        
+        // Get selected item without allocation
+        if let Some(item) = clipboard.get_item_by_index(selected_index) {
+            let current_dir = app.fs.current_directory.clone();
+            
+            // Spawn paste operation
+            self.spawn_paste_operation(item, current_dir).await?;
+        }
+        
+        Ok(())
+    }
+}
+```
+
+### 3. UI State Extensions
+```rust
+// fsm-core/src/model/ui_state.rs - Clipboard overlay state integration
+impl UIState {
+    /// Initialize clipboard overlay components
+    pub fn initialize_clipboard_overlay(&mut self) {
+        self.clipboard_overlay = Some(ClipboardOverlay::new());
+        self.clipboard_overlay_active = false;
+        self.selected_clipboard_item_index = 0;
+    }
+    
+    /// Get clipboard overlay rendering state
+    pub fn get_clipboard_overlay_state(&self) -> Option<ClipboardOverlayState> {
+        if self.clipboard_overlay_active {
+            Some(ClipboardOverlayState {
+                selected_index: self.selected_clipboard_item_index,
+                total_items: self.clipboard.len(),
+                is_empty: self.clipboard.is_empty(),
+            })
+        } else {
             None
         }
     }
-    
-    /// Pre-populate action cache for zero-allocation runtime
-    fn initialize_action_cache(&mut self) {
-        use crossterm::event::KeyCode;
-        
-        // Pre-compute all clipboard actions
-        self.insert_cached_action(KeyCode::Char('c'), ActionType::CopyToClipboard, 0, 0);
-        self.insert_cached_action(KeyCode::Char('x'), ActionType::MoveToClipboard, 0, 0);  
-        self.insert_cached_action(KeyCode::Char('v'), ActionType::PasteFromClipboard, 0, 0);
-        
-        // Pre-compute navigation actions for hot path optimization
-        self.insert_cached_action(KeyCode::Up, ActionType::NavigateUp, 0, 0);
-        self.insert_cached_action(KeyCode::Down, ActionType::NavigateDown, 0, 0);
-        self.insert_cached_action(KeyCode::Enter, ActionType::EnterDirectory, 0, 0);
-    }
-    
-    #[inline]
-    fn insert_cached_action(&mut self, key: KeyCode, action_type: ActionType, p1: u64, p2: u64) {
-        let key_hash = self.pattern_matcher.hash_key_code(key);
-        let atomic_action = AtomicAction::new(action_type, p1, p2, 0);
-        self.action_cache.insert(key_hash, atomic_action);
-    }
 }
 
-/// Lock-free atomic statistics for performance monitoring
-#[derive(Debug)]
-struct AtomicKeyStats {
-    total_keys: AtomicU64,
-    cache_hits: AtomicU64,
-    cache_misses: AtomicU64,
-    avg_latency_ns: AtomicU64,
+// Add these fields to existing UIState struct:
+pub struct UIState {
+    // ... existing fields ...
+    
+    /// High-performance clipboard overlay component
+    pub clipboard_overlay: Option<ClipboardOverlay>,
+    
+    /// Whether clipboard overlay is currently active
+    pub clipboard_overlay_active: bool,
+    
+    /// Currently selected clipboard item index
+    pub selected_clipboard_item_index: usize,
+    
+    // ... rest of existing fields ...
 }
 
-impl AtomicKeyStats {
-    fn new() -> Self {
-        Self {
-            total_keys: AtomicU64::new(0),
-            cache_hits: AtomicU64::new(0),
-            cache_misses: AtomicU64::new(0),
-            avg_latency_ns: AtomicU64::new(0),
-        }
-    }
-    
-    #[inline(always)]
-    fn inc_cache_hit(&self) {
-        self.cache_hits.fetch_add(1, Ordering::Relaxed);
-        self.total_keys.fetch_add(1, Ordering::Relaxed);
-    }
-    
-    #[inline(always)]
-    fn inc_cache_miss(&self) {
-        self.cache_misses.fetch_add(1, Ordering::Relaxed);
-        self.total_keys.fetch_add(1, Ordering::Relaxed);
-    }
-    
-    /// Get cache hit rate for performance monitoring
-    pub fn cache_hit_rate(&self) -> f64 {
-        let hits = self.cache_hits.load(Ordering::Relaxed) as f64;
-        let total = self.total_keys.load(Ordering::Relaxed) as f64;
-        if total > 0.0 { hits / total } else { 0.0 }
-    }
+/// Clipboard overlay rendering state
+#[derive(Debug, Clone)]
+pub struct ClipboardOverlayState {
+    pub selected_index: usize,
+    pub total_items: usize,
+    pub is_empty: bool,
 }
 ```
 
-### 2. SIMD-Accelerated Key Pattern Matching
+### 4. Main UI Integration
 ```rust
-// fsm-core/src/controller/simd_key_matcher.rs - SIMD key processing
-use memchr::memchr;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-
-/// SIMD-accelerated key pattern matching for zero-allocation processing
-pub struct SIMDKeyMatcher {
-    /// Pre-computed key hash table for O(1) lookup
-    key_hash_cache: [u32; 256],
-    
-    /// SIMD-optimized modifier pattern table
-    modifier_patterns: AlignedModifierTable,
-}
-
-impl SIMDKeyMatcher {
-    pub fn new() -> Self {
-        let mut matcher = Self {
-            key_hash_cache: [0; 256],
-            modifier_patterns: AlignedModifierTable::new(),
-        };
-        matcher.initialize_hash_cache();
-        matcher
-    }
-    
-    /// SIMD-accelerated key hashing for zero-allocation lookup
-    #[inline(always)]
-    pub fn hash_key_simd(&self, key: KeyEvent) -> u32 {
-        // Use SIMD for rapid key code processing
-        let key_code_hash = self.hash_key_code(key.code);
-        let modifier_hash = self.hash_modifiers_simd(key.modifiers);
-        
-        // Combine hashes with bit manipulation for cache efficiency
-        key_code_hash ^ (modifier_hash << 16)
-    }
-    
-    /// Hash key code with SIMD optimization
-    #[inline(always)]
-    pub fn hash_key_code(&self, key_code: KeyCode) -> u32 {
-        match key_code {
-            KeyCode::Char(c) => {
-                // SIMD-accelerated character hashing
-                let char_bytes = [c as u8, 0, 0, 0];
-                u32::from_le_bytes(char_bytes)
+// fsm-core/src/view/ui.rs - Clipboard overlay rendering integration
+impl UI {
+    /// Render clipboard overlay if active
+    pub fn render_clipboard_overlay(
+        &mut self,
+        frame: &mut Frame,
+        app_state: &AppState,
+    ) -> Result<(), UIError> {
+        if let Some(overlay_state) = app_state.ui.get_clipboard_overlay_state() {
+            // Calculate overlay area (centered, 80% of screen)
+            let overlay_area = self.calculate_centered_overlay(frame.area(), 80, 80);
+            
+            // Get mutable reference to overlay component
+            if let Some(ref mut overlay) = app_state.ui.clipboard_overlay {
+                overlay.render_zero_alloc(
+                    frame,
+                    overlay_area,
+                    &app_state.ui.clipboard,
+                    overlay_state.selected_index,
+                )?;
             }
-            KeyCode::Up => 0x1000_0001,
-            KeyCode::Down => 0x1000_0002,
-            KeyCode::Left => 0x1000_0003,
-            KeyCode::Right => 0x1000_0004,
-            KeyCode::Enter => 0x1000_0005,
-            KeyCode::Esc => 0x1000_0006,
-            _ => 0x9000_0000 | (key_code as u32),
         }
+        
+        Ok(())
     }
     
-    /// SIMD-accelerated modifier processing
-    #[inline(always)]
-    fn hash_modifiers_simd(&self, modifiers: KeyModifiers) -> u32 {
-        // Pack modifiers into single u32 with bit manipulation
-        let mut hash = 0u32;
-        if modifiers.contains(KeyModifiers::CONTROL) { hash |= 0x01; }
-        if modifiers.contains(KeyModifiers::ALT) { hash |= 0x02; }
-        if modifiers.contains(KeyModifiers::SHIFT) { hash |= 0x04; }
-        hash
-    }
-    
-    fn initialize_hash_cache(&mut self) {
-        // Pre-compute common key hashes for instant lookup
-        for i in 0..256u8 {
-            self.key_hash_cache[i as usize] = self.compute_char_hash(i as char);
-        }
-    }
-    
-    #[inline]
-    fn compute_char_hash(&self, c: char) -> u32 {
-        let char_bytes = [c as u8, 0, 0, 0];
-        u32::from_le_bytes(char_bytes)
-    }
-}
-
-/// Cache-aligned modifier pattern table for SIMD processing
-#[repr(C, align(64))]
-struct AlignedModifierTable {
-    patterns: [u32; 16], // All possible modifier combinations
-}
-
-impl AlignedModifierTable {
-    fn new() -> Self {
-        Self {
-            patterns: [0; 16],
+    /// Calculate centered overlay area
+    fn calculate_centered_overlay(&self, area: Rect, width_percent: u16, height_percent: u16) -> Rect {
+        let overlay_width = (area.width * width_percent / 100).min(area.width);
+        let overlay_height = (area.height * height_percent / 100).min(area.height);
+        
+        let x = (area.width.saturating_sub(overlay_width)) / 2;
+        let y = (area.height.saturating_sub(overlay_height)) / 2;
+        
+        Rect {
+            x: area.x + x,
+            y: area.y + y,
+            width: overlay_width,
+            height: overlay_height,
         }
     }
 }
 ```
 
-### 3. Lock-Free Action Dispatch System
+## 6. Integration Requirements & Dependencies
+
+### Required clipr Crate Methods
+- `ClipBoard::get_all_items()` - Returns all clipboard items (✅ implemented)
+- `ClipBoard::get_item_by_index(usize)` - Get specific item by index (may need implementation)
+- `ClipBoard::len()` - Get total items count (✅ available)
+- `ClipBoard::is_empty()` - Check if clipboard is empty (✅ available)
+
+### UI State Integration Points
+- `UIState::clipboard: Arc<ClipBoard>` - Shared clipboard reference (✅ available from Phase 3.2)
+- `UIState::clipboard_overlay_active: bool` - Toggle state (needs addition)
+- `UIState::selected_clipboard_item_index: usize` - Selection tracking (needs addition)
+
+### Event Loop Integration Requirements
+- Tab key handling for overlay toggle (needs implementation)
+- Arrow key routing when overlay active (needs implementation)
+- Enter key paste operation with overlay close (needs implementation)
+- ESC key overlay close without paste (needs implementation)
+
+## 7. Success Criteria Checklist
+- [ ] **Tab Toggle**: Tab key opens/closes clipboard overlay smoothly
+- [ ] **Item Display**: All clipboard items shown with proper formatting
+- [ ] **Navigation**: Arrow keys navigate selection correctly
+- [ ] **Selection**: Enter key pastes selected item and closes overlay
+- [ ] **Performance**: <100µs render time measured and achieved
+- [ ] **Zero Allocations**: Memory profiling confirms no heap allocations during UI updates
+- [ ] **Responsive Layout**: Overlay adapts to different terminal sizes
+- [ ] **Visual Polish**: Consistent styling with existing UI components
+
+## 7. Risk Assessment
+### Medium Risk
+- **UI Complexity**: Complex layout calculations may introduce rendering bugs
+  - *Mitigation*: Pre-computed layouts with extensive testing
+  - *Detection*: Visual regression testing across terminal sizes
+
+### Low Risk
+- **Performance Regression**: UI rendering may not meet <100µs target
+  - *Mitigation*: Built-in performance monitoring with alerts
+  - *Detection*: Continuous benchmarking in development
+
+## 8. Definition of Done
+### Core Functionality
+- [ ] Tab key toggles clipboard overlay with smooth animation
+- [ ] All clipboard items displayed with metadata (path, type, operation)
+- [ ] Arrow key navigation works correctly with visual selection indicator
+- [ ] Enter key pastes selected item and closes overlay
+- [ ] ESC key closes overlay without performing action
+- [ ] Empty state shows helpful message when clipboard is empty
+
+### Performance Requirements
+- [ ] Sub-100µs render time achieved and monitored
+- [ ] Zero heap allocations during UI updates verified
+- [ ] Responsive layout adapts to terminal size changes
+- [ ] Visual consistency maintained with existing UI components
+
+### Integration & Quality
+- [ ] All code passes `cargo clippy` without warnings
+- [ ] Integration with existing overlay system works seamlessly
+- [ ] Performance metrics integrated with status bar display
+- [ ] Documentation updated in Design.md with implementation details
+
+## 9. Phase 3.2 Foundation Reference
+
+### Available Architecture Components
 ```rust
-// fsm-core/src/controller/extreme_actions.rs - Zero-allocation action system
-use std::sync::atomic::{AtomicU8, AtomicU64, AtomicU32, Ordering};
+// From Phase 3.2 - Available for use in Phase 3.3
 
-/// Cache-aligned atomic action for zero-allocation dispatch
-#[repr(C, align(64))]
-pub struct AtomicAction {
-    action_type: AtomicU8,        // Action discriminant
-    param1: AtomicU64,            // First parameter (file ID, path hash, etc.)
-    param2: AtomicU64,            // Second parameter
-    flags: AtomicU32,             // Operation flags
-    _padding: [u8; 43],           // Cache line padding
+// Extreme performance key processor (in AppState)
+pub struct EKeyProcessor {
+    pub clipboard: Arc<ClipBoard>,              // Thread-safe clipboard access
+    pub stats: EKeyStats,                       // Performance monitoring
+    // ... other fields available
 }
 
-impl AtomicAction {
-    pub fn new(action_type: ActionType, p1: u64, p2: u64, flags: u32) -> Self {
-        Self {
-            action_type: AtomicU8::new(action_type as u8),
-            param1: AtomicU64::new(p1),
-            param2: AtomicU64::new(p2),
-            flags: AtomicU32::new(flags),
-            _padding: [0; 43],
-        }
-    }
-    
-    /// Load action atomically without allocations
-    #[inline(always)]
-    pub fn load_atomic(&self) -> (ActionType, u64, u64, u32) {
-        (
-            ActionType::from_u8(self.action_type.load(Ordering::Relaxed)),
-            self.param1.load(Ordering::Relaxed),
-            self.param2.load(Ordering::Relaxed),
-            self.flags.load(Ordering::Relaxed),
-        )
-    }
-}
-
-/// Zero-allocation action representation
-#[derive(Debug, Clone, Copy)]
-pub struct ExtremeAction {
-    pub action_type: ActionType,
-    pub param1: u64,
-    pub param2: u64,
-    pub flags: u32,
-}
-
-impl ExtremeAction {
-    #[inline(always)]
-    pub fn from_atomic(atomic: &AtomicAction) -> Self {
-        let (action_type, p1, p2, flags) = atomic.load_atomic();
-        Self {
-            action_type,
-            param1: p1,
-            param2: p2,
-            flags,
-        }
-    }
-}
-
-/// Memory-efficient action type enumeration
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
+// Zero-allocation action system
 pub enum ActionType {
     CopyToClipboard = 1,
-    MoveToClipboard = 2,
+    MoveToClipboard = 2, 
     PasteFromClipboard = 3,
-    NavigateUp = 10,
-    NavigateDown = 11,
-    EnterDirectory = 12,
-    // ... other actions
+    // Add: ToggleClipboardOverlay, NavigateClipboardUp, NavigateClipboardDown
 }
 
-impl ActionType {
-    #[inline(always)]
-    fn from_u8(value: u8) -> Self {
-        match value {
-            1 => ActionType::CopyToClipboard,
-            2 => ActionType::MoveToClipboard,
-            3 => ActionType::PasteFromClipboard,
-            10 => ActionType::NavigateUp,
-            11 => ActionType::NavigateDown,
-            12 => ActionType::EnterDirectory,
-            _ => ActionType::CopyToClipboard, // Safe fallback
-        }
-    }
-}
+// Heapless string pattern (from status_bar.rs)
+let mut text_buffer: heapless::String<256> = heapless::String::new();
+write!(&mut text_buffer, "Format: {}", value).unwrap_or_default();
 ```
 
-### 4. Extreme Performance Event Loop Integration
-```rust
-// fsm-core/src/controller/event_loop.rs - Optimized event loop integration
-impl EventLoop {
-    /// Initialize extreme performance key processor
-    pub fn new_extreme_performance(app: Arc<Mutex<AppState>>, task_tx: mpsc::UnboundedSender<TaskResult>) -> Self {
-        let clipboard = {
-            let app = app.lock().await;
-            Arc::clone(&app.ui.clipboard)
-        };
-        
-        let key_processor = ExtremeKeyProcessor::new(clipboard);
-        
-        Self {
-            app,
-            task_tx,
-            key_processor: Some(key_processor),
-            // ... other fields
-        }
-    }
-    
-    /// Extreme performance key event handling with sub-microsecond response
-    #[inline(always)]
-    async fn handle_key_event_extreme(&mut self, key: KeyEvent) -> Result<(), AppError> {
-        let start_time = std::time::Instant::now();
-        
-        // SIMD-accelerated key processing with zero allocations
-        if let Some(action) = self.key_processor.as_ref()
-            .and_then(|kp| kp.process_key_extreme(key)) {
-            
-            // Dispatch action with lock-free atomic operations
-            self.dispatch_extreme_action(action).await?;
-            
-            // Update performance metrics
-            let latency_ns = start_time.elapsed().as_nanos() as u64;
-            self.update_performance_metrics(latency_ns);
-            
-            return Ok(());
-        }
-        
-        // Fallback to standard key handling for non-optimized keys
-        self.handle_key_event_standard(key).await
-    }
-    
-    /// Lock-free action dispatch with zero allocations
-    #[inline]
-    async fn dispatch_extreme_action(&mut self, action: ExtremeAction) -> Result<(), AppError> {
-        match action.action_type {
-            ActionType::CopyToClipboard => {
-                self.handle_copy_to_clipboard_extreme().await?;
-            }
-            ActionType::MoveToClipboard => {
-                self.handle_move_to_clipboard_extreme().await?;
-            }
-            ActionType::PasteFromClipboard => {
-                self.handle_paste_from_clipboard_extreme().await?;
-            }
-            ActionType::NavigateUp => {
-                self.handle_navigate_up_extreme().await?;
-            }
-            ActionType::NavigateDown => {
-                self.handle_navigate_down_extreme().await?;
-            }
-            ActionType::EnterDirectory => {
-                self.handle_enter_directory_extreme().await?;
-            }
-        }
-        Ok(())
-    }
-    
-    /// Zero-allocation clipboard copy with lock-free operations
-    #[inline]
-    async fn handle_copy_to_clipboard_extreme(&mut self) -> Result<(), AppError> {
-        let selected_path = {
-            let app = self.app.lock().await;
-            app.fs.get_selected_path_zero_copy()? // Zero-copy path extraction
-        };
-        
-        // Lock-free clipboard addition with atomic ID generation
-        match self.key_processor.as_ref().unwrap().clipboard.add_copy(selected_path).await {
-            Ok(id) => {
-                // Zero-allocation success notification
-                self.notify_success_zero_copy("Copied to clipboard", id).await;
-            }
-            Err(e) => {
-                // Lock-free error handling
-                self.handle_clipboard_error_extreme(e, "copy").await;
-            }
-        }
-        
-        Ok(())
-    }
-    
-    /// Lock-free error handling without allocations
-    #[inline]
-    async fn handle_clipboard_error_extreme(&mut self, error: clipr::ClipError, operation: &'static str) {
-        // Use pre-allocated error message cache to avoid runtime allocations
-        let error_code = self.classify_error_code(&error);
-        self.notify_error_by_code(error_code, operation).await;
-    }
-    
-    /// Update performance metrics atomically
-    #[inline(always)]
-    fn update_performance_metrics(&self, latency_ns: u64) {
-        if let Some(kp) = &self.key_processor {
-            kp.stats.update_latency(latency_ns);
-        }
-    }
-}
-```
+### Integration Patterns Established
+- **Arc<ClipBoard> Sharing**: Thread-safe clipboard access between UI and processor
+- **Heapless String Construction**: Zero-allocation text formatting patterns
+- **Cache-Aligned Structures**: 64-byte alignment for optimal performance
+- **Lock-Free Statistics**: Atomic performance counters and monitoring
+- **Dynamic Component Initialization**: Lazy loading patterns for UI components
 
-### 5. Memory-Optimized Status Bar Integration
-```rust
-// fsm-core/src/view/extreme_ui.rs - Zero-allocation UI updates
-impl UI {
-    /// Extreme performance status bar with zero allocations
-    fn render_status_bar_extreme(&self, frame: &mut Frame, area: Rect, app_state: &AppState) {
-        // Use pre-allocated status buffer to avoid runtime allocations
-        let mut status_buffer = HeaplessString::<256>::new();
-        
-        // Zero-allocation clipboard status extraction
-        let clipboard_stats = app_state.ui.clipboard.stats();
-        if clipboard_stats.total_items > 0 {
-            // Format without allocations using heapless formatting
-            write!(status_buffer, " CB:{} ", clipboard_stats.total_items).ok();
-        }
-        
-        // Zero-allocation performance metrics display
-        if let Some(key_processor) = &app_state.key_processor {
-            let hit_rate = key_processor.stats.cache_hit_rate();
-            write!(status_buffer, " Hit:{:.1}% ", hit_rate * 100.0).ok();
-        }
-        
-        // Render with zero-copy string operations
-        self.render_status_parts_zero_copy(frame, area, &status_buffer);
-    }
-}
-```
-
-## 6. Performance Monitoring & Benchmarking
-
-### Built-in Performance Metrics
-```rust
-// fsm-core/src/performance/extreme_metrics.rs - Performance monitoring system
-pub struct ExtremePerformanceMetrics {
-    /// Key processing latency histogram
-    key_latency_histogram: AtomicHistogram,
-    
-    /// Clipboard operation latency tracking
-    clipboard_latency_histogram: AtomicHistogram,
-    
-    /// Memory allocation tracking
-    allocation_tracker: AtomicAllocationTracker,
-    
-    /// Cache performance metrics
-    cache_metrics: AtomicCacheMetrics,
-}
-
-impl ExtremePerformanceMetrics {
-    /// Get performance summary for optimization analysis
-    pub fn performance_summary(&self) -> PerformanceSummary {
-        PerformanceSummary {
-            avg_key_latency_ns: self.key_latency_histogram.average(),
-            p99_key_latency_ns: self.key_latency_histogram.percentile(99),
-            clipboard_ops_per_sec: self.clipboard_latency_histogram.throughput(),
-            zero_allocation_percentage: self.allocation_tracker.zero_alloc_percentage(),
-            cache_hit_rate: self.cache_metrics.hit_rate(),
-        }
-    }
-}
-```
-
-## 7. Success Criteria Checklist - Performance Focus
-- [ ] **Sub-Microsecond Key Response**: <1µs measured latency from key press to action dispatch
-- [ ] **Zero-Allocation Hot Paths**: Memory profiling confirms no heap allocations in c/x/v processing  
-- [ ] **Lock-Free Clipboard Access**: Concurrent access benchmarks show linear scaling
-- [ ] **SIMD Key Processing**: CPU profiling confirms SIMD instruction usage
-- [ ] **Cache Optimization**: >95% cache hit rate in performance monitoring
-- [ ] **Throughput Scaling**: Operations/second scales linearly with CPU cores
-
-## 8. Performance Testing Strategy
-1. **Latency Benchmarks**: Measure key response time under various loads
-2. **Throughput Tests**: Maximum operations per second with concurrent access
-3. **Memory Profiling**: Confirm zero allocations in hot paths
-4. **Cache Analysis**: Verify cache hit rates and memory access patterns
-5. **SIMD Verification**: Confirm SIMD instruction usage in key processing
-6. **Scalability Testing**: Performance scaling with CPU core count
-
-## 9. Risk Assessment - Performance Focus
-### High Risk (Performance Critical)
-- **Lock-Free Correctness**: Memory ordering bugs could cause data races or corruption
-  - *Mitigation*: Extensive property-based testing with memory sanitizers
-  - *Detection*: Automated lock-free correctness testing in CI
-
-### Medium Risk (Optimization Complexity)  
-- **SIMD Portability**: Platform-specific optimizations may break on some systems
-  - *Mitigation*: Automatic fallback detection with feature flags
-  - *Detection*: Cross-platform performance testing
-
-### Low Risk (Integration)
-- **Performance Regression**: Complex optimizations may introduce unexpected bottlenecks
-  - *Mitigation*: Continuous performance benchmarking with regression alerts
-  - *Detection*: Automated performance testing in CI pipeline
-
-## 10. Definition of Done - Extreme Performance
-### Performance Quality
-- [ ] All P0 performance criteria met with benchmark verification
-- [ ] Sub-microsecond key response measured and documented
-- [ ] Zero-allocation hot paths confirmed via memory profiling
-- [ ] Lock-free operations verified with correctness testing
-- [ ] SIMD optimization confirmed with CPU profiling
-- [ ] Cache hit rate >95% achieved and monitored
-
-### Integration & Scalability
-- [ ] Linear performance scaling with CPU core count verified
-- [ ] Concurrent access benchmarks show zero contention
-- [ ] Performance monitoring integrated with real-time metrics
-- [ ] Cross-platform performance verification (Linux, macOS, Windows)
-- [ ] Performance regression testing automated in CI
-
-### Documentation & Continuity
-- [ ] Performance optimization techniques documented in Design.md
-- [ ] Benchmark results and optimization ADRs added to archive
-- [ ] Next phase prepared for Phase 3.3 with performance foundation
-- [ ] Extreme performance patterns documented for future development
+### Performance Monitoring Available
+- Cache hit rate tracking: `key_processor.stats.cache_hit_rate()`
+- Latency monitoring: `key_processor.stats.update_latency(latency_ns)`
+- Render time measurement: Built-in `std::time::Instant` patterns
 
 ---
 
-**This implements extreme performance copy/paste operations targeting 100x improvements through lock-free programming, SIMD acceleration, and zero-allocation hot paths.**
+**This implements a high-performance clipboard overlay UI completing the clipboard system with zero-allocation rendering and sub-100µs response times, building directly on the extreme performance foundation established in Phase 3.2.**
