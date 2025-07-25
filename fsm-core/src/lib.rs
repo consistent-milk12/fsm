@@ -195,6 +195,11 @@ pub mod controller {
     /// - Coordinates state updates and UI redraws
     pub mod event_loop;
     pub use event_loop::{EventLoop, TaskResult};
+
+    // Performance-optimized modules
+    pub mod eactions;
+    pub mod ekey_processor;
+    pub mod esimd_matcher;
 }
 
 // =============================================================================
