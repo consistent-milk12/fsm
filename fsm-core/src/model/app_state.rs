@@ -20,6 +20,7 @@
 use crate::cache::cache_manager::ObjectInfoCache;
 use crate::config::Config;
 use crate::controller::actions::Action;
+use crate::controller::ekey_processor::EKeyProcessor;
 use crate::controller::event_loop::TaskResult;
 use crate::fs::dir_scanner;
 use crate::fs::object_info::ObjectInfo;
@@ -78,6 +79,8 @@ pub struct AppState {
     pub last_error: Option<String>,
     /// Application startup time for analytics
     pub started_at: Instant,
+    // Performance-optimized key processor
+    pub key_processor: Option<EKeyProcessor>,
 }
 
 #[derive(Debug, Clone)]
@@ -128,6 +131,7 @@ impl AppState {
             tasks: HashMap::new(),
             last_error: None,
             started_at: Instant::now(),
+            key_processor: None,
         }
     }
 
