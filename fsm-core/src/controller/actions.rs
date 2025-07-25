@@ -56,6 +56,9 @@ pub enum Action {
     /// Toggle the content search overlay.
     ToggleContentSearch,
 
+    /// Toggle the clipboard overlay visibility.
+    ToggleClipboardOverlay,
+
     /// Perform a file name search (instant).
     FileNameSearch(String),
 

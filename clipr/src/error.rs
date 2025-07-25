@@ -47,6 +47,28 @@ pub enum ClipError {
 
     #[error("SIMD operation not supported on this CPU")]
     SimdUnsupported,
+
+    // Persistence-related errors
+    #[error("Persistence error: {message}")]
+    PersistenceError { message: CompactString },
+
+    #[error("Persistence file corrupted: {path}")]
+    PersistenceCorrupted { path: CompactString },
+
+    #[error("Persistence version mismatch: expected {expected}, found {found}")]
+    PersistenceVersionMismatch { expected: u32, found: u32 },
+
+    #[error("Persistence file not found: {path}")]
+    PersistenceFileNotFound { path: CompactString },
+
+    #[error("Persistence configuration error: {0}")]
+    PersistenceConfigError(CompactString),
+
+    #[error("Atomic save operation failed: {0}")]
+    AtomicSaveError(CompactString),
+
+    #[error("Clipboard deserialization failed: {0}")]
+    DeserializationError(CompactString),
 }
 
 impl ClipError {
@@ -59,13 +81,33 @@ impl ClipError {
                 | ClipError::DuplicateItem { .. }
                 | ClipError::ClipBoardFull { .. }
                 | ClipError::LockFreeRetry
+                | ClipError::PersistenceFileNotFound { .. }
+                | ClipError::PersistenceCorrupted { .. }
         )
     }
 
     /// Check if error indicates a transient condition that should be retried
     #[inline(always)]
     pub fn should_retry(&self) -> bool {
-        matches!(self, ClipError::LockFreeRetry)
+        matches!(
+            self, 
+            ClipError::LockFreeRetry | ClipError::AtomicSaveError(_)
+        )
+    }
+
+    /// Check if error is persistence-related
+    #[inline(always)]
+    pub fn is_persistence_error(&self) -> bool {
+        matches!(
+            self,
+            ClipError::PersistenceError { .. }
+                | ClipError::PersistenceCorrupted { .. }
+                | ClipError::PersistenceVersionMismatch { .. }
+                | ClipError::PersistenceFileNotFound { .. }
+                | ClipError::PersistenceConfigError(_)
+                | ClipError::AtomicSaveError(_)
+                | ClipError::DeserializationError(_)
+        )
     }
 
     /// Create metadata error with path conversion optimization
@@ -83,6 +125,28 @@ impl ClipError {
         Self::DuplicateItem {
             path: CompactString::from(path.to_string_lossy()),
         }
+    }
+
+    /// Create persistence error with message
+    #[inline]
+    pub fn persistence_error(message: impl Into<CompactString>) -> Self {
+        Self::PersistenceError {
+            message: message.into(),
+        }
+    }
+
+    /// Create persistence corruption error with path
+    #[inline]
+    pub fn persistence_corrupted(path: &std::path::Path) -> Self {
+        Self::PersistenceCorrupted {
+            path: CompactString::from(path.to_string_lossy()),
+        }
+    }
+
+    /// Create atomic save error
+    #[inline]
+    pub fn atomic_save_error(message: impl Into<CompactString>) -> Self {
+        Self::AtomicSaveError(message.into())
     }
 }
 

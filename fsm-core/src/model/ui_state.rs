@@ -334,6 +334,7 @@ pub struct UIState {
     /// Clipboard overlay state
     pub clipboard_overlay_active: bool,
     pub selected_clipboard_item: Option<String>,
+    pub selected_clipboard_item_index: usize,
     pub clipboard_view_mode: ClipBoardViewMode,
 }
 
@@ -397,6 +398,7 @@ impl UIState {
             clipboard: Arc::new(ClipBoard::default()),
             clipboard_overlay_active: false,
             selected_clipboard_item: None,
+            selected_clipboard_item_index: 0,
             clipboard_view_mode: ClipBoardViewMode::default(),
         }
     }
@@ -700,6 +702,7 @@ impl UIState {
 
         if !self.clipboard_overlay_active {
             self.selected_clipboard_item = None;
+            self.selected_clipboard_item_index = 0;
         }
     }
 
@@ -711,6 +714,7 @@ impl UIState {
     pub fn close_clipboard_overlay(&mut self) {
         self.clipboard_overlay_active = false;
         self.selected_clipboard_item = None;
+        self.selected_clipboard_item_index = 0;
         self.request_redraw(RedrawFlag::Overlay);
     }
 }

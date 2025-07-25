@@ -23,6 +23,7 @@ pub mod config;
 pub mod error;
 pub mod item;
 pub mod operations;
+pub mod persistence;
 
 // Re-export main types for easy use
 pub use clipboard::{ClipBoard, ClipBoardStats};
@@ -32,3 +33,4 @@ pub use item::{
     ClipBoardItem, ClipBoardOperation, CompactMetadata, FilePermissions, FileType, ItemStatus,
 };
 pub use operations::{FileOperation, PasteOperation};
+pub use persistence::{ClipboardPersistence, PersistenceConfig};

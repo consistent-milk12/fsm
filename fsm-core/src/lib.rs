@@ -332,6 +332,10 @@ pub mod view {
         pub mod command_palette;
         pub use command_palette::CommandPalette;
 
+        /// High-performance clipboard overlay with zero-allocation rendering
+        pub mod clipboard_overlay;
+        pub use clipboard_overlay::ClipboardOverlay;
+
         /// Content search overlay with ripgrep integration
         pub mod content_search_overlay;
         pub use content_search_overlay::ContentSearchOverlay;

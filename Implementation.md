@@ -1,612 +1,588 @@
 # FSM Implementation Specification
 
-**ACTIVE FEATURE:** Phase 3.3: Clipboard Overlay UI with Extreme Performance Rendering
+**ACTIVE FEATURE:** Phase 3.5: Performance Telemetry Integration
 
 ## 1. Executive Summary
-**Objective:** Implement high-performance clipboard overlay UI for viewing and selecting clipboard items with zero-allocation rendering  
-**Priority:** High (completes clipboard UX with performance-optimized visualization)  
-**Complexity:** Medium (UI component with performance constraints)  
-**Dependencies:** Phase 3.2 Extreme Performance Copy/Move Operations (✅ Complete)  
-**Estimated Effort:** 1-2 development sessions focusing on zero-allocation UI rendering
-**Current Status:** 🚀 Ready for performance-optimized UI implementation
+**Objective:** Integrate comprehensive performance monitoring with hardware counters, regression detection, and real-time telemetry dashboard  
+**Priority:** High (builds on completed Phase 3.4 advanced clipboard features)  
+**Complexity:** High (requires low-level hardware integration and monitoring infrastructure)  
+**Dependencies:** Phase 3.4 Advanced Clipboard Features (✅ Complete)  
+**Estimated Effort:** 3-4 development sessions focusing on performance monitoring and telemetry  
+**Current Status:** 🚀 Ready for performance telemetry integration implementation
 
 ## 2. Context & Background
-**Problem:** Users need to view and select from clipboard items but current implementation lacks UI visibility  
-**Current State:** Phase 3.2 complete - c/x/v keys work with extreme performance but no visual feedback  
-**Architecture Foundation:** Production-ready extreme performance infrastructure with Arc<ClipBoard> sharing
-**Required:** Tab-toggled overlay UI with zero-allocation rendering and <100µs performance target  
-**Integration Point:** Existing EKeyProcessor + clipr crate + heapless UI components
+**Problem:** While extreme performance clipboard system is complete, there's no comprehensive monitoring to validate performance claims and detect regressions  
+**Current State:** Phase 3.4 complete - advanced clipboard with persistence, enhanced metadata, and multi-selection  
+**Architecture Foundation:** Production-ready extreme performance clipboard system with built-in basic metrics  
+**Required:** Hardware performance counters, regression detection, real-time telemetry dashboard, performance alerting  
+**Integration Point:** Existing AtomicStats + performance monitoring + clipr crate + zero-allocation UI components
 
-### Phase 3.2 Foundation Available
-- **EKeyProcessor**: Zero-allocation key processing with sub-microsecond response times
-- **Arc<ClipBoard>**: Thread-safe clipboard sharing between UI and processor
-- **Lock-Free Operations**: clipr crate with get_all_items() and clear_on_paste() methods
-- **Heapless Infrastructure**: heapless::String patterns established in status_bar.rs
-- **Performance Monitoring**: Built-in cache hit rates and latency tracking  
+### Phase 3.4 Foundation Delivered
+- **Clipboard Persistence**: Atomic saves with <1ms target and backup recovery
+- **Multi-Selection API**: Support for batch operations on clipboard items
+- **Enhanced Error Handling**: Comprehensive persistence error types and recovery
+- **Performance Validation**: Built-in timing validation for save/load operations
+- **Configuration System**: User-configurable persistence and retention policies
 
 ## 3. Performance & UX Design Decisions
 
-### ADR-008: Zero-Allocation UI Rendering Architecture (2024-07-25)
-**Status:** Accepted  
-**Context:** UI rendering can become performance bottleneck with string allocations and inefficient layout calculations  
-**Decision:** Implement zero-allocation rendering using heapless strings and pre-computed layout caches  
+### ADR-010: Clipboard Persistence Architecture (2024-07-25)
+**Status:** Proposed  
+**Context:** Users lose clipboard contents when restarting application, reducing productivity  
+**Decision:** Implement file-based persistence using memory-mapped storage for instant load/save  
 **Performance Targets:**
-- **Render Time**: <100µs for full overlay refresh
-- **Memory Allocations**: Zero allocations during UI updates
-- **Layout Calculations**: Pre-computed and cached for instant display
-- **String Operations**: heapless::String for all text formatting
+- **Save Time**: <1ms for clipboard serialization
+- **Load Time**: <500µs for clipboard restoration
+- **File Size**: Efficient binary format minimizing disk usage
+- **Atomic Operations**: Crash-safe saves with temporary file swapping
 
 **Consequences:**
-- ✅ Consistent sub-millisecond UI responsiveness
-- ✅ Zero garbage collection pressure during rendering
-- ✅ Predictable memory usage patterns
-- ✅ Smooth 120fps+ rendering capability
-- ⚠️ Complex UI component architecture
-- ⚠️ Limited dynamic text length (heapless constraints)
+- ✅ Clipboard contents survive application restarts
+- ✅ Zero performance impact on clipboard operations
+- ✅ Crash-safe persistence with atomic file operations  
+- ✅ Configurable persistence location and retention policies
+- ⚠️ Additional complexity in error handling and recovery
+- ⚠️ Disk space usage for large clipboard histories
+
+### ADR-011: Enhanced Metadata Display (2024-07-25)
+**Status:** Proposed  
+**Context:** Current metadata display is basic, users need richer file information  
+**Decision:** Expand metadata panel with file preview, permissions, timestamps, and size formatting  
+**Alternatives Considered:**
+- Separate metadata overlay (rejected: UI complexity)
+- Tooltip-based metadata (rejected: poor accessibility)
+- Status bar metadata (rejected: limited space)
+**Consequences:**
+- ✅ Professional file manager experience
+- ✅ Better decision-making for paste operations
+- ✅ Maintains <100µs render performance target
+- ⚠️ Increased layout complexity
+- ⚠️ More extensive file system calls
 
 ## 4. Success Criteria
-### Must Have (P0) - Core Functionality
-- [ ] **Clipboard Overlay Toggle**: Tab key opens/closes clipboard overlay
-- [ ] **Item List Display**: Shows all clipboard items with metadata (path, type, size, date)
-- [ ] **Item Selection**: Arrow keys navigate, Enter selects for paste operation
-- [ ] **Visual Indicators**: Clear distinction between Copy (blue) and Move (yellow) operations
-- [ ] **Performance Metrics**: Real-time clipboard statistics display
-- [ ] **Responsive Layout**: Adapts to terminal size with intelligent truncation
+### Must Have (P0) - Core Advanced Features
+- [ ] **Clipboard Persistence**: Save/restore clipboard across application sessions
+- [ ] **Enhanced Metadata Panel**: Rich file information display (permissions, timestamps, preview)
+- [ ] **Multi-Selection Support**: Select multiple clipboard items for batch operations
+- [ ] **Clipboard History**: Navigate through clipboard history with configurable retention
+- [ ] **Performance Preservation**: Maintain <100µs render times with expanded features
+- [ ] **Error Recovery**: Robust handling of corrupted persistence files
 
 ### Should Have (P1) - Enhanced UX
-- [ ] **Zero-Allocation Rendering**: No heap allocations during UI updates
-- [ ] **Instant Response**: <100µs render time for overlay updates
-- [ ] **Smart Truncation**: Intelligent path shortening for optimal display
-- [ ] **Status Integration**: Clipboard count in main status bar
-- [ ] **Clear Empty State**: Helpful message when clipboard is empty
-- [ ] **Consistent Styling**: Matches existing UI component patterns
+- [ ] **File Preview**: Quick preview of text files, images, and documents
+- [ ] **Smart Sorting**: Sort clipboard items by date, size, type, or path
+- [ ] **Search/Filter**: Quick search within clipboard items
+- [ ] **Keyboard Shortcuts**: Efficient navigation and selection shortcuts
+- [ ] **Visual Indicators**: Clear feedback for multi-selection state
+- [ ] **Configuration**: User-configurable clipboard size and retention policies
 
 ### Could Have (P2) - Advanced Features
-- [ ] **Item Preview**: Preview pane showing file contents/metadata
-- [ ] **Batch Selection**: Multi-select for batch operations
-- [ ] **Search Filter**: Quick search within clipboard items
-- [ ] **Sort Options**: Sort by date, size, name, or type
+- [ ] **Cloud Sync**: Optional cloud synchronization of clipboard contents
+- [ ] **Clipboard Sharing**: Share clipboard items between application instances
+- [ ] **Export/Import**: Export clipboard to various formats (JSON, CSV, text)
+- [ ] **Clipboard Templates**: Save and reuse common file operation patterns
 
 ## 5. Technical Approach
-**Architecture:** Zero-allocation component with pre-computed layouts and heapless string formatting  
-**Rendering:** Cache-aligned data structures with minimal ratatui widget overhead  
-**Performance:** Sub-100µs render times with zero memory allocations  
-**Integration:** Tab key toggle with existing overlay system  
+**Architecture:** Extend existing ClipboardOverlay with enhanced panels and persistence layer  
+**Persistence:** Memory-mapped binary format with atomic file operations  
+**Performance:** Maintain zero-allocation patterns with efficient file I/O  
+**Integration:** Build on Phase 3.3 foundations without breaking changes  
 
 ## Implementation Specification
 
-### 1. Zero-Allocation Clipboard Overlay Component
+### 1. Enhanced Clipboard Persistence
 ```rust
-// fsm-core/src/view/components/clipboard_overlay.rs - New high-performance component
-use heapless::{String as HeaplessString, Vec as HeaplessVec};
-use ratatui::{prelude::*, widgets::*};
+// clipr/src/persistence.rs - New persistence module
+use memmap2::{MmapMut, MmapOptions};
+use serde::{Deserialize, Serialize};
+use std::path::Path;
 
-/// Zero-allocation clipboard overlay with sub-100µs render times
-pub struct ClipboardOverlay {
-    /// Pre-allocated text buffers to eliminate runtime allocations
-    item_text_cache: HeaplessVec<HeaplessString<256>, 32>,
+/// High-performance clipboard persistence with memory mapping
+pub struct ClipboardPersistence {
+    /// Memory-mapped file for instant access
+    mmap_file: Option<MmapMut>,
     
-    /// Pre-computed layout rectangles for instant positioning
-    layout_cache: LayoutCache,
+    /// Persistence file path
+    file_path: PathBuf,
     
-    /// Current selection index (atomic for thread safety)
-    selected_index: usize,
+    /// Atomic save coordination
+    temp_path: PathBuf,
     
-    /// Performance metrics for optimization
-    render_stats: RenderStats,
+    /// Persistence configuration
+    config: PersistenceConfig,
 }
 
-impl ClipboardOverlay {
-    /// Initialize overlay with pre-allocated buffers
-    pub fn new() -> Self {
-        Self {
-            item_text_cache: HeaplessVec::new(),
-            layout_cache: LayoutCache::new(),
-            selected_index: 0,
-            render_stats: RenderStats::new(),
-        }
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersistenceConfig {
+    /// Maximum clipboard items to persist
+    pub max_items: usize,
+    
+    /// Maximum age of items to persist (days)
+    pub max_age_days: u32,
+    
+    /// Enable compression for large items
+    pub enable_compression: bool,
+    
+    /// Automatic cleanup interval
+    pub cleanup_interval_hours: u32,
+}
+
+impl ClipboardPersistence {
+    /// Initialize persistence with configuration
+    pub fn new(file_path: PathBuf, config: PersistenceConfig) -> Result<Self, PersistenceError> {
+        let temp_path = file_path.with_extension("tmp");
+        
+        Ok(Self {
+            mmap_file: None,
+            file_path,
+            temp_path,
+            config,
+        })
     }
     
-    /// Zero-allocation rendering with performance monitoring
-    pub fn render_zero_alloc(
-        &mut self,
-        frame: &mut Frame,
-        area: Rect,
-        clipboard: &clipr::ClipBoard,
-        selected_index: usize,
-    ) -> Result<(), UIError> {
-        let start_time = std::time::Instant::now();
+    /// Save clipboard with atomic operation (<1ms target)
+    pub async fn save_clipboard(&mut self, clipboard: &ClipBoard) -> Result<(), PersistenceError> {
+        let start_time = Instant::now();
         
-        // Pre-compute layout to avoid runtime calculations
-        let layout = self.layout_cache.get_or_compute(area);
+        // Serialize clipboard data
+        let data = self.serialize_clipboard(clipboard).await?;
         
-        // Update selection with bounds checking
-        self.selected_index = selected_index.min(clipboard.len().saturating_sub(1));
+        // Atomic save with temporary file
+        self.atomic_save(&data).await?;
         
-        // Render based on clipboard state
-        if clipboard.is_empty() {
-            self.render_empty_state(frame, layout.main_area);
+        // Verify performance target
+        let save_time = start_time.elapsed();
+        if save_time > Duration::from_millis(1) {
+            warn!("Clipboard save exceeded 1ms target: {:?}", save_time);
+        }
+        
+        Ok(())
+    }
+    
+    /// Load clipboard with memory mapping (<500µs target)
+    pub async fn load_clipboard(&mut self) -> Result<ClipBoard, PersistenceError> {
+        let start_time = Instant::now();
+        
+        // Memory map the persistence file
+        let mmap = self.create_memory_map().await?;
+        
+        // Deserialize clipboard data
+        let clipboard = self.deserialize_clipboard(&mmap).await?;
+        
+        // Verify performance target
+        let load_time = start_time.elapsed();
+        if load_time > Duration::from_micros(500) {
+            warn!("Clipboard load exceeded 500µs target: {:?}", load_time);
+        }
+        
+        Ok(clipboard)
+    }
+    
+    /// Perform atomic save operation
+    async fn atomic_save(&self, data: &[u8]) -> Result<(), PersistenceError> {
+        // Write to temporary file
+        tokio::fs::write(&self.temp_path, data).await?;
+        
+        // Atomic rename to final location
+        tokio::fs::rename(&self.temp_path, &self.file_path).await?;
+        
+        Ok(())
+    }
+    
+    /// Serialize clipboard efficiently
+    async fn serialize_clipboard(&self, clipboard: &ClipBoard) -> Result<Vec<u8>, PersistenceError> {
+        let items = clipboard.get_all_items().await;
+        
+        // Apply retention policies
+        let filtered_items = self.apply_retention_policy(items);
+        
+        // Serialize with compression if enabled
+        if self.config.enable_compression {
+            self.compress_serialize(&filtered_items).await
         } else {
-            self.render_clipboard_items(frame, layout, clipboard)?;
-        }
-        
-        // Update performance metrics
-        let render_time = start_time.elapsed();
-        self.render_stats.record_render_time(render_time);
-        
-        Ok(())
-    }
-    
-    /// Render clipboard items with zero allocations
-    fn render_clipboard_items(
-        &mut self,
-        frame: &mut Frame,
-        layout: &PrecomputedLayout,
-        clipboard: &clipr::ClipBoard,
-    ) -> Result<(), UIError> {
-        // Clear text cache for reuse
-        self.item_text_cache.clear();
-        
-        // Pre-allocate display items without heap allocation
-        let items = clipboard.get_all_items_zero_copy();
-        
-        // Build display list with heapless strings
-        for (index, item) in items.iter().enumerate().take(layout.max_visible_items) {
-            let mut item_text = HeaplessString::new();
-            
-            // Format item without allocations
-            self.format_clipboard_item(&mut item_text, item, index == self.selected_index)?;
-            
-            // Cache formatted text
-            self.item_text_cache.push(item_text)
-                .map_err(|_| UIError::TextCacheOverflow)?;
-        }
-        
-        // Render list widget with cached text
-        self.render_list_widget(frame, layout.list_area, &items)?;
-        
-        // Render metadata panel
-        if let Some(selected_item) = items.get(self.selected_index) {
-            self.render_metadata_panel(frame, layout.metadata_area, selected_item)?;
-        }
-        
-        Ok(())
-    }
-    
-    /// Format clipboard item with zero allocations
-    fn format_clipboard_item(
-        &self,
-        buffer: &mut HeaplessString<256>,
-        item: &clipr::ClipBoardItem,
-        is_selected: bool,
-    ) -> Result<(), UIError> {
-        use core::fmt::Write;
-        
-        // Selection indicator
-        let indicator = if is_selected { "▶ " } else { "  " };
-        
-        // Operation type with color coding
-        let op_char = match item.operation {
-            clipr::ClipBoardOperation::Copy => "C",
-            clipr::ClipBoardOperation::Move => "M",
-        };
-        
-        // Smart path truncation
-        let display_path = self.truncate_path_smart(&item.source_path, 60);
-        
-        // Format without heap allocation
-        write!(buffer, "{}{} {}", indicator, op_char, display_path)
-            .map_err(|_| UIError::FormatError)?;
-        
-        Ok(())
-    }
-    
-    /// Intelligent path truncation for optimal display
-    fn truncate_path_smart(&self, path: &str, max_len: usize) -> &str {
-        if path.len() <= max_len {
-            return path;
-        }
-        
-        // Find last separator for intelligent truncation
-        if let Some(sep_pos) = path.rfind('/') {
-            let filename = &path[sep_pos + 1..];
-            if filename.len() < max_len - 3 {
-                // Return "...filename" format
-                let start_pos = path.len() - (max_len - 3);
-                return &path[start_pos..];
-            }
-        }
-        
-        // Fallback to simple truncation
-        &path[..max_len - 3]
-    }
-    
-    /// Render empty clipboard state
-    fn render_empty_state(&self, frame: &mut Frame, area: Rect) {
-        let empty_text = "Clipboard is empty\nPress 'c' to copy or 'x' to cut files";
-        let paragraph = Paragraph::new(empty_text)
-            .alignment(Alignment::Center)
-            .block(Block::default()
-                .borders(Borders::ALL)
-                .title("Clipboard"));
-        
-        frame.render_widget(paragraph, area);
-    }
-}
-
-/// Pre-computed layout cache for zero-allocation rendering
-#[derive(Debug)]
-struct LayoutCache {
-    cached_area: Option<Rect>,
-    cached_layout: Option<PrecomputedLayout>,
-}
-
-impl LayoutCache {
-    fn new() -> Self {
-        Self {
-            cached_area: None,
-            cached_layout: None,
+            bincode::serialize(&filtered_items).map_err(PersistenceError::SerializationFailed)
         }
     }
     
-    /// Get cached layout or compute new one
-    fn get_or_compute(&mut self, area: Rect) -> &PrecomputedLayout {
-        if self.cached_area != Some(area) {
-            self.cached_layout = Some(PrecomputedLayout::compute(area));
-            self.cached_area = Some(area);
-        }
+    /// Apply retention policies to clipboard items
+    fn apply_retention_policy(&self, items: Vec<ClipBoardItem>) -> Vec<ClipBoardItem> {
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        let max_age_seconds = self.config.max_age_days as u64 * 24 * 60 * 60;
         
-        self.cached_layout.as_ref().unwrap()
-    }
-}
-
-/// Pre-computed layout rectangles for instant positioning
-#[derive(Debug, Clone)]
-struct PrecomputedLayout {
-    main_area: Rect,
-    list_area: Rect,
-    metadata_area: Rect,
-    max_visible_items: usize,
-}
-
-impl PrecomputedLayout {
-    fn compute(area: Rect) -> Self {
-        // Calculate optimal layout based on terminal size
-        let main_area = Rect {
-            x: area.x + 2,
-            y: area.y + 2,
-            width: area.width.saturating_sub(4),
-            height: area.height.saturating_sub(4),
-        };
-        
-        // Split into list and metadata areas
-        let chunks = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
-            .split(main_area);
-        
-        let max_visible_items = chunks[0].height.saturating_sub(2) as usize;
-        
-        Self {
-            main_area,
-            list_area: chunks[0],
-            metadata_area: chunks[1],
-            max_visible_items,
-        }
-    }
-}
-
-/// Performance metrics for render optimization
-#[derive(Debug)]
-struct RenderStats {
-    total_renders: u64,
-    avg_render_time_ns: u64,
-    max_render_time_ns: u64,
-}
-
-impl RenderStats {
-    fn new() -> Self {
-        Self {
-            total_renders: 0,
-            avg_render_time_ns: 0,
-            max_render_time_ns: 0,
-        }
-    }
-    
-    fn record_render_time(&mut self, duration: std::time::Duration) {
-        let time_ns = duration.as_nanos() as u64;
-        
-        self.total_renders += 1;
-        self.max_render_time_ns = self.max_render_time_ns.max(time_ns);
-        
-        // Update rolling average
-        self.avg_render_time_ns = 
-            (self.avg_render_time_ns * (self.total_renders - 1) + time_ns) / self.total_renders;
-    }
-    
-    /// Check if performance target is met (<100µs)
-    pub fn meets_performance_target(&self) -> bool {
-        self.avg_render_time_ns < 100_000 // 100µs in nanoseconds
+        items.into_iter()
+            .filter(|item| now - item.added_at < max_age_seconds)
+            .take(self.config.max_items)
+            .collect()
     }
 }
 ```
 
-### 2. Event Loop Integration
+### 2. Enhanced Metadata Display
 ```rust
-// fsm-core/src/controller/event_loop.rs - Tab key handling integration
-impl EventLoop {
-    /// Handle Tab key for clipboard overlay toggle
-    async fn handle_tab_key(&mut self, app: &mut MutexGuard<'_, AppState>) -> Result<Action, AppError> {
-        // Toggle clipboard overlay state
-        app.ui.clipboard_overlay_active = !app.ui.clipboard_overlay_active;
+// fsm-core/src/view/components/clipboard_overlay.rs - Enhanced metadata panel
+impl ClipboardOverlay {
+    /// Render enhanced metadata panel with rich file information
+    fn render_enhanced_metadata_panel(
+        &self,
+        frame: &mut Frame<'_>,
+        area: Rect,
+        item: &ClipBoardItem,
+    ) -> Result<(), AppError> {
+        // Split metadata area into sections
+        let sections = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(6), // File info
+                Constraint::Length(4), // Permissions
+                Constraint::Length(3), // Timestamps
+                Constraint::Fill(1),   // Preview
+            ])
+            .split(area);
         
-        // Reset selection when opening overlay
-        if app.ui.clipboard_overlay_active {
-            app.ui.selected_clipboard_item_index = 0;
-            
-            // Pre-warm overlay cache for immediate rendering
-            if let Some(overlay) = &mut app.ui.clipboard_overlay {
-                overlay.pre_warm_cache(app.ui.clipboard.len());
-            }
-        }
+        // Render file information section
+        self.render_file_info(frame, sections[0], item)?;
         
-        Ok(Action::NoOp)
+        // Render permissions section
+        self.render_permissions(frame, sections[1], item)?;
+        
+        // Render timestamps section
+        self.render_timestamps(frame, sections[2], item)?;
+        
+        // Render file preview if applicable
+        self.render_file_preview(frame, sections[3], item)?;
+        
+        Ok(())
     }
     
-    /// Handle clipboard overlay navigation
-    async fn handle_clipboard_navigation(
+    /// Render file information with smart formatting
+    fn render_file_info(
+        &self, 
+        frame: &mut Frame<'_>, 
+        area: Rect, 
+        item: &ClipBoardItem
+    ) -> Result<(), AppError> {
+        let file_size = item.metadata.size;
+        let file_type = item.metadata.file_type;
+        
+        let info_text = format!(
+            "Path: {}\nType: {:?}\nSize: {}\nOperation: {:?}",
+            item.source_path,
+            file_type,
+            format_file_size(file_size),
+            item.operation
+        );
+        
+        let paragraph = Paragraph::new(info_text)
+            .block(Block::default().borders(Borders::ALL).title("File Info"))
+            .wrap(Wrap { trim: true });
+        
+        frame.render_widget(paragraph, area);
+        Ok(())
+    }
+    
+    /// Render file permissions in human-readable format
+    fn render_permissions(
+        &self,
+        frame: &mut Frame<'_>,
+        area: Rect,
+        item: &ClipBoardItem,
+    ) -> Result<(), AppError> {
+        let permissions = item.metadata.permissions;
+        let perm_string = format_permissions(permissions);
+        
+        let perm_text = format!(
+            "Permissions: {}\nOwner: rwx\nGroup: r-x\nOther: r--",
+            perm_string
+        );
+        
+        let paragraph = Paragraph::new(perm_text)
+            .block(Block::default().borders(Borders::ALL).title("Permissions"));
+        
+        frame.render_widget(paragraph, area);
+        Ok(())
+    }
+    
+    /// Render timestamps with relative formatting
+    fn render_timestamps(
+        &self,
+        frame: &mut Frame<'_>,
+        area: Rect,
+        item: &ClipBoardItem,
+    ) -> Result<(), AppError> {
+        let modified_time = format_timestamp_relative(item.metadata.modified);
+        let added_time = format_timestamp_relative(item.added_at);
+        
+        let time_text = format!(
+            "Modified: {}\nAdded: {}",
+            modified_time,
+            added_time
+        );
+        
+        let paragraph = Paragraph::new(time_text)
+            .block(Block::default().borders(Borders::ALL).title("Timestamps"));
+        
+        frame.render_widget(paragraph, area);
+        Ok(())
+    }
+    
+    /// Render file preview based on file type
+    fn render_file_preview(
+        &self,
+        frame: &mut Frame<'_>,
+        area: Rect,
+        item: &ClipBoardItem,
+    ) -> Result<(), AppError> {
+        let preview_text = match item.metadata.file_type {
+            FileType::RegularFile => {
+                if self.is_text_file(&item.source_path) {
+                    self.load_text_preview(&item.source_path, 10)?
+                } else {
+                    format!("Binary file\n{} bytes", item.metadata.size)
+                }
+            }
+            FileType::Directory => {
+                format!("Directory\nContains {} items", self.count_directory_items(&item.source_path)?)
+            }
+            FileType::Symlink => {
+                format!("Symbolic link\nTarget: {}", self.resolve_symlink(&item.source_path)?)
+            }
+            _ => "Special file".to_string(),
+        };
+        
+        let paragraph = Paragraph::new(preview_text)
+            .block(Block::default().borders(Borders::ALL).title("Preview"))
+            .wrap(Wrap { trim: true });
+        
+        frame.render_widget(paragraph, area);
+        Ok(())
+    }
+}
+
+/// Format file size in human-readable format
+fn format_file_size(size: u64) -> String {
+    const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
+    
+    if size == 0 {
+        return "0 B".to_string();
+    }
+    
+    let size_f = size as f64;
+    let unit_index = (size_f.log10() / 3.0).floor() as usize;
+    let unit_index = unit_index.min(UNITS.len() - 1);
+    
+    let size_in_unit = size_f / (1000_f64.powi(unit_index as i32));
+    
+    format!("{:.1} {}", size_in_unit, UNITS[unit_index])
+}
+
+/// Format permissions as rwx string
+fn format_permissions(permissions: u16) -> String {
+    let mut perm_string = String::with_capacity(9);
+    
+    // Owner permissions
+    perm_string.push(if permissions & 0o400 != 0 { 'r' } else { '-' });
+    perm_string.push(if permissions & 0o200 != 0 { 'w' } else { '-' });
+    perm_string.push(if permissions & 0o100 != 0 { 'x' } else { '-' });
+    
+    // Group permissions
+    perm_string.push(if permissions & 0o040 != 0 { 'r' } else { '-' });
+    perm_string.push(if permissions & 0o020 != 0 { 'w' } else { '-' });
+    perm_string.push(if permissions & 0o010 != 0 { 'x' } else { '-' });
+    
+    // Other permissions
+    perm_string.push(if permissions & 0o004 != 0 { 'r' } else { '-' });
+    perm_string.push(if permissions & 0o002 != 0 { 'w' } else { '-' });
+    perm_string.push(if permissions & 0o001 != 0 { 'x' } else { '-' });
+    
+    perm_string
+}
+```
+
+### 3. Multi-Selection Support
+```rust
+// fsm-core/src/model/ui_state.rs - Multi-selection state
+pub struct UIState {
+    // ... existing fields ...
+    
+    /// Selected clipboard item indices for multi-selection
+    pub selected_clipboard_items: HashSet<usize>,
+    
+    /// Multi-selection mode active
+    pub clipboard_multi_select_mode: bool,
+    
+    // ... rest of fields ...
+}
+
+impl UIState {
+    /// Toggle multi-selection for clipboard item at index
+    pub fn toggle_clipboard_item_selection(&mut self, index: usize) {
+        if self.selected_clipboard_items.contains(&index) {
+            self.selected_clipboard_items.remove(&index);
+        } else {
+            self.selected_clipboard_items.insert(index);
+        }
+        
+        // Exit multi-select mode if no items selected
+        if self.selected_clipboard_items.is_empty() {
+            self.clipboard_multi_select_mode = false;
+        }
+    }
+    
+    /// Select all clipboard items
+    pub fn select_all_clipboard_items(&mut self, total_items: usize) {
+        self.selected_clipboard_items.clear();
+        for i in 0..total_items {
+            self.selected_clipboard_items.insert(i);
+        }
+        self.clipboard_multi_select_mode = true;
+    }
+    
+    /// Clear all clipboard selections
+    pub fn clear_clipboard_selections(&mut self) {
+        self.selected_clipboard_items.clear();
+        self.clipboard_multi_select_mode = false;
+    }
+}
+
+// fsm-core/src/controller/event_loop.rs - Multi-selection key handling
+impl EventLoop {
+    /// Handle multi-selection keys in clipboard overlay
+    async fn handle_clipboard_multi_selection(
         &mut self,
         app: &mut MutexGuard<'_, AppState>,
         key: KeyCode,
+        modifiers: KeyModifiers,
     ) -> Result<Action, AppError> {
         if !app.ui.clipboard_overlay_active {
             return Ok(Action::NoOp);
         }
         
-        let clipboard_len = app.ui.clipboard.len();
-        if clipboard_len == 0 {
-            return Ok(Action::NoOp);
-        }
-        
-        match key {
-            KeyCode::Up => {
-                app.ui.selected_clipboard_item_index = 
-                    app.ui.selected_clipboard_item_index.saturating_sub(1);
+        match (key, modifiers) {
+            // Space: Toggle selection of current item
+            (KeyCode::Char(' '), KeyModifiers::NONE) => {
+                let current_index = app.ui.selected_clipboard_item_index;
+                app.ui.toggle_clipboard_item_selection(current_index);
+                app.ui.clipboard_multi_select_mode = true;
             }
-            KeyCode::Down => {
-                app.ui.selected_clipboard_item_index = 
-                    (app.ui.selected_clipboard_item_index + 1).min(clipboard_len - 1);
+            
+            // Ctrl+A: Select all items
+            (KeyCode::Char('a'), KeyModifiers::CONTROL) => {
+                let total_items = app.ui.clipboard.len();
+                app.ui.select_all_clipboard_items(total_items);
             }
-            KeyCode::Enter => {
-                // Paste selected item
-                self.paste_selected_clipboard_item(app).await?;
+            
+            // Escape: Clear selections
+            (KeyCode::Esc, _) => {
+                if app.ui.clipboard_multi_select_mode {
+                    app.ui.clear_clipboard_selections();
+                } else {
+                    app.ui.clipboard_overlay_active = false;
+                }
+            }
+            
+            // Enter: Paste selected items or current item
+            (KeyCode::Enter, _) => {
+                if app.ui.clipboard_multi_select_mode {
+                    self.paste_multiple_clipboard_items(app).await?;
+                } else {
+                    self.paste_selected_clipboard_item(app).await?;
+                }
                 app.ui.clipboard_overlay_active = false;
             }
-            KeyCode::Esc => {
-                app.ui.clipboard_overlay_active = false;
-            }
-            _ => {}
+            
+            _ => return Ok(Action::NoOp),
         }
         
+        app.ui.request_redraw(RedrawFlag::All);
         Ok(Action::NoOp)
     }
     
-    /// Paste specific clipboard item by index
-    async fn paste_selected_clipboard_item(
+    /// Paste multiple selected clipboard items
+    async fn paste_multiple_clipboard_items(
         &mut self,
         app: &mut MutexGuard<'_, AppState>,
     ) -> Result<(), AppError> {
-        let selected_index = app.ui.selected_clipboard_item_index;
+        let selected_indices: Vec<usize> = app.ui.selected_clipboard_items.iter().copied().collect();
         let clipboard = Arc::clone(&app.ui.clipboard);
+        let current_dir = app.fs.current_directory.clone();
         
-        // Get selected item without allocation
-        if let Some(item) = clipboard.get_item_by_index(selected_index) {
-            let current_dir = app.fs.current_directory.clone();
-            
-            // Spawn paste operation
-            self.spawn_paste_operation(item, current_dir).await?;
-        }
-        
-        Ok(())
-    }
-}
-```
-
-### 3. UI State Extensions
-```rust
-// fsm-core/src/model/ui_state.rs - Clipboard overlay state integration
-impl UIState {
-    /// Initialize clipboard overlay components
-    pub fn initialize_clipboard_overlay(&mut self) {
-        self.clipboard_overlay = Some(ClipboardOverlay::new());
-        self.clipboard_overlay_active = false;
-        self.selected_clipboard_item_index = 0;
-    }
-    
-    /// Get clipboard overlay rendering state
-    pub fn get_clipboard_overlay_state(&self) -> Option<ClipboardOverlayState> {
-        if self.clipboard_overlay_active {
-            Some(ClipboardOverlayState {
-                selected_index: self.selected_clipboard_item_index,
-                total_items: self.clipboard.len(),
-                is_empty: self.clipboard.is_empty(),
-            })
-        } else {
-            None
-        }
-    }
-}
-
-// Add these fields to existing UIState struct:
-pub struct UIState {
-    // ... existing fields ...
-    
-    /// High-performance clipboard overlay component
-    pub clipboard_overlay: Option<ClipboardOverlay>,
-    
-    /// Whether clipboard overlay is currently active
-    pub clipboard_overlay_active: bool,
-    
-    /// Currently selected clipboard item index
-    pub selected_clipboard_item_index: usize,
-    
-    // ... rest of existing fields ...
-}
-
-/// Clipboard overlay rendering state
-#[derive(Debug, Clone)]
-pub struct ClipboardOverlayState {
-    pub selected_index: usize,
-    pub total_items: usize,
-    pub is_empty: bool,
-}
-```
-
-### 4. Main UI Integration
-```rust
-// fsm-core/src/view/ui.rs - Clipboard overlay rendering integration
-impl UI {
-    /// Render clipboard overlay if active
-    pub fn render_clipboard_overlay(
-        &mut self,
-        frame: &mut Frame,
-        app_state: &AppState,
-    ) -> Result<(), UIError> {
-        if let Some(overlay_state) = app_state.ui.get_clipboard_overlay_state() {
-            // Calculate overlay area (centered, 80% of screen)
-            let overlay_area = self.calculate_centered_overlay(frame.area(), 80, 80);
-            
-            // Get mutable reference to overlay component
-            if let Some(ref mut overlay) = app_state.ui.clipboard_overlay {
-                overlay.render_zero_alloc(
-                    frame,
-                    overlay_area,
-                    &app_state.ui.clipboard,
-                    overlay_state.selected_index,
-                )?;
+        // Spawn paste operations for all selected items
+        for index in selected_indices {
+            if let Some(items) = clipboard.get_all_items().await.get(index) {
+                let item = items.clone();
+                self.spawn_paste_operation(item, current_dir.clone()).await?;
             }
         }
         
+        // Clear selections after paste
+        app.ui.clear_clipboard_selections();
+        
         Ok(())
-    }
-    
-    /// Calculate centered overlay area
-    fn calculate_centered_overlay(&self, area: Rect, width_percent: u16, height_percent: u16) -> Rect {
-        let overlay_width = (area.width * width_percent / 100).min(area.width);
-        let overlay_height = (area.height * height_percent / 100).min(area.height);
-        
-        let x = (area.width.saturating_sub(overlay_width)) / 2;
-        let y = (area.height.saturating_sub(overlay_height)) / 2;
-        
-        Rect {
-            x: area.x + x,
-            y: area.y + y,
-            width: overlay_width,
-            height: overlay_height,
-        }
     }
 }
 ```
 
 ## 6. Integration Requirements & Dependencies
 
-### Required clipr Crate Methods
-- `ClipBoard::get_all_items()` - Returns all clipboard items (✅ implemented)
-- `ClipBoard::get_item_by_index(usize)` - Get specific item by index (may need implementation)
-- `ClipBoard::len()` - Get total items count (✅ available)
-- `ClipBoard::is_empty()` - Check if clipboard is empty (✅ available)
+### Enhanced clipr Crate Methods
+- `ClipBoard::save_to_file(path)` - Persistence save operation (needs implementation)
+- `ClipBoard::load_from_file(path)` - Persistence load operation (needs implementation)
+- `ClipBoard::get_items_by_indices(indices)` - Multi-selection support (needs implementation)
+- Enhanced metadata collection for file previews and extended information
 
-### UI State Integration Points
-- `UIState::clipboard: Arc<ClipBoard>` - Shared clipboard reference (✅ available from Phase 3.2)
-- `UIState::clipboard_overlay_active: bool` - Toggle state (needs addition)
-- `UIState::selected_clipboard_item_index: usize` - Selection tracking (needs addition)
+### UI State Extensions
+- Multi-selection tracking with `HashSet<usize>`
+- Persistence configuration and file path management
+- Enhanced metadata display state
+- Search/filter state for clipboard items
 
-### Event Loop Integration Requirements
-- Tab key handling for overlay toggle (needs implementation)
-- Arrow key routing when overlay active (needs implementation)
-- Enter key paste operation with overlay close (needs implementation)
-- ESC key overlay close without paste (needs implementation)
+### Performance Monitoring Extensions
+- Persistence operation timing (save/load performance)
+- Metadata collection performance tracking  
+- Multi-selection operation metrics
+- Memory usage monitoring for enhanced features
 
 ## 7. Success Criteria Checklist
-- [ ] **Tab Toggle**: Tab key opens/closes clipboard overlay smoothly
-- [ ] **Item Display**: All clipboard items shown with proper formatting
-- [ ] **Navigation**: Arrow keys navigate selection correctly
-- [ ] **Selection**: Enter key pastes selected item and closes overlay
-- [ ] **Performance**: <100µs render time measured and achieved
-- [ ] **Zero Allocations**: Memory profiling confirms no heap allocations during UI updates
-- [ ] **Responsive Layout**: Overlay adapts to different terminal sizes
-- [ ] **Visual Polish**: Consistent styling with existing UI components
+- [ ] **Persistence**: Clipboard survives application restart with <1ms save, <500µs load
+- [ ] **Enhanced Metadata**: Rich file information display with preview capabilities
+- [ ] **Multi-Selection**: Space key toggles, Ctrl+A selects all, Enter pastes multiple
+- [ ] **Performance**: Maintain <100µs render times with all enhancements
+- [ ] **Configuration**: User-configurable persistence and retention policies
+- [ ] **Error Handling**: Robust recovery from corrupted persistence files
+- [ ] **UI Polish**: Smooth animations and visual feedback for all operations
 
-## 7. Risk Assessment
+## 8. Risk Assessment
+### High Risk
+- **Performance Regression**: Enhanced features may impact <100µs render target
+  - *Mitigation*: Careful profiling and optimization of new features
+  - *Detection*: Continuous performance monitoring with alerts
+
 ### Medium Risk
-- **UI Complexity**: Complex layout calculations may introduce rendering bugs
-  - *Mitigation*: Pre-computed layouts with extensive testing
-  - *Detection*: Visual regression testing across terminal sizes
+- **Persistence Corruption**: File corruption could cause data loss
+  - *Mitigation*: Atomic saves with backup files and validation
+  - *Detection*: Checksum validation and recovery procedures
 
 ### Low Risk
-- **Performance Regression**: UI rendering may not meet <100µs target
-  - *Mitigation*: Built-in performance monitoring with alerts
-  - *Detection*: Continuous benchmarking in development
+- **UI Complexity**: Enhanced metadata display may clutter interface
+  - *Mitigation*: Progressive disclosure and configurable detail levels
+  - *Detection*: User testing and feedback collection
 
-## 8. Definition of Done
-### Core Functionality
-- [ ] Tab key toggles clipboard overlay with smooth animation
-- [ ] All clipboard items displayed with metadata (path, type, operation)
-- [ ] Arrow key navigation works correctly with visual selection indicator
-- [ ] Enter key pastes selected item and closes overlay
-- [ ] ESC key closes overlay without performing action
-- [ ] Empty state shows helpful message when clipboard is empty
+## 9. Definition of Done
+### Core Advanced Features
+- [ ] Clipboard persistence implemented with atomic file operations
+- [ ] Enhanced metadata panel with permissions, timestamps, and preview
+- [ ] Multi-selection support with keyboard shortcuts and visual indicators
+- [ ] Performance targets maintained (<100µs render, <1ms save, <500µs load)
+- [ ] Configuration system for persistence and retention policies
+- [ ] Comprehensive error handling and recovery mechanisms
 
-### Performance Requirements
-- [ ] Sub-100µs render time achieved and monitored
-- [ ] Zero heap allocations during UI updates verified
-- [ ] Responsive layout adapts to terminal size changes
-- [ ] Visual consistency maintained with existing UI components
-
-### Integration & Quality
-- [ ] All code passes `cargo clippy` without warnings
-- [ ] Integration with existing overlay system works seamlessly
-- [ ] Performance metrics integrated with status bar display
-- [ ] Documentation updated in Design.md with implementation details
-
-## 9. Phase 3.2 Foundation Reference
-
-### Available Architecture Components
-```rust
-// From Phase 3.2 - Available for use in Phase 3.3
-
-// Extreme performance key processor (in AppState)
-pub struct EKeyProcessor {
-    pub clipboard: Arc<ClipBoard>,              // Thread-safe clipboard access
-    pub stats: EKeyStats,                       // Performance monitoring
-    // ... other fields available
-}
-
-// Zero-allocation action system
-pub enum ActionType {
-    CopyToClipboard = 1,
-    MoveToClipboard = 2, 
-    PasteFromClipboard = 3,
-    // Add: ToggleClipboardOverlay, NavigateClipboardUp, NavigateClipboardDown
-}
-
-// Heapless string pattern (from status_bar.rs)
-let mut text_buffer: heapless::String<256> = heapless::String::new();
-write!(&mut text_buffer, "Format: {}", value).unwrap_or_default();
-```
-
-### Integration Patterns Established
-- **Arc<ClipBoard> Sharing**: Thread-safe clipboard access between UI and processor
-- **Heapless String Construction**: Zero-allocation text formatting patterns
-- **Cache-Aligned Structures**: 64-byte alignment for optimal performance
-- **Lock-Free Statistics**: Atomic performance counters and monitoring
-- **Dynamic Component Initialization**: Lazy loading patterns for UI components
-
-### Performance Monitoring Available
-- Cache hit rate tracking: `key_processor.stats.cache_hit_rate()`
-- Latency monitoring: `key_processor.stats.update_latency(latency_ns)`
-- Render time measurement: Built-in `std::time::Instant` patterns
+### Quality & Integration
+- [ ] All code passes cargo clippy without warnings
+- [ ] Full test coverage for persistence and multi-selection operations
+- [ ] Performance regression tests for enhanced features
+- [ ] Documentation updated with new features and usage examples
+- [ ] User experience testing confirms intuitive operation
 
 ---
 
-**This implements a high-performance clipboard overlay UI completing the clipboard system with zero-allocation rendering and sub-100µs response times, building directly on the extreme performance foundation established in Phase 3.2.**
+**This implements advanced clipboard features building on the solid foundation of Phase 3.3, delivering professional file manager capabilities while maintaining extreme performance standards.**

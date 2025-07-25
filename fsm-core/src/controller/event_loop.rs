@@ -518,6 +518,12 @@ impl EventLoop {
 
             (KeyCode::Backspace, _) => Action::GoToParent,
 
+            // Clipboard operations
+            (KeyCode::Tab, _) => {
+                info!("Toggling clipboard overlay");
+                Action::ToggleClipboardOverlay
+            }
+
             // System controls
             (KeyCode::Char('q'), _) => {
                 info!("Quit requested");
@@ -1007,6 +1013,18 @@ impl EventLoop {
                 }
 
                 app.ui.request_redraw(RedrawFlag::All);
+            }
+
+            Action::ToggleClipboardOverlay => {
+                debug!("Toggling clipboard overlay");
+                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
+                app.ui.toggle_clipboard_overlay();
+                app.ui.request_redraw(RedrawFlag::All);
+
+                info!(
+                    "Clipboard overlay toggled to: {}",
+                    app.ui.clipboard_overlay_active
+                );
             }
 
             Action::FileNameSearch(pattern) => {

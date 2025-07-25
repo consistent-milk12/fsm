@@ -7,9 +7,9 @@ use std::rc::Rc;
 
 use crate::model::ui_state::UIOverlay;
 use crate::{
-    AppState, ContentSearchOverlay, FileNameSearchOverlay, FileOperationsOverlay, HelpOverlay,
-    InputPromptOverlay, LoadingOverlay, NotificationOverlay, ObjectTable, SearchOverlay,
-    SearchResultsOverlay, StatusBar,
+    AppState, ClipboardOverlay, ContentSearchOverlay, FileNameSearchOverlay, FileOperationsOverlay,
+    HelpOverlay, InputPromptOverlay, LoadingOverlay, NotificationOverlay, ObjectTable,
+    SearchOverlay, SearchResultsOverlay, StatusBar,
 };
 
 use ratatui::layout::Rect;
@@ -69,6 +69,25 @@ impl View {
             FileOperationsOverlay::render(frame, overlay_area, &app.ui.active_file_operations);
         }
 
+        // Render clipboard overlay if active
+        if app.ui.clipboard_overlay_active {
+            let overlay_area = Self::calculate_centered_overlay_area(frame.area(), 80, 80);
+
+            // Create clipboard overlay instance if needed
+            let mut clipboard_overlay = ClipboardOverlay::new();
+
+            // Render with zero-allocation performance
+            if let Err(e) = futures::executor::block_on(clipboard_overlay.render_zero_alloc(
+                frame,
+                overlay_area,
+                &app.ui.clipboard,
+                app.ui.selected_clipboard_item_index,
+            )) {
+                // Log error but don't crash the UI
+                eprintln!("Clipboard overlay render error: {}", e);
+            }
+        }
+
         // Always render notifications on top of everything
         if app.ui.notification.is_some() {
             NotificationOverlay::render(frame, app, frame.area());
@@ -85,6 +104,26 @@ impl View {
             x: 1,
             y: screen_size.height.saturating_sub(overlay_height + 2),
             width: screen_size.width.saturating_sub(2),
+            height: overlay_height,
+        }
+    }
+
+    /// Calculate centered overlay area
+    fn calculate_centered_overlay_area(
+        area: Rect,
+        width_percent: u16,
+        height_percent: u16,
+    ) -> Rect {
+        let overlay_width = (area.width * width_percent / 100).min(area.width);
+        let overlay_height = (area.height * height_percent / 100).min(area.height);
+
+        let x = (area.width.saturating_sub(overlay_width)) / 2;
+        let y = (area.height.saturating_sub(overlay_height)) / 2;
+
+        Rect {
+            x: area.x + x,
+            y: area.y + y,
+            width: overlay_width,
             height: overlay_height,
         }
     }
