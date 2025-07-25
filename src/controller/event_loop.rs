@@ -938,23 +938,25 @@ impl EventLoop {
 
             Action::ToggleHelp => {
                 debug!("Toggling help overlay");
-                let mut app = self.app.lock().await;
+                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
                 app.ui.toggle_help_overlay();
                 app.ui.request_redraw(RedrawFlag::All);
+
                 info!("Help overlay toggled to: {:?}", app.ui.overlay);
             }
 
             Action::EnterCommandMode => {
                 debug!("Entering command mode");
-                let mut app = self.app.lock().await;
+                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
                 app.ui.enter_command_mode();
                 app.ui.request_redraw(RedrawFlag::All);
+
                 info!("Command mode activated");
             }
 
             Action::ExitCommandMode => {
                 debug!("Exiting command mode");
-                let mut app = self.app.lock().await;
+                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
                 app.ui.exit_command_mode();
                 app.ui.request_redraw(RedrawFlag::All);
                 info!("Command mode deactivated");
@@ -962,42 +964,45 @@ impl EventLoop {
 
             Action::ToggleFileNameSearch => {
                 debug!("Toggling filename search overlay");
-                let mut app = self.app.lock().await;
+                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
                 app.ui.toggle_filename_search_overlay();
                 app.ui.request_redraw(RedrawFlag::All);
+
                 info!("Filename search overlay toggled to: {:?}", app.ui.overlay);
             }
 
             Action::ToggleContentSearch => {
                 debug!("Toggling content search overlay");
-                let mut app = self.app.lock().await;
+                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
                 app.ui.toggle_content_search_overlay();
+
                 if app.ui.overlay == UIOverlay::ContentSearch {
                     app.ui.exit_command_mode();
                     info!("Content search overlay opened, command mode exited");
                 } else {
                     info!("Content search overlay closed");
                 }
+
                 app.ui.request_redraw(RedrawFlag::All);
             }
 
             Action::FileNameSearch(pattern) => {
                 info!("Starting filename search for pattern: '{}'", pattern);
-                let mut app = self.app.lock().await;
+                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
                 app.filename_search(pattern);
                 app.ui.request_redraw(RedrawFlag::All);
             }
 
             Action::ContentSearch(pattern) => {
                 info!("Starting content search for pattern: '{}'", pattern);
-                let mut app = self.app.lock().await;
+                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
                 app.start_content_search(pattern);
                 app.ui.request_redraw(RedrawFlag::All);
             }
 
             Action::DirectContentSearch(pattern) => {
                 info!("Starting direct content search for pattern: '{}'", pattern);
-                let mut app = self.app.lock().await;
+                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
                 app.ui.overlay = UIOverlay::ContentSearch;
                 app.ui.input.clear();
                 app.start_content_search(pattern);
@@ -1008,7 +1013,7 @@ impl EventLoop {
             // Navigation actions - optimized for performance
             Action::MoveSelectionUp => {
                 debug!("Moving selection up");
-                let mut app = self.app.lock().await;
+                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
                 app.fs.active_pane_mut().move_selection_up();
                 app.ui.selected = app.fs.active_pane().selected;
                 app.ui.request_redraw(RedrawFlag::All);
@@ -1016,7 +1021,7 @@ impl EventLoop {
 
             Action::MoveSelectionDown => {
                 debug!("Moving selection down");
-                let mut app = self.app.lock().await;
+                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
                 app.fs.active_pane_mut().move_selection_down();
                 app.ui.selected = app.fs.active_pane().selected;
                 app.ui.request_redraw(RedrawFlag::All);
@@ -1024,7 +1029,7 @@ impl EventLoop {
 
             Action::PageUp => {
                 debug!("Page up");
-                let mut app = self.app.lock().await;
+                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
                 app.fs.active_pane_mut().page_up();
                 app.ui.selected = app.fs.active_pane().selected;
                 app.ui.request_redraw(RedrawFlag::All);
@@ -1032,7 +1037,7 @@ impl EventLoop {
 
             Action::PageDown => {
                 debug!("Page down");
-                let mut app = self.app.lock().await;
+                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
                 app.fs.active_pane_mut().page_down();
                 app.ui.selected = app.fs.active_pane().selected;
                 app.ui.request_redraw(RedrawFlag::All);
@@ -1040,7 +1045,7 @@ impl EventLoop {
 
             Action::SelectFirst => {
                 debug!("Selecting first entry");
-                let mut app = self.app.lock().await;
+                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
                 app.fs.active_pane_mut().select_first();
                 app.ui.selected = app.fs.active_pane().selected;
                 app.ui.request_redraw(RedrawFlag::All);
@@ -1048,7 +1053,7 @@ impl EventLoop {
 
             Action::SelectLast => {
                 debug!("Selecting last entry");
-                let mut app = self.app.lock().await;
+                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
                 app.fs.active_pane_mut().select_last();
                 app.ui.selected = app.fs.active_pane().selected;
                 app.ui.request_redraw(RedrawFlag::All);
@@ -1056,14 +1061,14 @@ impl EventLoop {
 
             Action::EnterSelected => {
                 debug!("Entering selected item");
-                let mut app = self.app.lock().await;
+                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
                 app.enter_selected_directory().await;
                 app.ui.request_redraw(RedrawFlag::All);
             }
 
             Action::GoToParent => {
                 info!("Going to parent directory");
-                let mut app = self.app.lock().await;
+                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
                 app.go_to_parent_directory().await;
                 app.ui.request_redraw(RedrawFlag::All);
             }
@@ -1071,57 +1076,67 @@ impl EventLoop {
             // File operations with enhanced error handling
             Action::CreateFile => {
                 info!("Creating new file (command-driven)");
-                let mut app = self.app.lock().await;
+                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
                 app.create_file().await;
+
                 if app.ui.is_in_command_mode() {
                     app.ui.exit_command_mode();
                 }
+
                 app.ui.request_redraw(RedrawFlag::All);
             }
 
             Action::CreateDirectory => {
                 info!("Creating new directory (command-driven)");
-                let mut app = self.app.lock().await;
+                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
                 app.create_directory().await;
+
                 if app.ui.is_in_command_mode() {
                     app.ui.exit_command_mode();
                 }
+
                 app.ui.request_redraw(RedrawFlag::All);
             }
 
             Action::CreateFileWithName(name) => {
                 info!("Creating new file '{}' (command-driven)", name);
-                let mut app = self.app.lock().await;
+                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
                 app.create_file_with_name(name).await;
+
                 if app.ui.is_in_command_mode() {
                     app.ui.exit_command_mode();
                 }
+
                 app.ui.request_redraw(RedrawFlag::All);
             }
 
             Action::CreateDirectoryWithName(name) => {
                 info!("Creating new directory '{}' (command-driven)", name);
-                let mut app = self.app.lock().await;
+                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
                 app.create_directory_with_name(name).await;
+
                 if app.ui.is_in_command_mode() {
                     app.ui.exit_command_mode();
                 }
+
                 app.ui.request_redraw(RedrawFlag::All);
             }
 
             Action::ReloadDirectory => {
                 info!("Reloading directory (command-driven)");
-                let mut app = self.app.lock().await;
+                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
                 app.reload_directory().await;
+
                 if app.ui.is_in_command_mode() {
                     app.ui.exit_command_mode();
                 }
+
                 app.ui.request_redraw(RedrawFlag::All);
             }
 
             Action::Delete => {
                 info!("Delete action triggered - this should now be command-driven");
-                let mut app = self.app.lock().await;
+                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
                 app.delete_entry().await;
                 app.ui.request_redraw(RedrawFlag::All);
             }
@@ -1129,53 +1144,61 @@ impl EventLoop {
             // NEW IMPLEMENTATIONS - Complete TODO sections
             Action::RenameEntry(new_name) => {
                 info!("Renaming selected entry to '{}'", new_name);
-                let mut app = self.app.lock().await;
+                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
                 app.rename_selected_entry(new_name).await;
+
                 if app.ui.is_in_command_mode() {
                     app.ui.exit_command_mode();
                 }
+
                 app.ui.request_redraw(RedrawFlag::All);
             }
 
             Action::GoToPath(path_str) => {
                 info!("Navigating to path: '{}'", path_str);
-                let mut app = self.app.lock().await;
+                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
                 app.navigate_to_path(path_str).await;
+
                 if app.ui.is_in_command_mode() {
                     app.ui.exit_command_mode();
                 }
+
                 app.ui.request_redraw(RedrawFlag::All);
             }
 
             // Search result handling with enhanced performance
             Action::ShowSearchResults(results) => {
                 info!("Showing {} search results", results.len());
-                let mut app = self.app.lock().await;
+                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
                 app.ui.search_results = results;
+
                 if app.ui.overlay != UIOverlay::ContentSearch {
                     app.ui.set_overlay(UIOverlay::SearchResults);
                 } else if !app.ui.search_results.is_empty() {
                     app.ui.selected = Some(0);
                 }
+
                 app.ui.request_redraw(RedrawFlag::All);
             }
 
             Action::ShowFilenameSearchResults(results) => {
                 info!("Showing {} filename search results", results.len());
-                let mut app = self.app.lock().await;
+                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
                 app.ui.filename_search_results = results;
                 app.ui.request_redraw(RedrawFlag::All);
             }
 
             Action::ShowRichSearchResults(results) => {
                 info!("Showing {} rich search results", results.len());
-                let mut app = self.app.lock().await;
+                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
                 app.ui.rich_search_results = results;
+
                 if app.ui.overlay == UIOverlay::ContentSearch
                     && !app.ui.rich_search_results.is_empty()
                 {
                     app.ui.selected = Some(0);
                 }
+
                 app.ui.request_redraw(RedrawFlag::All);
             }
 
@@ -1184,17 +1207,20 @@ impl EventLoop {
                 let mut app = self.app.lock().await;
                 app.ui.raw_search_results = Some(results);
                 app.ui.raw_search_selected = 0;
+
                 if app.ui.overlay == UIOverlay::ContentSearch {
                     app.ui.selected = Some(0);
                 }
+
                 app.ui.request_redraw(RedrawFlag::All);
             }
 
             Action::OpenFile(path, line_number) => {
                 info!("Opening file {:?} at line {:?}", path, line_number);
-                let path_str = path.to_string_lossy().to_string();
+                let path_str: String = path.to_string_lossy().to_string();
 
-                let mut cmd = Command::new("code");
+                let mut cmd: Command = Command::new("code");
+
                 if let Some(line) = line_number {
                     let goto_arg = format!("{path_str}:{line}");
                     debug!("Using VS Code --goto argument: '{}'", goto_arg);
@@ -1207,7 +1233,7 @@ impl EventLoop {
                 match cmd.spawn() {
                     Ok(_) => {
                         info!("Successfully launched VS Code for file: {}", path_str);
-                        let mut app = self.app.lock().await;
+                        let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
                         app.ui.close_all_overlays();
                         app.ui.request_redraw(RedrawFlag::All);
                     }
@@ -1222,7 +1248,7 @@ impl EventLoop {
 
             Action::CloseOverlay => {
                 debug!("Closing overlay");
-                let mut app = self.app.lock().await;
+                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
                 let previous_overlay = app.ui.overlay;
                 app.ui.close_all_overlays();
                 app.ui.request_redraw(RedrawFlag::All);
@@ -1232,7 +1258,7 @@ impl EventLoop {
             // Enhanced task result processing
             Action::TaskResult(task_result) => {
                 debug!("Processing task result: {:?}", task_result);
-                let mut app = self.app.lock().await;
+                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
 
                 match task_result {
                     TaskResult::Legacy {
@@ -1567,6 +1593,7 @@ impl EventLoop {
 
                         app.ui.request_redraw(RedrawFlag::All);
                     }
+
                     // File operation input prompts
                     Some(InputPromptType::CopyDestination) => {
                         info!("Processing copy destination prompt with input: '{}'", input);
@@ -1575,13 +1602,16 @@ impl EventLoop {
                         let selected_path: Option<PathBuf> = {
                             let app: MutexGuard<'_, AppState> = self.app.lock().await;
 
-                            app.fs.active_pane().selected.and_then(|selected_idx| {
-                                app.fs
-                                    .active_pane()
-                                    .entries
-                                    .get(selected_idx)
-                                    .map(|entry: &ObjectInfo| entry.path.clone())
-                            })
+                            app.fs
+                                .active_pane()
+                                .selected
+                                .and_then(|selected_idx: usize| {
+                                    app.fs
+                                        .active_pane()
+                                        .entries
+                                        .get(selected_idx)
+                                        .map(|entry: &ObjectInfo| entry.path.clone())
+                                })
                         };
 
                         if let Some(source_path) = selected_path {
@@ -1599,18 +1629,23 @@ impl EventLoop {
                             app.ui.request_redraw(RedrawFlag::All);
                         }
                     }
+
                     Some(InputPromptType::MoveDestination) => {
                         info!("Processing move destination prompt with input: '{}'", input);
                         // Get current selected file path
                         let selected_path: Option<PathBuf> = {
                             let app: MutexGuard<'_, AppState> = self.app.lock().await;
-                            app.fs.active_pane().selected.and_then(|selected_idx| {
-                                app.fs
-                                    .active_pane()
-                                    .entries
-                                    .get(selected_idx)
-                                    .map(|entry: &ObjectInfo| entry.path.clone())
-                            })
+
+                            app.fs
+                                .active_pane()
+                                .selected
+                                .and_then(|selected_idx: usize| {
+                                    app.fs
+                                        .active_pane()
+                                        .entries
+                                        .get(selected_idx)
+                                        .map(|entry: &ObjectInfo| entry.path.clone())
+                                })
                         };
 
                         if let Some(source_path) = selected_path {
@@ -1633,13 +1668,17 @@ impl EventLoop {
                         // Get current selected file path
                         let selected_path: Option<PathBuf> = {
                             let app: MutexGuard<'_, AppState> = self.app.lock().await;
-                            app.fs.active_pane().selected.and_then(|selected_idx| {
-                                app.fs
-                                    .active_pane()
-                                    .entries
-                                    .get(selected_idx)
-                                    .map(|entry: &ObjectInfo| entry.path.clone())
-                            })
+
+                            app.fs
+                                .active_pane()
+                                .selected
+                                .and_then(|selected_idx: usize| {
+                                    app.fs
+                                        .active_pane()
+                                        .entries
+                                        .get(selected_idx)
+                                        .map(|entry: &ObjectInfo| entry.path.clone())
+                                })
                         };
 
                         if let Some(source_path) = selected_path {
