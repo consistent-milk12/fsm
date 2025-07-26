@@ -1718,7 +1718,7 @@ impl EventLoop {
                         if let Some(source_path) = selected_path {
                             let dest_path: PathBuf = std::path::PathBuf::from(input);
                             drop(app);
-                            Box::pin(self.dispatch_action(Action::Move {
+                            Box::pin(self.dispatch_action(Action::Movv {
                                 source: source_path,
                                 dest: dest_path,
                             }))

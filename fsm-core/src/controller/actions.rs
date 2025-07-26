@@ -1,5 +1,3 @@
-//! src/controller/actions.rs
-//! ============================================================================
 //! # Actions: Centralized Application Commands
 //!
 //! Defines the `Action` enum, which represents all possible user inputs and
@@ -23,6 +21,22 @@ pub enum InputPromptType {
     CopyDestination,
     MoveDestination,
     RenameFile,
+}
+
+/// Unique identifier for tracking file operations
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct OperationId(String);
+
+impl OperationId {
+    /// Generate a new unique operation ID
+    pub fn new() -> Self {
+        Self(nanoid::nanoid!())
+    }
+
+    /// Create from existing string
+    pub fn from_string(id: String) -> Self {
+        Self(id)
+    }
 }
 
 /// Represents a high-level action that the application can perform.
@@ -72,12 +86,12 @@ pub enum Action {
     ToggleShowHidden,
 
     /// Show search results.
-    ShowSearchResults(Vec<crate::fs::object_info::ObjectInfo>),
+    ShowSearchResults(Vec<ObjectInfo>),
 
     /// Show filename search results.
-    ShowFilenameSearchResults(Vec<crate::fs::object_info::ObjectInfo>),
+    ShowFilenameSearchResults(Vec<ObjectInfo>),
 
-    /// Show rich content search results with line numbers and context (deprecated).
+    /// Show rich content search results with line numbers and context.
     ShowRichSearchResults(Vec<String>),
 
     /// Show raw ripgrep search results.
@@ -116,21 +130,28 @@ pub enum Action {
     /// Go to parent directory.
     GoToParent,
 
+    /// Delete selected item
     Delete,
 
+    /// Show file creation prompt
     CreateFile,
 
+    /// Show directory creation prompt
     CreateDirectory,
 
+    /// Create file with specified name
     CreateFileWithName(String),
 
+    /// Create directory with specified name
     CreateDirectoryWithName(String),
 
+    /// Sort by specified criteria
     Sort(String),
 
+    /// Filter using specified pattern
     Filter(String),
 
-    /// Updates an ObjectInfo in the state (e.g., from a background task).
+    /// Updates an ObjectInfo in the state
     UpdateObjectInfo {
         parent_dir: PathBuf,
         info: ObjectInfo,
@@ -142,7 +163,7 @@ pub enum Action {
         update: crate::fs::dir_scanner::ScanUpdate,
     },
 
-    /// No operation. Used when an event is consumed but no state change is needed.
+    /// No operation
     NoOp,
 
     /// Close the currently active overlay.
@@ -151,42 +172,65 @@ pub enum Action {
     /// Reload the current directory.
     ReloadDirectory,
 
-    /// Open a file with external editor, optionally jumping to a specific line.
-    OpenFile(PathBuf, Option<u32>),
+    /// Open a file with external editor
+    OpenFile(PathBuf, Option<u32>), // Path + optional line number
 
-    /// Show input prompt for file/directory creation.
+    /// Show input prompt for various operations
     ShowInputPrompt(InputPromptType),
 
-    /// Submit input prompt with user input.
+    /// Submit input from a prompt
     SubmitInputPrompt(String),
 
-    /// Rename selected entry.
+    /// Rename selected entry
     RenameEntry(String),
 
-    /// Navigate to specified path.
+    /// Navigate to specified path
     GoToPath(String),
 
-    // File operations
-    /// Copy file/directory from source to destination
-    Copy {
+    // ===== Enhanced File Operations =====
+    /// Start file copy operation (shows destination prompt)
+    StartCopy { source: PathBuf },
+
+    /// Start file move operation (shows destination prompt)
+    StartMove { source: PathBuf },
+
+    /// Execute copy operation
+    ExecuteCopy {
+        operation_id: OperationId,
         source: PathBuf,
-        dest: PathBuf,
+        destination: PathBuf,
     },
 
-    /// Move file/directory from source to destination  
-    Move {
+    /// Execute move operation
+    ExecuteMove {
+        operation_id: OperationId,
         source: PathBuf,
-        dest: PathBuf,
+        destination: PathBuf,
     },
 
-    /// Rename file/directory
-    Rename {
+    /// Execute rename operation
+    ExecuteRename {
+        operation_id: OperationId,
         source: PathBuf,
         new_name: String,
     },
 
-    /// Cancel ongoing file operation
-    CancelFileOperation {
-        operation_id: String,
+    /// File operation progress update
+    FileOperationProgress {
+        operation_id: OperationId,
+        bytes_processed: u64,
+        total_bytes: u64,
     },
+
+    /// File operation completed
+    FileOperationComplete { operation_id: OperationId },
+
+    /// File operation failed
+    FileOperationError {
+        operation_id: OperationId,
+        error: String,
+    },
+
+    /// Cancel ongoing file operation
+    CancelFileOperation { operation_id: OperationId },
 }

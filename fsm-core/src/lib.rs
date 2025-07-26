@@ -196,6 +196,24 @@ pub mod controller {
     pub mod event_loop;
     pub use event_loop::{EventLoop, TaskResult};
 
+    /// High-performance event processing pipeline
+    pub mod event_processor;
+
+    /// Lock-free state coordination
+    pub mod state_coordinator;
+
+    /// Action batching and optimization
+    pub mod action_batcher;
+
+    /// Event handler registry
+    pub mod handler_registry;
+    pub mod handlers {
+        pub mod keyboard_handler;
+    }
+
+    /// Performance monitoring
+    pub mod metrics;
+
     // Performance-optimized modules
     pub mod eactions;
     pub mod ekey_processor;
