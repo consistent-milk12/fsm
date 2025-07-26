@@ -90,7 +90,7 @@ impl ClipError {
     #[inline(always)]
     pub fn should_retry(&self) -> bool {
         matches!(
-            self, 
+            self,
             ClipError::LockFreeRetry | ClipError::AtomicSaveError(_)
         )
     }

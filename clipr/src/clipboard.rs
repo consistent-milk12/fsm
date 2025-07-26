@@ -281,7 +281,8 @@ impl ClipBoard {
     /// Get items by specific indices for multi-selection support
     pub async fn get_items_by_indices(&self, indices: &[usize]) -> Vec<ClipBoardItem> {
         let all_items = self.get_all_items().await;
-        indices.iter()
+        indices
+            .iter()
             .filter_map(|&i| all_items.get(i).cloned())
             .collect()
     }
