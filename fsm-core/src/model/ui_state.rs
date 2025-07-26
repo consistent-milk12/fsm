@@ -471,14 +471,22 @@ impl UIState {
     /// Enter vim-style command mode
     pub fn enter_command_mode(&mut self) {
         self.mode = UIMode::Command;
+        self.overlay = UIOverlay::Status;
         self.input.clear();
+
         self.command_palette.input.clear();
         self.command_palette.update_filter();
+        self.request_redraw(RedrawFlag::All);
     }
 
     /// Exit command mode and return to browse mode
     pub fn exit_command_mode(&mut self) {
         self.mode = UIMode::Browse;
+
+        // Clear command overlay
+        self.overlay = UIOverlay::None;
+
+        // Clear input buffers
         self.input.clear();
         self.command_palette.input.clear();
 
@@ -486,6 +494,7 @@ impl UIState {
         self.command_palette.hide_completions();
         self.command_palette.completions.clear();
         self.command_palette.completion_index = 0;
+        self.request_redraw(RedrawFlag::All);
     }
 
     /// Check if currently in command input mode
@@ -507,13 +516,17 @@ impl UIState {
     pub fn toggle_content_search_overlay(&mut self) {
         self.overlay = match self.overlay {
             UIOverlay::ContentSearch => UIOverlay::None,
+
             _ => UIOverlay::ContentSearch,
         };
+
         if self.overlay == UIOverlay::ContentSearch {
             self.input.clear();
         }
+
         self.request_redraw(RedrawFlag::Overlay);
     }
+
     pub fn close_all_overlays(&mut self) {
         self.overlay = UIOverlay::None;
         self.request_redraw(RedrawFlag::Overlay);

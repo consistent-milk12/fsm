@@ -11,7 +11,7 @@ use crate::model::ui_state::{LoadingState, NotificationLevel, RedrawFlag, UIMode
 use crate::tasks::file_ops_task::{FileOperation, FileOperationTask};
 use crate::tasks::search_task::RawSearchResult;
 use clipr::ClipError;
-use crossterm::event::{Event as TermEvent, EventStream, KeyCode, KeyModifiers};
+use crossterm::event::{Event as TermEvent, EventStream, KeyCode, KeyEvent, KeyModifiers};
 use futures::StreamExt;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -185,11 +185,12 @@ impl EventLoop {
     /// Enhanced terminal event handling with comprehensive logging
     async fn handle_terminal_event(&mut self, event: TermEvent) -> Action {
         if let TermEvent::Key(key_event) = event {
+            // Always try performance processor first (unified key handling)
             let kp_exists = self.app.lock().await.key_processor.is_some();
             if kp_exists {
                 match self.handle_key_event_performance(key_event).await {
                     Ok(action) => return action,
-                    Err(_) => { /* Key not handled by performance processor, continue standard handling */
+                    Err(_) => { /* Key not handled by performance processor, fall back to standard handling */
                     }
                 }
             } else {
@@ -236,9 +237,20 @@ impl EventLoop {
                     // Continue processing the key event
                 }
 
+                // Check for clipboard overlay first (has separate state)
+                let clipboard_active = {
+                    let app = self.app.lock().await;
+                    app.ui.clipboard_overlay_active
+                };
+
+                if clipboard_active {
+                    return self.handle_clipboard_overlay_keys(key_event).await;
+                }
+
                 // Route to specialized handlers
                 match current_mode {
                     UIMode::Command => self.handle_command_mode_keys(key_event).await,
+
                     _ => match current_overlay {
                         UIOverlay::None => self.handle_navigation_mode_keys(key_event).await,
 
@@ -1003,13 +1015,20 @@ impl EventLoop {
             Action::ToggleContentSearch => {
                 debug!("Toggling content search overlay");
                 let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
+
+                if app.ui.is_in_command_mode() {
+                    app.ui.exit_command_mode();
+
+                    info!("Exited command mode.")
+                }
+
+                // Then toggle content search overlay
                 app.ui.toggle_content_search_overlay();
 
                 if app.ui.overlay == UIOverlay::ContentSearch {
-                    app.ui.exit_command_mode();
-                    info!("Content search overlay opened, command mode exited");
+                    info!("Content search overlay opened.");
                 } else {
-                    info!("Content search overlay closed");
+                    info!("Content search overlay closed.");
                 }
 
                 app.ui.request_redraw(RedrawFlag::All);
@@ -1927,16 +1946,22 @@ impl EventLoop {
         }
     }
 
-    /// Performance-optimized key event handling with sub-microsecond response
+    /// Unified high-performance key event handling with context awareness
     async fn handle_key_event_performance(
         &mut self,
         key: crossterm::event::KeyEvent,
     ) -> Result<Action, ()> {
-        let start_time = Instant::now();
+        let _start_time = Instant::now();
+
+        // Get UI context for processor
+        let (ui_mode, ui_overlay, clipboard_active) = {
+            let app = self.app.lock().await;
+            (app.ui.mode, app.ui.overlay, app.ui.clipboard_overlay_active)
+        };
 
         let mut app = self.app.lock().await;
         if let Some(processor) = app.key_processor.as_mut()
-            && let Some(action) = processor.process_key(key)
+            && let Some(action) = processor.process_key(key, ui_mode, ui_overlay, clipboard_active)
         {
             // Drop the lock before calling dispatch_eaction, which might lock again
             drop(app);
@@ -1944,22 +1969,16 @@ impl EventLoop {
             // Dispatch action with lock-free atomic operations
             self.dispatch_eaction(action).await;
 
-            // Re-acquire lock to update stats
-            let mut app = self.app.lock().await;
-            if let Some(processor) = app.key_processor.as_mut() {
-                let latency_ns = start_time.elapsed().as_nanos() as u64;
-                processor.stats.update_latency(latency_ns);
-            }
-
             return Ok(Action::NoOp); // Handled
         }
 
         Err(()) // Not handled
     }
 
-    /// Lock-free action dispatch with zero allocations
+    /// Unified lock-free action dispatch with zero allocations
     async fn dispatch_eaction(&mut self, action: EAction) {
         match action.action_type {
+            // Clipboard operations
             ActionType::CopyToClipboard => {
                 self.handle_copy_to_clipboard_performance().await;
             }
@@ -1969,16 +1988,369 @@ impl EventLoop {
             ActionType::PasteFromClipboard => {
                 self.handle_paste_from_clipboard_performance().await;
             }
+
+            // Navigation actions
             ActionType::NavigateUp => {
-                self.dispatch_action(Action::MoveSelectionUp).await;
+                if action.param1 == 1 {
+                    // Clipboard context
+                    self.handle_clipboard_navigate_up().await;
+                } else {
+                    self.dispatch_action(Action::MoveSelectionUp).await;
+                }
             }
             ActionType::NavigateDown => {
-                self.dispatch_action(Action::MoveSelectionDown).await;
+                if action.param1 == 1 {
+                    // Clipboard context
+                    self.handle_clipboard_navigate_down().await;
+                } else {
+                    self.dispatch_action(Action::MoveSelectionDown).await;
+                }
+            }
+            ActionType::NavigatePageUp => {
+                self.dispatch_action(Action::PageUp).await;
+            }
+            ActionType::NavigatePageDown => {
+                self.dispatch_action(Action::PageDown).await;
+            }
+            ActionType::NavigateHome => {
+                self.dispatch_action(Action::SelectFirst).await;
+            }
+            ActionType::NavigateEnd => {
+                self.dispatch_action(Action::SelectLast).await;
             }
             ActionType::EnterDirectory => {
-                self.dispatch_action(Action::EnterSelected).await;
+                if action.param1 == 1 {
+                    // Clipboard context
+                    self.handle_clipboard_paste_selected().await;
+                } else {
+                    self.dispatch_action(Action::EnterSelected).await;
+                }
+            }
+            ActionType::NavigateParent => {
+                self.dispatch_action(Action::GoToParent).await;
+            }
+
+            // Command mode actions
+            ActionType::EnterCommandMode => {
+                self.dispatch_action(Action::EnterCommandMode).await;
+            }
+            ActionType::CommandModeChar => {
+                self.handle_command_mode_char(action.param1 as u8 as char)
+                    .await;
+            }
+            ActionType::CommandModeBackspace => {
+                self.handle_command_mode_backspace().await;
+            }
+            ActionType::CommandModeEnter => {
+                self.handle_command_mode_enter().await;
+            }
+            ActionType::CommandModeTab => {
+                self.handle_command_mode_tab().await;
+            }
+            ActionType::CommandModeUpDown => {
+                self.handle_command_mode_up_down(action.param1 == 1).await;
+            }
+            ActionType::ExitCommandMode => {
+                self.dispatch_action(Action::ExitCommandMode).await;
+            }
+
+            // Overlay toggles
+            ActionType::ToggleClipboardOverlay => {
+                self.dispatch_action(Action::ToggleClipboardOverlay).await;
+            }
+            ActionType::ToggleFileNameSearch => {
+                self.dispatch_action(Action::ToggleFileNameSearch).await;
+            }
+            ActionType::ToggleContentSearch => {
+                self.dispatch_action(Action::ToggleContentSearch).await;
+            }
+            ActionType::ToggleHelp => {
+                self.dispatch_action(Action::ToggleHelp).await;
+            }
+            ActionType::CloseOverlay => {
+                self.dispatch_action(Action::CloseOverlay).await;
+            }
+
+            // Search mode actions
+            ActionType::SearchModeChar => {
+                self.handle_search_mode_char(action.param1 as u8 as char, action.param2)
+                    .await;
+            }
+            ActionType::SearchModeBackspace => {
+                self.handle_search_mode_backspace(action.param2).await;
+            }
+            ActionType::SearchModeEnter => {
+                self.handle_search_mode_enter(action.param2).await;
+            }
+            ActionType::SearchModeUp => {
+                self.handle_search_mode_up(action.param2).await;
+            }
+            ActionType::SearchModeDown => {
+                self.handle_search_mode_down(action.param2).await;
+            }
+
+            // File operations
+            ActionType::FileOpsShowPrompt => {
+                self.handle_file_ops_prompt(action.param1 as u32).await;
+            }
+
+            // System actions
+            ActionType::Quit => {
+                self.dispatch_action(Action::Quit).await;
+            }
+
+            ActionType::NoOp => {
+                // Do nothing
             }
         }
+    }
+
+    // Clipboard overlay navigation handlers
+    async fn handle_clipboard_navigate_up(&mut self) {
+        debug!("Clipboard overlay: Navigate Up");
+        let mut app = self.app.lock().await;
+        if app.ui.selected_clipboard_item_index > 0 {
+            app.ui.selected_clipboard_item_index -= 1;
+            app.ui.request_redraw(RedrawFlag::Overlay);
+        }
+    }
+
+    async fn handle_clipboard_navigate_down(&mut self) {
+        debug!("Clipboard overlay: Navigate Down");
+        let mut app = self.app.lock().await;
+        let clipboard_size = app.ui.clipboard.len();
+        if app.ui.selected_clipboard_item_index < clipboard_size.saturating_sub(1) {
+            app.ui.selected_clipboard_item_index += 1;
+            app.ui.request_redraw(RedrawFlag::Overlay);
+        }
+    }
+
+    async fn handle_clipboard_paste_selected(&mut self) {
+        debug!("Clipboard overlay: Paste Selected Item");
+        let mut app = self.app.lock().await;
+        app.ui.close_clipboard_overlay();
+        app.ui
+            .show_info("Paste operation not yet implemented".to_string());
+        app.ui.request_redraw(RedrawFlag::All);
+    }
+
+    // Command mode handlers
+    async fn handle_command_mode_char(&mut self, c: char) {
+        let mut app = self.app.lock().await;
+        app.ui.command_palette.input.push(c);
+        app.ui.command_palette.update_filter();
+        app.ui.command_palette.show_completions_if_available();
+        app.ui.request_redraw(RedrawFlag::Command);
+    }
+
+    async fn handle_command_mode_backspace(&mut self) {
+        let mut app = self.app.lock().await;
+        app.ui.command_palette.input.pop();
+        app.ui.command_palette.update_filter();
+        app.ui.command_palette.show_completions_if_available();
+        app.ui.request_redraw(RedrawFlag::Command);
+    }
+
+    async fn handle_command_mode_enter(&mut self) {
+        let app = self.app.lock().await;
+        let input = app.ui.command_palette.input.trim();
+        info!("Executing command: '{}'", input);
+
+        if let Some(parsed_action) = app.ui.command_palette.parse_command() {
+            debug!("Command parsed successfully: {:?}", parsed_action);
+            let action = self.map_command_action_to_action(parsed_action);
+            drop(app);
+            self.dispatch_action(action).await;
+        } else if let Some(cmd) = app
+            .ui
+            .command_palette
+            .filtered
+            .get(app.ui.command_palette.selected)
+        {
+            debug!("Using selected command from list: {:?}", cmd.action);
+            let action = self.map_command_action_to_action(cmd.action.clone());
+            drop(app);
+            self.dispatch_action(action).await;
+        } else {
+            info!("No valid command to execute, exiting command mode");
+            drop(app);
+            self.dispatch_action(Action::ExitCommandMode).await;
+        }
+    }
+
+    async fn handle_command_mode_tab(&mut self) {
+        let mut app = self.app.lock().await;
+        if app.ui.command_palette.show_completions {
+            let before = app.ui.command_palette.input.clone();
+            app.ui.command_palette.apply_completion();
+            let after = app.ui.command_palette.input.clone();
+            info!("Applied completion: '{}' -> '{}'", before, after);
+            app.ui.request_redraw(RedrawFlag::Command);
+        }
+    }
+
+    async fn handle_command_mode_up_down(&mut self, is_down: bool) {
+        let mut app = self.app.lock().await;
+        if app.ui.command_palette.show_completions {
+            if is_down {
+                app.ui.command_palette.next_completion();
+            } else {
+                app.ui.command_palette.prev_completion();
+            }
+        } else {
+            if is_down {
+                let max_idx = app.ui.command_palette.filtered.len().saturating_sub(1);
+                app.ui.command_palette.selected = app
+                    .ui
+                    .command_palette
+                    .selected
+                    .saturating_add(1)
+                    .min(max_idx);
+            } else {
+                app.ui.command_palette.selected = app.ui.command_palette.selected.saturating_sub(1);
+            }
+        }
+        app.ui.request_redraw(RedrawFlag::Command);
+    }
+
+    // Search mode handlers
+    async fn handle_search_mode_char(&mut self, c: char, overlay_type: u64) {
+        let mut app = self.app.lock().await;
+        app.ui.input.push(c);
+
+        match overlay_type {
+            1 => {
+                // ContentSearch
+                self.clear_search_results(&mut app);
+            }
+            2 => {
+                // FileNameSearch
+                let pattern = app.ui.input.clone();
+                drop(app);
+                self.dispatch_action(Action::FileNameSearch(pattern)).await;
+                return;
+            }
+            3 => { // Prompt
+                // Just update input
+            }
+            _ => {}
+        }
+        app.ui.request_redraw(RedrawFlag::Overlay);
+    }
+
+    async fn handle_search_mode_backspace(&mut self, overlay_type: u64) {
+        let mut app = self.app.lock().await;
+        app.ui.input.pop();
+
+        match overlay_type {
+            1 => {
+                // ContentSearch
+                self.clear_search_results(&mut app);
+            }
+            2 => {
+                // FileNameSearch
+                let pattern = app.ui.input.clone();
+                drop(app);
+                self.dispatch_action(Action::FileNameSearch(pattern)).await;
+                return;
+            }
+            3 => { // Prompt
+                // Just update input
+            }
+            _ => {}
+        }
+        app.ui.request_redraw(RedrawFlag::Overlay);
+    }
+
+    async fn handle_search_mode_enter(&mut self, overlay_type: u64) {
+        let pattern = {
+            let app = self.app.lock().await;
+            app.ui.input.clone()
+        };
+
+        match overlay_type {
+            1 => {
+                // ContentSearch
+                self.dispatch_action(Action::ContentSearch(pattern)).await;
+            }
+            2 => {
+                // FileNameSearch
+                self.dispatch_action(Action::FileNameSearch(pattern)).await;
+            }
+            3 => {
+                // Prompt
+                self.dispatch_action(Action::SubmitInputPrompt(pattern))
+                    .await;
+            }
+            _ => {}
+        }
+    }
+
+    async fn handle_search_mode_up(&mut self, overlay_type: u64) {
+        let mut app = self.app.lock().await;
+        match overlay_type {
+            1 => {
+                // ContentSearch
+                let result_count = Self::current_result_count(&app);
+                if result_count > 0 {
+                    let new_idx = app.ui.selected.unwrap_or(0).saturating_sub(1);
+                    app.ui.selected = Some(new_idx);
+                }
+            }
+            2 => {
+                // FileNameSearch
+                let result_count = app.ui.filename_search_results.len();
+                if result_count > 0 {
+                    app.ui.selected = Some(app.ui.selected.unwrap_or(0).saturating_sub(1));
+                }
+            }
+            _ => {}
+        }
+        app.ui.request_redraw(RedrawFlag::Overlay);
+    }
+
+    async fn handle_search_mode_down(&mut self, overlay_type: u64) {
+        let mut app = self.app.lock().await;
+        match overlay_type {
+            1 => {
+                // ContentSearch
+                let result_count = Self::current_result_count(&app);
+                if result_count > 0 {
+                    let new_idx =
+                        (app.ui.selected.unwrap_or(0) + 1).min(result_count.saturating_sub(1));
+                    app.ui.selected = Some(new_idx);
+                }
+            }
+            2 => {
+                // FileNameSearch
+                let result_count = app.ui.filename_search_results.len();
+                if result_count > 0 {
+                    let current = app.ui.selected.unwrap_or(0);
+                    app.ui.selected = Some((current + 1).min(result_count.saturating_sub(1)));
+                }
+            }
+            _ => {}
+        }
+        app.ui.request_redraw(RedrawFlag::Overlay);
+    }
+
+    // File operations handler
+    async fn handle_file_ops_prompt(&mut self, key_code: u32) {
+        // Convert u32 back to char for file operation key
+        let prompt_type = match key_code as u8 as char {
+            'm' => InputPromptType::MoveDestination,
+            'r' => InputPromptType::RenameFile,
+            _ => return,
+        };
+        self.dispatch_action(Action::ShowInputPrompt(prompt_type))
+            .await;
+    }
+
+    /// Legacy clipboard overlay handler (kept for fallback)
+    async fn handle_clipboard_overlay_keys(&self, key: KeyEvent) -> Action {
+        // This should rarely be called now that we have unified processing
+        debug!("Fallback clipboard overlay handler for key: {:?}", key.code);
+        Action::NoOp
     }
 
     /// Zero-allocation clipboard copy with lock-free operations
@@ -2035,10 +2407,15 @@ impl EventLoop {
     async fn handle_paste_from_clipboard_performance(&mut self) {
         let (clipboard, dest_path) = {
             let app = self.app.lock().await;
-            (
-                app.key_processor.as_ref().unwrap().clipboard.clone(),
-                app.fs.active_pane().cwd.clone(),
-            )
+
+            // Safe handling of key_processor - use UI clipboard as fallback
+            let clipboard = if let Some(processor) = app.key_processor.as_ref() {
+                processor.clipboard.clone()
+            } else {
+                app.ui.clipboard.clone()
+            };
+
+            (clipboard, app.fs.active_pane().cwd.clone())
         };
 
         // TODO: Implement clipboard.get_all_items() in clipr crate
@@ -2078,6 +2455,7 @@ impl EventLoop {
         operation: &'static str,
     ) {
         let mut app = self.app.lock().await;
+
         app.ui
             .show_error(format!("Clipboard {operation} error: {error}"));
     }

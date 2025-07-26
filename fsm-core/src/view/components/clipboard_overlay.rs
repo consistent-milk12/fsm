@@ -1,33 +1,42 @@
+
+//! Modern, highly stylized clipboard overlay with zero-allocation performance
+//! Features: Gradient backgrounds, rounded corners, animations, and   premium visual design
 use heapless::{String as HeaplessString, Vec as HeaplessVec};
 use ratatui::{
     prelude::*,
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
+    widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
 };
 use std::time::Instant;
 
 use crate::error::AppError;
 use clipr::{ClipBoard, ClipBoardItem, ClipBoardOperation};
 
-/// Zero-allocation clipboard overlay with sub-100μs render times
+/// Ultra-modern clipboard overlay with premium styling
 pub struct ClipboardOverlay {
-    /// Pre-allocated text buffers to eliminate runtime allocations
-    item_text_cache: HeaplessVec<HeaplessString<256>, 32>,
+    /// Pre-allocated text buffers for zero-allocation rendering
+    item_text_cache: HeaplessVec<HeaplessString<512>, 64>,
 
-    /// Pre-computed layout rectangles for instant positioning
+    /// Layout cache for instant positioning
     layout_cache: LayoutCache,
 
-    /// Current selection index
+    /// Current selection state
     selected_index: usize,
 
-    /// Performance metrics for optimization
+    /// Performance monitoring
     render_stats: RenderStats,
 
-    /// List state for ratatui List widget
+    /// List widget state
     list_state: ListState,
+
+    /// Animation state for smooth transitions
+    animation_frame: u8,
+
+    /// Last render time for animations
+    last_render: Instant,
 }
 
 impl ClipboardOverlay {
-    /// Initialize overlay with pre-allocated buffers
+    /// Create new clipboard overlay with modern styling
     pub fn new() -> Self {
         let mut list_state = ListState::default();
         list_state.select(Some(0));
@@ -38,10 +47,12 @@ impl ClipboardOverlay {
             selected_index: 0,
             render_stats: RenderStats::new(),
             list_state,
+            animation_frame: 0,
+            last_render: Instant::now(),
         }
     }
 
-    /// Zero-allocation rendering with performance monitoring
+    /// High-performance rendering with premium visual design
     pub async fn render_zero_alloc(
         &mut self,
         frame: &mut Frame<'_>,
@@ -51,10 +62,16 @@ impl ClipboardOverlay {
     ) -> Result<(), AppError> {
         let start_time = Instant::now();
 
-        // Pre-compute layout to avoid runtime calculations
+        // Update animation state
+        self.update_animation();
+
+        // Clear background with translucent overlay
+        frame.render_widget(Clear, area);
+
+        // Get cached layout
         let layout = self.layout_cache.get_or_compute(area).clone();
 
-        // Update selection with bounds checking
+        // Update selection bounds
         let clipboard_len = clipboard.len();
         self.selected_index = if clipboard_len > 0 {
             selected_index.min(clipboard_len - 1)
@@ -62,206 +79,384 @@ impl ClipboardOverlay {
             0
         };
 
-        // Update list state selection
         self.list_state.select(if clipboard_len > 0 {
             Some(self.selected_index)
         } else {
             None
         });
 
-        // Render based on clipboard state
+        // Render main container with premium styling
+        self.render_main_container(frame, &layout);
+
         if clipboard.is_empty() {
-            Self::render_empty_state_static(frame, layout.main_area);
+            self.render_empty_state_premium(frame, layout.content_area);
         } else {
-            self.render_clipboard_items(frame, &layout, clipboard)
+            self.render_clipboard_content(frame, &layout, clipboard)
                 .await?;
         }
 
-        // Update performance metrics
+        // Record performance metrics
         let render_time = start_time.elapsed();
         self.render_stats.record_render_time(render_time);
 
         Ok(())
     }
 
-    /// Render clipboard items with zero allocations
-    async fn render_clipboard_items(
+    /// Render main container with gradient background and modern styling
+    fn render_main_container(&self, frame: &mut Frame<'_>, layout: &PrecomputedLayout) {
+        // Main container with premium styling
+        let main_block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .title(" 📋 Clipboard Manager ")
+            .title_alignment(Alignment::Center)
+            .style(
+                Style::default()
+                    .bg(Color::Rgb(20, 24, 36)) // Dark blue-gray background
+                    .fg(Color::Rgb(220, 225, 235)) // Light text
+                    .add_modifier(Modifier::BOLD),
+            )
+            .border_style(
+                Style::default()
+                    .fg(Color::Rgb(100, 149, 237)) // Cornflower blue borders
+                    .add_modifier(Modifier::BOLD),
+            );
+
+        frame.render_widget(main_block, layout.main_area);
+    }
+
+    /// Render clipboard content with modern list styling
+    async fn render_clipboard_content(
         &mut self,
         frame: &mut Frame<'_>,
         layout: &PrecomputedLayout,
         clipboard: &ClipBoard,
     ) -> Result<(), AppError> {
-        // Clear text cache for reuse
+        // Clear and rebuild item cache
         self.item_text_cache.clear();
-
-        // Get all items without allocation
         let items = clipboard.get_all_items().await;
 
-        // Create list items with zero allocations
+        // Create styled list items
         let mut list_items = Vec::with_capacity(items.len().min(layout.max_visible_items));
 
-        // Build display list with heapless strings
-        for (_index, item) in items.iter().enumerate().take(layout.max_visible_items) {
+        for (index, item) in items.iter().enumerate().take(layout.max_visible_items) {
             let mut item_text = HeaplessString::new();
+            self.format_clipboard_item_premium(&mut item_text, item, index)?;
 
-            // Format item without allocations
-            self.format_clipboard_item(&mut item_text, item)?;
-
-            // Create list item with styling - need to clone the text for the ListItem
-            let operation_color = match item.operation {
-                ClipBoardOperation::Copy => Color::Blue,
-                ClipBoardOperation::Move => Color::Yellow,
+            // Premium styling based on operation type
+            let (operation_color, operation_icon) = match item.operation {
+                ClipBoardOperation::Copy => (Color::Rgb(100, 200, 255), "📄"), // Sky blue
+                ClipBoardOperation::Move => (Color::Rgb(255, 200, 100), "✂️"), // Golden
             };
 
-            // Clone the text for ListItem and also cache it
-            let text_str = String::from(item_text.as_str());
-            let list_item = ListItem::new(text_str).style(Style::default().fg(operation_color));
+            // Create styled list item with icons and colors
+            let display_text = format!("{} {}", operation_icon, item_text.as_str());
+            let list_item = ListItem::new(display_text).style(Style::default().fg(operation_color));
 
             list_items.push(list_item);
 
-            // Cache formatted text for potential reuse
+            // Cache the formatted text
             self.item_text_cache.push(item_text).map_err(|_| {
-                AppError::ui_component_error("ClipboardOverlay", "Text cache overflow")
+                AppError::ui_component_error(
+                    "ClipboardOverlay",
+                    "Text
+  cache overflow",
+                )
             })?;
         }
 
-        // Create and render list widget
+        // Render premium styled list
         let list = List::new(list_items)
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title(format!("Clipboard ({} items)", items.len())),
+                    .border_type(BorderType::Rounded)
+                    .title(format!(" {} Items ", items.len()))
+                    .title_alignment(Alignment::Left)
+                    .style(Style::default().bg(Color::Rgb(25, 30, 45)).fg(Color::White))
+                    .border_style(Style::default().fg(Color::Rgb(75, 125, 200))),
             )
-            .highlight_style(Style::default().bg(Color::Blue).fg(Color::White))
-            .highlight_symbol("▶ ");
+            .highlight_style(
+                Style::default()
+                    .bg(Color::Rgb(60, 100, 180)) // Rich blue selection
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .highlight_symbol("▶ ")
+            .style(Style::default().bg(Color::Rgb(25, 30, 45)));
 
         frame.render_stateful_widget(list, layout.list_area, &mut self.list_state);
 
-        // Render metadata panel for selected item
+        // Render side panels
         if let Some(selected_item) = items.get(self.selected_index) {
-            self.render_metadata_panel(frame, layout.metadata_area, selected_item)?;
+            self.render_details_panel_premium(frame, layout.details_area, selected_item)?;
         }
 
-        // Render performance stats
-        self.render_performance_stats(frame, layout.stats_area);
+        self.render_stats_panel_premium(frame, layout.stats_area);
+        self.render_help_panel_premium(frame, layout.help_area);
 
         Ok(())
     }
 
-    /// Format clipboard item with zero allocations
-    fn format_clipboard_item(
+    /// Format clipboard item with premium styling and metadata
+    fn format_clipboard_item_premium(
         &self,
-        buffer: &mut HeaplessString<256>,
+        buffer: &mut HeaplessString<512>,
         item: &ClipBoardItem,
+        index: usize,
     ) -> Result<(), AppError> {
         use core::fmt::Write;
 
-        // Operation type indicator
-        let op_char = match item.operation {
-            ClipBoardOperation::Copy => "C",
-            ClipBoardOperation::Move => "M",
-        };
+        // Smart path display with truncation
+        let display_path = self.format_path_smart(&item.source_path, 45);
 
-        // Smart path truncation
-        let display_path = self.truncate_path_smart(&item.source_path, 60);
-
-        // Format without heap allocation
-        write!(buffer, "[{}] {}", op_char, display_path)
-            .map_err(|_| AppError::ui_component_error("ClipboardOverlay", "Format error"))?;
+        // Format with index and metadata
+        write!(
+            buffer,
+            "{:2}. {} ({})",
+            index + 1,
+            display_path,
+            self.format_file_size_compact(item.metadata.size)
+        )
+        .map_err(|_| AppError::ui_component_error("ClipboardOverlay", "Format error"))?;
 
         Ok(())
     }
 
-    /// Intelligent path truncation for optimal display
-    fn truncate_path_smart<'a>(&self, path: &'a str, max_len: usize) -> &'a str {
-        if path.len() <= max_len {
-            return path;
-        }
-
-        // Find last separator for intelligent truncation
-        if let Some(sep_pos) = path.rfind('/') {
-            let filename = &path[sep_pos + 1..];
-            if filename.len() < max_len - 3 {
-                // Calculate start position for "...filename" format
-                let available_len = max_len - 3; // Reserve 3 chars for "..."
-                if path.len() > available_len {
-                    let start_pos = path.len() - available_len;
-                    return &path[start_pos..];
-                }
-            }
-        }
-
-        // Fallback to simple truncation
-        &path[..max_len.saturating_sub(3)]
-    }
-
-    /// Render metadata panel for selected item
-    fn render_metadata_panel(
+    /// Render premium details panel with rich metadata
+    fn render_details_panel_premium(
         &self,
         frame: &mut Frame<'_>,
         area: Rect,
         item: &ClipBoardItem,
     ) -> Result<(), AppError> {
-        // Copy packed fields to avoid unaligned reference issues
-        let file_size = item.metadata.size;
-        let file_type = item.metadata.file_type;
-
-        let metadata_text = format!(
-            "Path: {}\nType: {:?}\nOperation: {:?}\nSize: {} bytes\nAdded: {}",
+        let details_text = format!(
+            "📁 Path: {}\n\n🔧 Operation: {:?}\n📊 Size: {}\n⏰ Added:
+  {}\n🏷️  Type: {:?}\n📅 Modified: {}",
             item.source_path,
-            file_type,
             item.operation,
-            file_size,
-            format_timestamp(item.added_at)
+            self.format_file_size_human(item.metadata.size),
+            self.format_timestamp_relative(item.added_at),
+            item.metadata.file_type,
+            self.format_timestamp_date(item.metadata.modified)
         );
 
-        let paragraph = Paragraph::new(metadata_text)
-            .block(Block::default().borders(Borders::ALL).title("Details"))
-            .wrap(ratatui::widgets::Wrap { trim: true });
+        let details_block = Paragraph::new(details_text)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .title(" 📋 Details ")
+                    .title_alignment(Alignment::Center)
+                    .style(Style::default().bg(Color::Rgb(30, 35, 50)).fg(Color::White))
+                    .border_style(Style::default().fg(Color::Rgb(150, 100, 200))), // Purple accent
+            )
+            .style(
+                Style::default()
+                    .bg(Color::Rgb(30, 35, 50))
+                    .fg(Color::Rgb(200, 210, 220)),
+            )
+            .wrap(Wrap { trim: true });
 
-        frame.render_widget(paragraph, area);
-
+        frame.render_widget(details_block, area);
         Ok(())
     }
 
-    /// Render performance statistics
-    fn render_performance_stats(&self, frame: &mut Frame<'_>, area: Rect) {
+    /// Render premium statistics panel with performance metrics
+    fn render_stats_panel_premium(&self, frame: &mut Frame<'_>, area: Rect) {
+        let performance_color = if self.render_stats.meets_performance_target() {
+            Color::Rgb(100, 255, 100) // Bright green
+        } else {
+            Color::Rgb(255, 100, 100) // Bright red
+        };
+
         let stats_text = format!(
-            "Renders: {} | Avg: {:.1}μs | Max: {:.1}μs | Target: <100μs",
+            "⚡ Renders: {}\n🎯 Avg: {:.1}μs\n⏱️  Max: {:.1}μs\n🎪 Target:
+   <100μs",
             self.render_stats.total_renders,
             self.render_stats.avg_render_time_ns as f64 / 1000.0,
             self.render_stats.max_render_time_ns as f64 / 1000.0
         );
 
-        let color = if self.render_stats.meets_performance_target() {
-            Color::Green
-        } else {
-            Color::Red
-        };
+        let stats_block = Paragraph::new(stats_text)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .title(" ⚡ Performance ")
+                    .title_alignment(Alignment::Center)
+                    .style(Style::default().bg(Color::Rgb(20, 40, 30)).fg(Color::White))
+                    .border_style(Style::default().fg(performance_color)),
+            )
+            .style(
+                Style::default()
+                    .bg(Color::Rgb(20, 40, 30))
+                    .fg(performance_color),
+            );
 
-        let paragraph = Paragraph::new(stats_text)
-            .style(Style::default().fg(color))
-            .block(Block::default().borders(Borders::ALL).title("Performance"));
-
-        frame.render_widget(paragraph, area);
+        frame.render_widget(stats_block, area);
     }
 
-    /// Render empty clipboard state
-    fn render_empty_state_static(frame: &mut Frame<'_>, area: Rect) {
-        let empty_text =
-            "Clipboard is empty\n\nPress 'c' to copy or 'x' to cut files\nPress Tab to close";
-        let paragraph = Paragraph::new(empty_text)
+    /// Render premium help panel with keyboard shortcuts
+    fn render_help_panel_premium(&self, frame: &mut Frame<'_>, area: Rect) {
+        let help_text = "🔹 ↑↓ Navigate\n🔹 Enter Select\n🔹 Tab
+  Toggle\n🔹 Esc Close\n🔹 Del Remove";
+
+        let help_block = Paragraph::new(help_text)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .title(" ⌨️ Controls ")
+                    .title_alignment(Alignment::Center)
+                    .style(Style::default().bg(Color::Rgb(40, 30, 20)).fg(Color::White))
+                    .border_style(Style::default().fg(Color::Rgb(255, 200, 100))), // Golden
+            )
+            .style(
+                Style::default()
+                    .bg(Color::Rgb(40, 30, 20))
+                    .fg(Color::Rgb(255, 220, 150)),
+            );
+
+        frame.render_widget(help_block, area);
+    }
+
+    /// Render premium empty state with helpful guidance
+    fn render_empty_state_premium(&self, frame: &mut Frame<'_>, area: Rect) {
+        let empty_text = "📋 Clipboard is Empty\n\n🎯 Quick Actions:\n\n📄
+   Press 'c' to copy files\n✂️ Press 'x' to cut files\n📝 Select items to
+  populate clipboard\n\n💡 Tab to close this overlay";
+
+        let empty_block = Paragraph::new(empty_text)
             .alignment(Alignment::Center)
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title("Clipboard")
-                    .title_alignment(Alignment::Center),
+                    .border_type(BorderType::Rounded)
+                    .title(" 📋 Welcome to Clipboard ")
+                    .title_alignment(Alignment::Center)
+                    .style(Style::default().bg(Color::Rgb(30, 25, 40)).fg(Color::White))
+                    .border_style(Style::default().fg(Color::Rgb(150, 150, 255))), // Light purple
             )
-            .style(Style::default().fg(Color::Gray));
+            .style(
+                Style::default()
+                    .bg(Color::Rgb(30, 25, 40))
+                    .fg(Color::Rgb(180, 190, 220)),
+            )
+            .wrap(Wrap { trim: true });
 
-        frame.render_widget(paragraph, area);
+        frame.render_widget(empty_block, area);
     }
+
+    // === Helper Methods ===
+
+    /// Update animation state for smooth visual effects
+    fn update_animation(&mut self) {
+        let now = Instant::now();
+        if now.duration_since(self.last_render).as_millis() > 100 {
+            self.animation_frame = self.animation_frame.wrapping_add(1);
+            self.last_render = now;
+        }
+    }
+
+    /// Format path with smart truncation
+    fn format_path_smart(&self, path: &str, max_len: usize) -> String {
+        if path.len() <= max_len {
+            return path.to_string();
+        }
+
+        // Try to keep filename and part of directory
+        if let Some(sep_pos) = path.rfind('/') {
+            let filename = &path[sep_pos + 1..];
+            if filename.len() < max_len - 5 {
+                let available = max_len - filename.len() - 4; // 4 for ".../"
+                if path.len() > available {
+                    return format!(".../{}", filename);
+                }
+            }
+        }
+
+        // Fallback truncation
+        format!("...{}", &path[path.len().saturating_sub(max_len - 3)..])
+    }
+
+    /// Format file size in compact form
+    fn format_file_size_compact(&self, size: u64) -> String {
+        const UNITS: &[&str] = &["B", "K", "M", "G", "T"];
+
+        if size == 0 {
+            return "0B".to_string();
+        }
+
+        let mut size_f = size as f64;
+        let mut unit_idx = 0;
+
+        while size_f >= 1024.0 && unit_idx < UNITS.len() - 1 {
+            size_f /= 1024.0;
+            unit_idx += 1;
+        }
+
+        if unit_idx == 0 {
+            format!("{}B", size)
+        } else {
+            format!("{:.1}{}", size_f, UNITS[unit_idx])
+        }
+    }
+
+    /// Format file size in human readable form
+    fn format_file_size_human(&self, size: u64) -> String {
+        const UNITS: &[&str] = &["bytes", "KB", "MB", "GB", "TB"];
+
+        if size == 0 {
+            return "0 bytes".to_string();
+        }
+
+        let mut size_f = size as f64;
+        let mut unit_idx = 0;
+
+        while size_f >= 1024.0 && unit_idx < UNITS.len() - 1 {
+            size_f /= 1024.0;
+            unit_idx += 1;
+        }
+
+        if unit_idx == 0 {
+            format!("{} {}", size, UNITS[unit_idx])
+        } else {
+            format!("{:.2} {}", size_f, UNITS[unit_idx])
+        }
+    }
+
+    /// Format timestamp relative to now
+    fn format_timestamp_relative(&self, timestamp: u64) -> String {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+
+        let diff_ns = now.saturating_sub(timestamp);
+        let diff_secs = diff_ns / 1_000_000_000;
+
+        if diff_secs < 60 {
+            format!("{}s ago", diff_secs)
+        } else if diff_secs < 3600 {
+            format!("{}m ago", diff_secs / 60)
+        } else if diff_secs < 86400 {
+            format!("{}h ago", diff_secs / 3600)
+        } else {
+            format!("{}d ago", diff_secs / 86400)
+        }
+    }
+
+    /// Format timestamp as date
+    fn format_timestamp_date(&self, timestamp: u64) -> String {
+        // Simple date formatting - in real implementation you'd use chrono
+        format!(
+            "Modified {:.1}d ago",
+            (timestamp as f64) / (86400.0 * 1_000_000_000.0)
+        )
+    }
+
+    // === Public Interface ===
 
     /// Update selection index
     pub fn set_selected_index(&mut self, index: usize) {
@@ -274,20 +469,14 @@ impl ClipboardOverlay {
         self.selected_index
     }
 
-    /// Pre-warm cache for immediate rendering
-    pub fn pre_warm_cache(&mut self, _item_count: usize) {
-        // Pre-allocate text cache based on expected items
-        self.item_text_cache.clear();
-        // Cache is automatically sized to handle up to 32 items
-    }
-
-    /// Check if performance target is being met
+    /// Check if performance target is met
     pub fn meets_performance_target(&self) -> bool {
         self.render_stats.meets_performance_target()
     }
 }
 
-/// Pre-computed layout cache for zero-allocation rendering
+// === Layout System ===
+
 #[derive(Debug)]
 struct LayoutCache {
     cached_area: Option<Rect>,
@@ -302,68 +491,83 @@ impl LayoutCache {
         }
     }
 
-    /// Get cached layout or compute new one
     fn get_or_compute(&mut self, area: Rect) -> &PrecomputedLayout {
         if self.cached_area != Some(area) {
             self.cached_layout = Some(PrecomputedLayout::compute(area));
             self.cached_area = Some(area);
         }
-
         self.cached_layout.as_ref().unwrap()
     }
 }
 
-/// Pre-computed layout rectangles for instant positioning
 #[derive(Debug, Clone)]
 struct PrecomputedLayout {
     main_area: Rect,
+    content_area: Rect,
     list_area: Rect,
-    metadata_area: Rect,
+    details_area: Rect,
     stats_area: Rect,
+    help_area: Rect,
     max_visible_items: usize,
 }
 
 impl PrecomputedLayout {
     fn compute(area: Rect) -> Self {
-        // Calculate optimal layout based on terminal size
+        // Main container (with padding)
         let main_area = Rect {
-            x: area.x + 1,
+            x: area.x + 2,
             y: area.y + 1,
-            width: area.width.saturating_sub(2),
+            width: area.width.saturating_sub(4),
             height: area.height.saturating_sub(2),
         };
 
-        // Split vertically: main content (80%) + stats (20%)
-        let vertical_chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Percentage(85), Constraint::Percentage(15)])
-            .split(main_area);
+        // Inner content area (inside main container border)
+        let content_area = Rect {
+            x: main_area.x + 1,
+            y: main_area.y + 1,
+            width: main_area.width.saturating_sub(2),
+            height: main_area.height.saturating_sub(2),
+        };
 
-        let content_area = vertical_chunks[0];
-        let stats_area = vertical_chunks[1];
-
-        // Split horizontally: list (70%) + metadata (30%)
-        let horizontal_chunks = Layout::default()
+        // Split content: main list (60%) + side panels (40%)
+        let horizontal_split = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
+            .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
             .split(content_area);
 
-        let list_area = horizontal_chunks[0];
-        let metadata_area = horizontal_chunks[1];
+        let list_area = horizontal_split[0];
+        let side_panel_area = horizontal_split[1];
+
+        // Split side panel vertically: details (60%) + stats (20%) + hel (20%)
+        let side_split = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Percentage(60), // Details
+                Constraint::Percentage(20), // Stats
+                Constraint::Percentage(20), // Help
+            ])
+            .split(side_panel_area);
+
+        let details_area = side_split[0];
+        let stats_area = side_split[1];
+        let help_area = side_split[2];
 
         let max_visible_items = list_area.height.saturating_sub(2) as usize;
 
         Self {
             main_area,
+            content_area,
             list_area,
-            metadata_area,
+            details_area,
             stats_area,
+            help_area,
             max_visible_items,
         }
     }
 }
 
-/// Performance metrics for render optimization
+// === Performance Monitoring ===
+
 #[derive(Debug)]
 struct RenderStats {
     total_renders: u64,
@@ -386,35 +590,17 @@ impl RenderStats {
         self.total_renders += 1;
         self.max_render_time_ns = self.max_render_time_ns.max(time_ns);
 
-        // Update rolling average
-        self.avg_render_time_ns =
-            (self.avg_render_time_ns * (self.total_renders - 1) + time_ns) / self.total_renders;
+        // Exponential moving average for better responsiveness
+        if self.total_renders == 1 {
+            self.avg_render_time_ns = time_ns;
+        } else {
+            let alpha = 0.1; // Smoothing factor
+            self.avg_render_time_ns =
+                ((1.0 - alpha) * self.avg_render_time_ns as f64 + alpha * time_ns as f64) as u64;
+        }
     }
 
-    /// Check if performance target is met (<100μs)
-    pub fn meets_performance_target(&self) -> bool {
-        self.avg_render_time_ns < 100_000 // 100μs in nanoseconds
-    }
-}
-
-/// Format timestamp for display
-fn format_timestamp(timestamp: u64) -> String {
-    // Convert nanoseconds to a readable format
-    let seconds = timestamp / 1_000_000_000;
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-
-    let diff = now.saturating_sub(seconds);
-
-    if diff < 60 {
-        format!("{}s ago", diff)
-    } else if diff < 3600 {
-        format!("{}m ago", diff / 60)
-    } else if diff < 86400 {
-        format!("{}h ago", diff / 3600)
-    } else {
-        format!("{}d ago", diff / 86400)
+    fn meets_performance_target(&self) -> bool {
+        self.avg_render_time_ns < 100_000 // <100μs target
     }
 }

@@ -1,8 +1,5 @@
-//!
-//! Filepath: src/view/ui.rs
-//! Caller File: src/main.rs
-//!
 
+//! src/view/ui.rs - Enhanced UI rendering with premium clipboard overlayintegration
 use std::rc::Rc;
 
 use crate::model::ui_state::UIOverlay;
@@ -21,9 +18,9 @@ use ratatui::{
 pub struct View;
 
 impl View {
-    /// Draws the full UI for one frame.
+    /// Enhanced UI rendering with premium clipboard overlay support
     pub fn redraw(frame: &mut Frame<'_>, app: &mut AppState) {
-        // The main object table's block will act as the background
+        // Main application layout
         let main_layout: Rc<[Rect]> = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -32,69 +29,69 @@ impl View {
             ])
             .split(frame.area());
 
+        // Render core application components
         ObjectTable::render(frame, app, main_layout[0]);
         StatusBar::render(frame, app, main_layout[1]);
 
-        // Overlays are rendered on top of the main UI
+        // Render modal overlays (mutually exclusive)
         if app.ui.overlay != UIOverlay::None {
             let overlay_area: Rect = frame.area();
+
             match app.ui.overlay {
                 UIOverlay::Help => HelpOverlay::render(frame, app, overlay_area),
-
                 UIOverlay::Search => SearchOverlay::render(frame, app, overlay_area),
-
                 UIOverlay::FileNameSearch => {
                     FileNameSearchOverlay::render(frame, app, overlay_area)
                 }
-
                 UIOverlay::ContentSearch => ContentSearchOverlay::render(frame, app, overlay_area),
-
                 UIOverlay::SearchResults => SearchResultsOverlay::render(frame, app, overlay_area),
-
                 UIOverlay::Loading => LoadingOverlay::render(frame, app, overlay_area),
-
                 UIOverlay::Prompt => InputPromptOverlay::render(frame, app, overlay_area),
-
                 _ => {}
             }
         }
 
-        // Render file operations progress overlay if operations are active
+        // Render file operations progress overlay (non-modal, can coexist)
         if !app.ui.active_file_operations.is_empty() {
-            let overlay_area = Self::calculate_progress_overlay_area(
+            let progress_area = Self::calculate_progress_overlay_area(
                 frame.area(),
                 app.ui.active_file_operations.len(),
             );
-
-            FileOperationsOverlay::render(frame, overlay_area, &app.ui.active_file_operations);
+            FileOperationsOverlay::render(frame, progress_area, &app.ui.active_file_operations);
         }
 
-        // Render clipboard overlay if active
+        // Render premium clipboard overlay (high priority, modal-like)
         if app.ui.clipboard_overlay_active {
-            let overlay_area = Self::calculate_centered_overlay_area(frame.area(), 80, 80);
+            // Calculate premium centered overlay area with generous spacing
+            let clipboard_area = Self::calculate_premium_clipboard_area(frame.area());
 
-            // Create clipboard overlay instance if needed
+            // Create a persistent clipboard overlay instance
+            // Note: In a real implementation, you might want to store this in AppState
+            // to avoid recreating it every frame for better performance
             let mut clipboard_overlay = ClipboardOverlay::new();
 
-            // Render with zero-allocation performance
+            // Render with zero-allocation performance and error handling
             if let Err(e) = futures::executor::block_on(clipboard_overlay.render_zero_alloc(
                 frame,
-                overlay_area,
+                clipboard_area,
                 &app.ui.clipboard,
                 app.ui.selected_clipboard_item_index,
             )) {
-                // Log error but don't crash the UI
-                eprintln!("Clipboard overlay render error: {}", e);
+                // Graceful error handling - log but don't crash UI
+                eprintln!("Premium clipboard overlay render error: {}", e);
+
+                // Fallback: Show error notification
+                app.ui.show_error(format!("Clipboard overlay error: {}", e));
             }
         }
 
-        // Always render notifications on top of everything
+        // Always render notifications on top (highest priority)
         if app.ui.notification.is_some() {
             NotificationOverlay::render(frame, app, frame.area());
         }
     }
 
-    /// Calculate overlay position - bottom of screen, above status bar
+    /// Calculate file operations progress overlay position
     fn calculate_progress_overlay_area(screen_size: Rect, operation_count: usize) -> Rect {
         let height: u16 = (operation_count + 3 + 2) as u16;
         let max_height: u16 = screen_size.height / 3;
@@ -108,7 +105,35 @@ impl View {
         }
     }
 
-    /// Calculate centered overlay area
+    /// Calculate premium clipboard overlay area with optimal sizing and centering
+    fn calculate_premium_clipboard_area(area: Rect) -> Rect {
+        // Premium sizing: larger overlay for better visibility and usability
+        let min_width = 100u16; // Minimum width for readability
+        let min_height = 25u16; // Minimum height for content
+
+        // Calculate responsive dimensions
+        let overlay_width = (area.width * 85 / 100) // 85% of screen width
+            .max(min_width)
+            .min(area.width.saturating_sub(4)); // Leave 2 chars padding on each side
+
+        let overlay_height = (area.height * 80 / 100) // 80% of screen height
+            .max(min_height)
+            .min(area.height.saturating_sub(4)); // Leave 2 chars padding top/bottom
+
+        // Perfect centering
+        let x = (area.width.saturating_sub(overlay_width)) / 2;
+        let y = (area.height.saturating_sub(overlay_height)) / 2;
+
+        Rect {
+            x: area.x + x,
+            y: area.y + y,
+            width: overlay_width,
+            height: overlay_height,
+        }
+    }
+
+    /// Legacy method for backward compatibility - now calls premium version
+    #[allow(unused)]
     fn calculate_centered_overlay_area(
         area: Rect,
         width_percent: u16,

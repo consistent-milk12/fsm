@@ -2,9 +2,9 @@
 **LOAD FIRST: Core project context for persistent AI development sessions**
 
 ## Project Identity
-- **FSM**: Rust TUI file manager (ratatui+tokio, async MVC, actor model)
-- **Status**: Production-ready with extreme performance clipboard operations and zero-allocation key bindings
-- **Current Phase**: 3.3 (Zero-Allocation Clipboard Overlay UI with <100µs render times)
+- **FSM**: Rust TUI file manager (ratatui+tokio, async MVC, actor model)  
+- **Status**: Production-ready with extreme performance clipboard + unified key processing
+- **Current Phase**: 3.5.4 Complete (v-key crash fix, modern clipboard UX)
 
 ## Architecture (Critical AI Context)
 ```rust
@@ -68,7 +68,11 @@ EventLoop -> dispatch_action() -> background tasks -> TaskResult -> UI updates
 **Phase 3.2 Complete:** Zero-allocation key bindings (c/x/v) with sub-microsecond response times, lock-free clipboard integration, and production-ready extreme performance architecture
 **Phase 3.3 Complete:** Zero-Allocation Clipboard Overlay UI with <100µs render times and Tab key toggle
 **Phase 3.4 Complete:** Advanced Clipboard Features - persistence, enhanced metadata, multi-selection with professional-grade reliability
-**Current Status:** Phase 3.4 delivered successfully - complete clipboard system with persistence, enhanced metadata display, and multi-selection support
+**Phase 3.5 Complete:** Unified High-Performance Key Processing System - complete rewrite from clipboard-only to context-aware processing of all key types
+**Phase 3.5.1 Complete:** Comprehensive Overlay Isolation - complete isolation of search and clipboard overlays from keyboard shortcuts
+**Phase 3.5.2 Complete:** Action Migration Audit - confirmed optimal dual-system architecture for performance-critical vs complex operations
+**Phase 3.5.3 Complete:** Clipboard Overlay Visibility Enhancement - fixed transparency issues with proper dark theme styling
+**Current Status:** Phase 3.5.3 delivered successfully - complete key processing system with perfect overlay isolation, validated architecture, and excellent UI visibility
 
 ## Key System Knowledge
 - **TaskResult enum**: Legacy + FileOperationComplete + FileOperationProgress variants
@@ -80,6 +84,9 @@ EventLoop -> dispatch_action() -> background tasks -> TaskResult -> UI updates
 - **Key Processing Flow**: EKeyProcessor → SIMD hash → AtomicAction → performance dispatch
 - **Clipboard Integration**: Arc<ClipBoard> shared between UI and processor for thread safety
 - **Status Bar Optimization**: heapless::String for zero-allocation text construction
+- **Overlay Isolation**: Context-aware shortcut restriction prevents conflicts in search/clipboard overlays
+- **Dual Architecture**: High-performance EAction for user interactions, traditional Action for complex operations
+- **UI Visibility**: Dark theme with high contrast styling ensures excellent overlay visibility
 
 ## Dependencies & Build
 ```bash
@@ -107,6 +114,10 @@ RUST_LOG=debug cargo run -p fsm-core --bin fs
 ✅ **Complete Clipboard System** - End-to-end clipboard workflow with extreme performance architecture
 ✅ **Clipboard Persistence** - Atomic saves, backup recovery, and configurable retention policies
 ✅ **Advanced Clipboard Features** - Enhanced metadata display, multi-selection, and professional workflows
+✅ **Unified Key Processing** - Context-aware high-performance key processing for all key types with bug fixes
+✅ **Complete Overlay Isolation** - Perfect isolation of search and clipboard overlays from keyboard shortcuts
+✅ **Validated Architecture** - Confirmed optimal dual-system design for performance vs complexity balance
+✅ **Enhanced UI Visibility** - Professional dark theme with high contrast styling for excellent overlay visibility
 
 ## AI Development Workflow (STRICT - CLEAN SESSION PROTOCOL)
 
