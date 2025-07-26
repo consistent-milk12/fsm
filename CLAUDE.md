@@ -38,19 +38,6 @@ EventProcessor -> HandlerRegistry -> ActionBatcher -> StateCoordinator -> UI upd
 **Foundation**: Production-ready architecture with extreme performance patterns established  
 **Detail**: See DesignTimeline/ for complete phase documentation
 
-## Tech Stack (Essential Only)
-**Performance**: flume, arc-swap, dashmap, crossbeam, rayon  
-**Runtime**: tokio, ratatui, crossterm, futures  
-**Optimization**: memchr, heapless, compact_str, memmap2
-
-**Build**: `cargo build --workspace` (from workspace root)
-
-## Core Systems (Complete)
-✅ **Modular Events** - Lock-free handlers, 10-50x performance  
-✅ **Extreme Clipboard** - Zero-allocation, SIMD-accelerated  
-✅ **File Operations** - Progress tracking, cancellation  
-✅ **Search & Commands** - Filename/content search, vim-style commands
-
 ## Development Workflow (Claude-Optimized)
 **Session Init**: Load CLAUDE.md → batch read Design.md + Implementation.md + DesignTimeline/Phase_4_0.md → create TodoWrite  
 **Development**: Batch research → generate terminal diffs → verify → track with todos  
