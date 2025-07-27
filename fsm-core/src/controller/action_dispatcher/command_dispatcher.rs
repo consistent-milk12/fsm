@@ -20,6 +20,8 @@ use crate::model::{FSState, PaneState, RedrawFlag, UIOverlay};
 /// Command dispatcher with validation and async safety
 pub struct CommandDispatcher {
     state: Arc<StateCoordinator>,
+
+    #[allow(unused)]
     task_tx: UnboundedSender<TaskResult>,
 }
 

@@ -49,7 +49,7 @@ pub trait ActionHandler: Send + Sync {
     fn can_handle(&self, action: &Action) -> bool;
 
     /// Process the action and return result
-    async fn handle(&mut self, action: &Action) -> Result<DispatchResult>;
+    fn handle(&mut self, action: &Action) -> impl Future<Output = Result<DispatchResult>> + Send;
 
     /// Handler priority (lower = higher priority)
     fn priority(&self) -> u8 {
@@ -64,6 +64,8 @@ pub trait ActionHandler: Send + Sync {
 pub struct ModularActionDispatcher {
     batcher: ActionBatcher,
     state: Arc<StateCoordinator>,
+
+    #[allow(unused)]
     task_tx: UnboundedSender<TaskResult>,
 
     // Specialized dispatchers

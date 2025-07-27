@@ -18,6 +18,8 @@ use crate::model::{FSState, PaneState, RedrawFlag};
 /// File operations dispatcher with async safety
 pub struct FileOpsDispatcher {
     state: Arc<StateCoordinator>,
+
+    #[allow(unused)]
     task_tx: UnboundedSender<TaskResult>,
 }
 
