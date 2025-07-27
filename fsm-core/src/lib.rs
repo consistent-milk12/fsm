@@ -11,10 +11,14 @@ pub mod controller {
     pub mod actions;
     pub use actions::Action;
 
+    pub mod action_dispatcher;
+    pub use action_dispatcher::ActionDispatcher;
+
     pub mod event_loop;
     pub use event_loop::{EventLoop, TaskResult};
 
     pub mod event_processor;
+    pub use event_processor::EventHandler;
 
     pub mod state_coordinator;
 

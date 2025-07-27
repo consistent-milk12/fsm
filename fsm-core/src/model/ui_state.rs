@@ -524,10 +524,13 @@ pub struct UIState {
     pub marked_indices: SelectionSet,
     pub visual_range: Option<(usize, usize)>,
 
-    // Input state with compact strings
+    // Input state with compact strings and history
     pub input: CompactString,
+    pub input_cursor: usize, // Cursor position for better input editing
     pub last_query: Option<CompactString>,
     pub input_prompt_type: Option<InputPromptType>,
+    pub input_history: SmallVec<[CompactString; 32]>, // Command/search history
+    pub input_history_index: Option<usize>, // Current position in history navigation
 
     // Display state
     pub show_hidden: bool,
@@ -596,8 +599,11 @@ impl UIState {
 
             // Input state
             input: CompactString::default(),
+            input_cursor: 0,
             last_query: None,
             input_prompt_type: None,
+            input_history: SmallVec::new(),
+            input_history_index: None,
 
             // Display state
             show_hidden: false,
@@ -761,5 +767,225 @@ impl UIState {
             self.recent_actions.remove(0);
         }
         self.recent_actions.push(action.into());
+    }
+
+    // Enhanced input management for overlays
+    
+    /// Clear input and reset cursor position
+    pub fn clear_input(&mut self) {
+        self.input = CompactString::default();
+        self.input_cursor = 0;
+        self.input_history_index = None;
+    }
+    
+    /// Set input text and update cursor to end
+    pub fn set_input(&mut self, text: impl Into<CompactString>) {
+        self.input = text.into();
+        self.input_cursor = self.input.len();
+        self.input_history_index = None;
+    }
+    
+    /// Insert character at cursor position
+    pub fn insert_char(&mut self, ch: char) {
+        let mut input_str = self.input.to_string();
+        input_str.insert(self.input_cursor, ch);
+        self.input = input_str.into();
+        self.input_cursor += ch.len_utf8();
+        self.input_history_index = None;
+    }
+    
+    /// Delete character before cursor (backspace)
+    pub fn delete_char_before(&mut self) -> bool {
+        if self.input_cursor > 0 {
+            let mut input_str = self.input.to_string();
+            let char_indices: Vec<_> = input_str.char_indices().collect();
+            
+            // Find the character boundary before cursor
+            if let Some((char_pos, _)) = char_indices.iter()
+                .rev()
+                .find(|(pos, _)| *pos < self.input_cursor) {
+                input_str.remove(*char_pos);
+                self.input = input_str.into();
+                self.input_cursor = *char_pos;
+                self.input_history_index = None;
+                return true;
+            }
+        }
+        false
+    }
+    
+    /// Move cursor left by one character
+    pub fn move_cursor_left(&mut self) {
+        if self.input_cursor > 0 {
+            let input_str = self.input.as_str();
+            let char_indices: Vec<_> = input_str.char_indices().collect();
+            
+            if let Some((pos, _)) = char_indices.iter()
+                .rev()
+                .find(|(pos, _)| *pos < self.input_cursor) {
+                self.input_cursor = *pos;
+            }
+        }
+    }
+    
+    /// Move cursor right by one character
+    pub fn move_cursor_right(&mut self) {
+        let input_str = self.input.as_str();
+        let char_indices: Vec<_> = input_str.char_indices().collect();
+        
+        if let Some((pos, _)) = char_indices.iter()
+            .find(|(pos, _)| *pos > self.input_cursor) {
+            self.input_cursor = *pos;
+        } else if self.input_cursor < input_str.len() {
+            self.input_cursor = input_str.len();
+        }
+    }
+    
+    /// Add input to history (for commands/searches)
+    pub fn add_to_history(&mut self, input: impl Into<CompactString>) {
+        let input_str = input.into();
+        if !input_str.is_empty() {
+            // Remove duplicate if exists
+            if let Some(pos) = self.input_history.iter().position(|x| *x == input_str) {
+                self.input_history.remove(pos);
+            }
+            
+            // Add to end (most recent)
+            self.input_history.push(input_str);
+            
+            // Keep only last 32 items
+            if self.input_history.len() > 32 {
+                self.input_history.remove(0);
+            }
+        }
+        self.input_history_index = None;
+    }
+    
+    /// Navigate to previous item in history
+    pub fn history_prev(&mut self) -> bool {
+        if self.input_history.is_empty() {
+            return false;
+        }
+        
+        match self.input_history_index {
+            None => {
+                // Start from the end (most recent)
+                self.input_history_index = Some(self.input_history.len() - 1);
+            }
+            Some(idx) if idx > 0 => {
+                self.input_history_index = Some(idx - 1);
+            }
+            _ => return false, // Already at oldest
+        }
+        
+        if let Some(idx) = self.input_history_index {
+            if let Some(history_item) = self.input_history.get(idx) {
+                self.input = history_item.clone();
+                self.input_cursor = self.input.len();
+                return true;
+            }
+        }
+        false
+    }
+    
+    /// Navigate to next item in history  
+    pub fn history_next(&mut self) -> bool {
+        if let Some(idx) = self.input_history_index {
+            if idx < self.input_history.len() - 1 {
+                self.input_history_index = Some(idx + 1);
+                if let Some(history_item) = self.input_history.get(idx + 1) {
+                    self.input = history_item.clone();
+                    self.input_cursor = self.input.len();
+                    return true;
+                }
+            } else {
+                // Go to empty (beyond history)
+                self.input_history_index = None;
+                self.clear_input();
+                return true;
+            }
+        }
+        false
+    }
+    
+    /// Get overlay-specific title
+    pub fn get_overlay_title(&self) -> &'static str {
+        match self.overlay {
+            UIOverlay::Help => "Help",
+            UIOverlay::FileNameSearch => "File Search",
+            UIOverlay::ContentSearch => "Content Search", 
+            UIOverlay::Prompt => match &self.input_prompt_type {
+                Some(InputPromptType::Custom(name)) if name == "command" => "Command Mode",
+                Some(InputPromptType::CreateFile) => "Create File",
+                Some(InputPromptType::CreateDirectory) => "Create Directory",
+                Some(InputPromptType::Rename) => "Rename",
+                Some(InputPromptType::GoToPath) => "Go To Path",
+                _ => "Input",
+            },
+            UIOverlay::SearchResults => "Search Results",
+            UIOverlay::Loading => "Loading",
+            _ => "Overlay",
+        }
+    }
+    
+    /// Check if current overlay supports input
+    pub fn overlay_accepts_input(&self) -> bool {
+        matches!(self.overlay, 
+            UIOverlay::FileNameSearch | 
+            UIOverlay::ContentSearch | 
+            UIOverlay::Prompt
+        )
+    }
+}
+
+impl Clone for UIState {
+    fn clone(&self) -> Self {
+        Self {
+            // copy atomic flags into new atomics
+            redraw_flags: AtomicU32::new(self.redraw_flags.load(Ordering::Relaxed)),
+            mode: self.mode,
+            overlay: self.overlay,
+            selected: self.selected,
+            active_pane: self.active_pane,
+
+            // simple clones of collections
+            marked_indices: self.marked_indices.clone(),
+            visual_range: self.visual_range,
+            input: self.input.clone(),
+            input_cursor: self.input_cursor,
+            last_query: self.last_query.clone(),
+            input_prompt_type: self.input_prompt_type.clone(),
+            input_history: self.input_history.clone(),
+            input_history_index: self.input_history_index,
+            show_hidden: self.show_hidden,
+            theme: self.theme.clone(),
+            search_results: self.search_results.clone(),
+            filename_search_results: self.filename_search_results.clone(),
+            rich_search_results: self.rich_search_results.clone(),
+            raw_search_results: self.raw_search_results.clone(),
+            raw_search_selected: self.raw_search_selected,
+            loading: self.loading.clone(),
+            notification: self.notification.clone(),
+            last_status: self.last_status.clone(),
+
+            // frame counter
+            frame_count: AtomicU64::new(self.frame_count.load(Ordering::Relaxed)),
+            last_update: self.last_update,
+
+            // hash maps with `Clone` or `Arc` items
+            active_file_operations: self.active_file_operations.clone(),
+            operations_cancel_tokens: self.operations_cancel_tokens.clone(),
+
+            // clone arcs
+            clipboard: Arc::clone(&self.clipboard),
+            clipboard_overlay_active: self.clipboard_overlay_active,
+            selected_clipboard_item: self.selected_clipboard_item.clone(),
+            selected_clipboard_item_index: self.selected_clipboard_item_index,
+            clipboard_view_mode: self.clipboard_view_mode,
+
+            // command palette and recent actions
+            command_palette: self.command_palette.clone(),
+            recent_actions: self.recent_actions.clone(),
+        }
     }
 }

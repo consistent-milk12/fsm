@@ -1,112 +1,116 @@
-//! src/tasks/file_ops_task.rs
-//! ============================================================================
-//! # File Operations Task: Background file operations with progress tracking
+//! file_ops_task.rs – Updated background file operations
 //!
-//! Handles copy, move, and rename operations asynchronously to prevent UI
-//! blocking during large file operations.
+//! This module defines a high‑level `FileOperationTask` that performs copy,
+//! move and rename operations asynchronously.  It reports progress and
+//! completion through the unified [`TaskResult`] enum defined in the modern
+//! event loop.  Unlike the original implementation, this version no longer
+//! depends on `AppState` and does not carry a reference to it.  It also
+//! produces progress updates using the new `FileOperationProgress` variant,
+//! leaving throughput statistics optional.
 
 use crate::controller::event_loop::TaskResult;
 use crate::error::AppError;
-use crate::model::app_state::AppState;
-use std::sync::Arc;
-use std::{
-    fs::Metadata,
-    io::{Error, ErrorKind},
-    path::{Path, PathBuf},
-    time::Instant,
-};
-use tokio::{
-    fs::{File, ReadDir},
-    sync::{
-        Mutex,
-        mpsc::{self, error::SendError},
-    },
-};
+use std::fmt;
+use std::io::{Error, ErrorKind};
+use std::path::{Path, PathBuf};
+use std::time::Instant;
+use tokio::fs as TokioFs;
+use tokio::fs::{File, ReadDir};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::sync::mpsc::{self, UnboundedSender, error::SendError};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use tokio::fs as TokioFs;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
 const BUFFER_SIZE: usize = 64 * 1024;
 
-/// File operation task for background processing
+/// File operation task for background processing.
+///
+/// A `FileOperationTask` encapsulates a single file or directory operation
+/// (copy, move or rename).  It reports progress via an unbounded channel of
+/// [`TaskResult`].  Cancellation is supported through a [`CancellationToken`].
 #[derive(Debug)]
 pub struct FileOperationTask {
+    /// Unique identifier for this operation.  Generated automatically when
+    /// constructing the task.
     pub operation_id: String,
+    /// The operation to execute.
     pub operation: FileOperation,
-    pub task_tx: mpsc::UnboundedSender<TaskResult>,
+    /// Channel on which progress and completion updates are sent.
+    pub task_tx: UnboundedSender<TaskResult>,
+    /// Token used to cancel the operation.
     pub cancel_token: CancellationToken,
-    pub app: Arc<Mutex<AppState>>,
 }
 
-/// Types of file operations supported
+/// Types of file operations supported.
 #[derive(Debug, Clone)]
 pub enum FileOperation {
-    /// Copy file/directory from source to destination
+    /// Copy a file or directory from `source` to `dest`.  For directories
+    /// the copy is performed recursively.
     Copy { source: PathBuf, dest: PathBuf },
-    /// Move file/directory from source to destination
+    /// Move a file or directory from `source` to `dest`.  On the same
+    /// filesystem this is implemented via rename; otherwise a copy and
+    /// delete fallback is used.
     Move { source: PathBuf, dest: PathBuf },
-    /// Rename file/directory
+    /// Rename a file or directory by changing its filename within the same
+    /// parent directory.
     Rename { source: PathBuf, new_name: String },
 }
 
-impl std::fmt::Display for FileOperation {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let ret_str = match self {
+impl fmt::Display for FileOperation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
             FileOperation::Copy { .. } => "Copy",
             FileOperation::Move { .. } => "Move",
             FileOperation::Rename { .. } => "Rename",
         };
-
-        write!(f, "{}", ret_str)
+        write!(f, "{}", s)
     }
 }
 
 impl FileOperationTask {
-    /// Create new file operation task with unique ID
+    /// Create a new file operation task with a unique ID.
     pub fn new(
         operation: FileOperation,
-        task_tx: mpsc::UnboundedSender<TaskResult>,
+        task_tx: UnboundedSender<TaskResult>,
         cancel_token: CancellationToken,
-        app: Arc<Mutex<AppState>>,
     ) -> Self {
         Self {
             operation_id: Uuid::new_v4().to_string(),
             operation,
             task_tx,
             cancel_token,
-            app,
         }
     }
 
-    /// Execute file operation with full progress reporting
+    /// Execute the file operation with progress reporting.
+    ///
+    /// This method calculates the total size and number of files involved
+    /// up front, emits an initial progress update, then performs the
+    /// operation while periodically reporting incremental progress.  A
+    /// completion update is sent at the end regardless of success or
+    /// failure.  Errors during execution are returned to the caller.
     pub async fn execute(&self) -> Result<(), AppError> {
         use FileOperation::*;
 
-        // Check for cancellation before starting
+        // Bail out immediately if cancelled before starting.
         if self.cancel_token.is_cancelled() {
-            let err_kind: ErrorKind = ErrorKind::Interrupted;
-            let err_msg: &'static str = "Operation was cancelled.";
-
-            return Err(Self::error(err_kind, err_msg));
+            return Err(Self::error(
+                ErrorKind::Interrupted,
+                "Operation was cancelled.",
+            ));
         }
 
-        // Calculate total operation size first
+        // Compute total bytes and number of files for progress reporting.
         let (total_bytes, total_files) = self.calculate_operation_size().await?;
         let mut current_bytes: u64 = 0;
         let mut files_completed: u32 = 0;
 
-        // Report initial progress
+        // Determine the initial file for the first progress report.
         let initial_file: &Path = match &self.operation {
-            Copy { source, dest: _ }
-            | Move { source, dest: _ }
-            | Rename {
-                source,
-                new_name: _,
-            } => source,
+            Copy { source, .. } | Move { source, .. } | Rename { source, .. } => source.as_path(),
         };
 
+        // Emit initial progress (0 bytes processed).
         self.report_progress(
             0,
             total_bytes,
@@ -116,7 +120,7 @@ impl FileOperationTask {
         )
         .await?;
 
-        // Execute operation with progress tracking
+        // Perform the operation.
         let result: Result<(), AppError> = match &self.operation {
             Copy { source, dest } => {
                 self.copy_file_with_progress(
@@ -129,7 +133,6 @@ impl FileOperationTask {
                 )
                 .await
             }
-
             Move { source, dest } => {
                 self.move_file_with_progress(
                     source,
@@ -141,7 +144,6 @@ impl FileOperationTask {
                 )
                 .await
             }
-
             Rename { source, new_name } => {
                 self.rename_with_progress(
                     source,
@@ -155,34 +157,28 @@ impl FileOperationTask {
             }
         };
 
-        // Send completion result regardless of success/failure
-        let completion_result: TaskResult = TaskResult::FileOperationComplete {
+        // Always emit a completion update after finishing.
+        let completion = TaskResult::FileOperationComplete {
             operation_id: self.operation_id.clone(),
             result: result.clone(),
         };
+        let _ = self.task_tx.send(completion);
 
-        let _send_result: Result<(), SendError<TaskResult>> = self.task_tx.send(completion_result);
-
-        // Operation cleanup is handled by the UI layer via the completion result
-
+        // Return the result to the caller (for error propagation).
         result
     }
 
-    /// Recursively calculate directory size and file count
+    /// Recursively calculate the size and file count of a directory.
     async fn calculate_directory_size(&self, dir_path: &Path) -> Result<(u64, u32), AppError> {
         let mut total_size: u64 = 0;
         let mut file_count: u32 = 0;
-
         let mut stack: Vec<PathBuf> = vec![dir_path.to_path_buf()];
-
         while let Some(current_dir) = stack.pop() {
             let mut entries: ReadDir = TokioFs::read_dir(&current_dir).await?;
-
             while let Some(entry) = entries.next_entry().await? {
                 let path: PathBuf = entry.path();
-
                 if path.is_file() {
-                    let metadata: Metadata = TokioFs::metadata(&path).await?;
+                    let metadata = TokioFs::metadata(&path).await?;
                     total_size += metadata.len();
                     file_count += 1;
                 } else if path.is_dir() {
@@ -190,17 +186,15 @@ impl FileOperationTask {
                 }
             }
         }
-
         Ok((total_size, file_count))
     }
 
-    /// Calculate total size and file count for progress tracking
+    /// Calculate the total size and file count for the operation.
     async fn calculate_operation_size(&self) -> Result<(u64, u32), AppError> {
         match &self.operation {
-            FileOperation::Copy { source, dest: _ } | FileOperation::Move { source, dest: _ } => {
+            FileOperation::Copy { source, .. } | FileOperation::Move { source, .. } => {
                 if source.is_file() {
-                    let metadata: Metadata = TokioFs::metadata(source).await?;
-
+                    let metadata = TokioFs::metadata(source).await?;
                     Ok((metadata.len(), 1))
                 } else if source.is_dir() {
                     self.calculate_directory_size(source).await
@@ -208,20 +202,15 @@ impl FileOperationTask {
                     Ok((0, 0))
                 }
             }
-
-            FileOperation::Rename {
-                source,
-                new_name: _,
-            } => {
-                // Rename is O(1), no progress tracker is needed.
-                let metadata: Metadata = TokioFs::metadata(source).await?;
-
+            FileOperation::Rename { source, .. } => {
+                // Renaming is constant time; progress is just one file.
+                let metadata = TokioFs::metadata(source).await?;
                 Ok((metadata.len(), 1))
             }
         }
     }
 
-    /// Report progress to UI
+    /// Report progress to the UI via the task channel.
     async fn report_progress(
         &self,
         current_bytes: u64,
@@ -230,13 +219,9 @@ impl FileOperationTask {
         files_completed: &mut u32,
         total_files: u32,
     ) -> Result<(), AppError> {
-        let throughput = if current_bytes > 0 {
-            Some(current_bytes)
-        } else {
-            None
-        };
-
-        let progress_result: TaskResult = TaskResult::FileOperationProgress {
+        // Build a progress variant.  Throughput is optional and not computed
+        // here; callers may choose to compute it externally.
+        let progress = TaskResult::FileOperationProgress {
             operation_id: self.operation_id.clone(),
             operation_type: self.operation.to_string(),
             current_bytes,
@@ -245,19 +230,19 @@ impl FileOperationTask {
             files_completed: *files_completed,
             total_files,
             start_time: Instant::now(),
-            throughput_bps: throughput,
+            throughput_bps: None,
         };
-
         self.task_tx
-            .send(progress_result)
+            .send(progress)
             .map_err(|e: SendError<TaskResult>| {
-                Error::new(ErrorKind::BrokenPipe, format!("Async send error: {e}"))
+                let err: Error =
+                    Error::new(ErrorKind::BrokenPipe, format!("Async send error: {e}"));
+                AppError::Io(err)
             })?;
-
         Ok(())
     }
 
-    /// Copy file with progress reporting using streaming
+    /// Copy a file or directory with progress reporting using streaming.
     async fn copy_file_with_progress(
         &self,
         source: &PathBuf,
@@ -267,34 +252,30 @@ impl FileOperationTask {
         files_completed: &mut u32,
         total_files: u32,
     ) -> Result<(), AppError> {
-        // Handle case where dest is a directory
+        // Determine the destination path.  If the destination is a directory
+        // then append the source file name; otherwise use dest directly.
         let final_dst: PathBuf = if dest.is_dir() {
             if let Some(filename) = source.file_name() {
-                let new_dest: PathBuf = dest.join(filename);
-                new_dest
+                dest.join(filename)
             } else {
-                let err_kind: ErrorKind = ErrorKind::InvalidInput;
-                let err_msg: &'static str = "Cannot determine filename from source.";
-
-                return Err(Self::error(err_kind, err_msg));
+                return Err(Self::error(
+                    ErrorKind::InvalidInput,
+                    "Cannot determine filename from source.",
+                ));
             }
         } else {
-            let new_dest: PathBuf = dest.to_path_buf();
-            new_dest
+            dest.to_path_buf()
         };
-
-        // Create parent directory if it doesn't exist
-        if let Some(parent) = final_dst.parent()
-            && !parent.exists()
-        {
-            TokioFs::create_dir_all(parent).await?;
+        // Ensure parent directory exists.
+        if let Some(parent) = final_dst.parent() {
+            if !parent.exists() {
+                TokioFs::create_dir_all(parent).await?;
+            }
         }
-
-        // Get file size for progress tracking
-        let metadata: Metadata = TokioFs::metadata(source).await?;
+        // Get the file size for progress tracking.
+        let metadata = TokioFs::metadata(source).await?;
         let file_size: u64 = metadata.len();
-
-        // Report progress before starting file copy
+        // Emit a progress update before starting the copy.
         self.report_progress(
             *current_bytes,
             total_bytes,
@@ -303,38 +284,32 @@ impl FileOperationTask {
             total_files,
         )
         .await?;
-
+        // Open files for reading and writing.
         let mut src_file: File = TokioFs::File::open(source).await?;
         let mut dst_file: File = TokioFs::File::create(&final_dst).await?;
-
-        // 64KB buffer
+        // 64KB buffer for copying.
         let mut buffer: Vec<u8> = vec![0; BUFFER_SIZE];
         let mut copied: u64 = 0;
-
+        // Determine an optimal interval for progress updates (1MB or 10% of file size).
         let kib: u64 = 1024 * 1024;
         let size: u64 = std::cmp::min(kib, file_size / 10);
         let optimal_interval: u64 = std::cmp::max(size, 1);
-
-        'copy_file_bytes: loop {
+        // Main copy loop.
+        loop {
             let bytes_read: usize = src_file.read(&mut buffer).await?;
-
-            // Check for cancellation before starting
             if self.cancel_token.is_cancelled() {
-                let err_kind: ErrorKind = ErrorKind::Interrupted;
-                let err_msg: &'static str = "Operation was cancelled.";
-
-                return Err(Self::error(err_kind, err_msg));
+                return Err(Self::error(
+                    ErrorKind::Interrupted,
+                    "Operation was cancelled.",
+                ));
             }
-
             if bytes_read == 0 {
-                break 'copy_file_bytes;
+                break;
             }
-
             dst_file.write_all(&buffer[..bytes_read]).await?;
             copied += bytes_read as u64;
             *current_bytes += bytes_read as u64;
-
-            // Report progress every 1MB or 10% of file
+            // Emit a progress update at defined intervals.
             if copied % optimal_interval == 0 {
                 self.report_progress(
                     *current_bytes,
@@ -346,12 +321,9 @@ impl FileOperationTask {
                 .await?;
             }
         }
-
         dst_file.flush().await?;
-
+        // Increment file completion count and emit a final progress update for this file.
         *files_completed += 1;
-
-        // Final progress report for this file
         self.report_progress(
             *current_bytes,
             total_bytes,
@@ -360,10 +332,10 @@ impl FileOperationTask {
             total_files,
         )
         .await?;
-
         Ok(())
     }
 
+    /// Move a file or directory with progress reporting.
     async fn move_file_with_progress(
         &self,
         source: &PathBuf,
@@ -373,37 +345,29 @@ impl FileOperationTask {
         files_completed: &mut u32,
         total_files: u32,
     ) -> Result<(), AppError> {
-        // Handle case where dest is a directory
+        // Determine final destination path.  If dest is a directory, append the file name.
         let final_dst: PathBuf = if dest.is_dir() {
             if let Some(filename) = source.file_name() {
-                let new_path: PathBuf = dest.join(filename);
-                new_path
+                dest.join(filename)
             } else {
-                let ekind: ErrorKind = ErrorKind::InvalidInput;
-                let emsg: &'static str =
-                    "Cannot determine filename from source for move operation.";
-                let err: Error = Error::new(ekind, emsg);
-                let app_err: AppError = AppError::Io(err);
-
-                return Err(app_err);
+                return Err(Self::error(
+                    ErrorKind::InvalidInput,
+                    "Cannot determine filename from source for move operation.",
+                ));
             }
         } else {
-            let new_path: PathBuf = dest.to_path_buf();
-            new_path
+            dest.to_path_buf()
         };
-
-        // Create parent directory if it doesn't exist
-        if let Some(parent) = final_dst.parent()
-            && !parent.exists()
-        {
-            TokioFs::create_dir_all(parent).await?;
+        // Ensure parent directory exists.
+        if let Some(parent) = final_dst.parent() {
+            if !parent.exists() {
+                TokioFs::create_dir_all(parent).await?;
+            }
         }
-
-        // Get file size for progress tracking
-        let metadata: Metadata = TokioFs::metadata(source).await?;
+        // Get file size for progress tracking.
+        let metadata = TokioFs::metadata(source).await?;
         let file_size: u64 = metadata.len();
-
-        // Report progress before starting move operation
+        // Emit initial progress.
         self.report_progress(
             *current_bytes,
             total_bytes,
@@ -412,24 +376,18 @@ impl FileOperationTask {
             total_files,
         )
         .await?;
-
-        // Check for cancellation before starting
+        // If cancelled, stop immediately.
         if self.cancel_token.is_cancelled() {
-            let err_kind: ErrorKind = ErrorKind::Interrupted;
-            let err_msg: &'static str = "Operation was cancelled.";
-
-            return Err(Self::error(err_kind, err_msg));
+            return Err(Self::error(
+                ErrorKind::Interrupted,
+                "Operation was cancelled.",
+            ));
         }
-
-        // Try efficient rename first (same filesystem)
+        // Try rename first (fast path on same filesystem).
         match TokioFs::rename(source, &final_dst).await {
             Ok(()) => {
-                // Rename sucessful - update progress instantly
                 *current_bytes += file_size;
-
                 *files_completed += 1;
-
-                // Report completion for this file
                 self.report_progress(
                     *current_bytes,
                     total_bytes,
@@ -438,12 +396,10 @@ impl FileOperationTask {
                     total_files,
                 )
                 .await?;
-
                 Ok(())
             }
-
             Err(_) => {
-                // Rename failed, fall back to copy with progress + delete
+                // Fall back to copy then delete.
                 self.copy_file_with_progress(
                     source,
                     &final_dst,
@@ -453,20 +409,18 @@ impl FileOperationTask {
                     total_files,
                 )
                 .await?;
-
-                // Delete source after sucessfuly copy
+                // Remove source after successful copy.
                 if source.is_file() {
                     TokioFs::remove_file(source).await?;
                 } else if source.is_dir() {
                     TokioFs::remove_dir_all(source).await?;
                 }
-
                 Ok(())
             }
         }
     }
 
-    /// Rename file or directory with progress reporting
+    /// Rename a file or directory with progress reporting.
     async fn rename_with_progress(
         &self,
         source: &PathBuf,
@@ -476,33 +430,20 @@ impl FileOperationTask {
         files_completed: &mut u32,
         total_files: u32,
     ) -> Result<(), AppError> {
-        // Validate source exists
+        // Ensure the source exists.
         if !source.exists() {
-            let ekind: ErrorKind = ErrorKind::NotFound;
-            let emsg: String = format!("Source path does not exist: {}", source.display());
-            let err: Error = Error::new(ekind, emsg);
-            let app_err: AppError = AppError::Io(err);
-
-            return Err(app_err);
+            return Err(AppError::NotFound(source.clone()));
         }
-
-        // Get parent directory
-        let parent: &Path = source.parent().ok_or_else(|| {
-            let ekind: ErrorKind = ErrorKind::InvalidInput;
-            let emsg: &'static str = "Cannot rename root directory";
-            let err: Error = Error::new(ekind, emsg);
-            let app_err: AppError = AppError::Io(err);
-
-            app_err
+        // Determine the parent directory.
+        let parent: &Path = source.parent().ok_or_else(|| AppError::InvalidInput {
+            field: "path".into(),
+            message: "Cannot rename root directory".into(),
         })?;
-
         let new_path: PathBuf = parent.join(new_name);
-
-        // Get file size for progress tracking
-        let metadata: Metadata = TokioFs::metadata(source).await?;
+        // Get file size for progress tracking.
+        let metadata = TokioFs::metadata(source).await?;
         let file_size: u64 = metadata.len();
-
-        // Report progress before starting rename
+        // Emit initial progress.
         self.report_progress(
             *current_bytes,
             total_bytes,
@@ -511,24 +452,18 @@ impl FileOperationTask {
             total_files,
         )
         .await?;
-
-        // Check for cancellation before starting
+        // Check cancellation before starting.
         if self.cancel_token.is_cancelled() {
-            let err_kind: ErrorKind = ErrorKind::Interrupted;
-            let err_msg: &'static str = "Operation was cancelled.";
-
-            return Err(Self::error(err_kind, err_msg));
+            return Err(Self::error(
+                ErrorKind::Interrupted,
+                "Operation was cancelled.",
+            ));
         }
-
-        // Perform rename operation
+        // Perform rename.
         TokioFs::rename(source, &new_path).await?;
-
-        // Update progress after successful rename
         *current_bytes += file_size;
-
         *files_completed += 1;
-
-        // Report final progress
+        // Emit final progress.
         self.report_progress(
             *current_bytes,
             total_bytes,
@@ -537,15 +472,13 @@ impl FileOperationTask {
             total_files,
         )
         .await?;
-
         Ok(())
     }
 
+    /// Helper to convert an IO error into [`AppError::Io`].
     #[inline(always)]
     fn error(err_kind: ErrorKind, err_msg: &'static str) -> AppError {
         let err: Error = Error::new(err_kind, err_msg);
-        let app_err: AppError = AppError::Io(err);
-
-        app_err
+        AppError::Io(err)
     }
 }

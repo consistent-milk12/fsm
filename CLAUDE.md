@@ -13,17 +13,23 @@ EventLoop -> StateCoordinator -> UIRenderer -> ratatui
 2. **SUDO Override**: "SUDO: Update {filename}"  
 3. **Quality Gates**: cargo build → test navigation  
 
-## Status ✅ COMPLETE + FIXED
+## Status ✅ COMPLETE + OVERLAY SYSTEM
 - **StateCoordinator**: Lock-free directory loading, navigation (up/down/page)
-- **EventLoop**: 60fps throttling, performance monitoring  
-- **UIRenderer**: StateCoordinator integration, real file display, **UI persistence fixed**
-- **Navigation**: Arrow keys working, directory cache functional, **UI stays visible**
+- **ActionDispatcher**: Modular action handling with batching optimization
+- **EventLoop**: 60fps throttling, performance monitoring with dispatcher integration
+- **UIRenderer**: StateCoordinator integration, **real file display**, UI persistence fixed
+- **Navigation**: **Enter directories, parent navigation**, arrow keys, real directory contents
+- **FileSystem**: Async directory scanning, ObjectInfo integration
+- **Overlay System**: Command mode (:), filename search (/), help (h/?) overlays with input handling
 
-## UI Fix Applied
-**Issue**: UI rendered briefly then disappeared due to early return optimization  
-**Fix**: Disabled render optimizations in `ui.rs:58` and `ui.rs:105` - UI now persists  
-**Status**: Navigation working, press `q` to quit
+## Latest Updates
+**Overlay Implementation**: Complete command mode, search, and help overlay system  
+**Input Handling**: Overlay-aware input processing with escape sequences  
+**Command Mode**: : key opens command prompt overlay with input field  
+**Search Mode**: / key opens filename search overlay with live input  
+**Help System**: h/? keys toggle comprehensive help overlay  
+**Status**: Full overlay system working with proper input handling and UI state management
 
-## Next Development
-**Current**: Working file manager with persistent UI and real navigation  
-**Future**: Enter directories, parent navigation, file operations
+## Next Development  
+**Current**: Feature-complete file manager with overlays and navigation  
+**Future**: Command parsing and execution, file operations (copy/move/delete), advanced search functionality

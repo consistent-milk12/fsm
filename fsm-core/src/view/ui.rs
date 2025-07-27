@@ -1,13 +1,19 @@
-//! ui.rs - High-Performance UI Renderer for Phase 4.0
+//! ui.rs - Updated High-Performance UI Renderer for Phase 4.0
 //!
-//! Optimized for StateCoordinator integration:
-//! - Atomic redraw flag checking for minimal rendering
-//! - Lock-free state access with ArcSwap
-//! - Zero-allocation overlay calculations
-//! - SIMD-optimized layout calculations
-//! - Cache-friendly component ordering
+//! This file contains a rewrite of the original `UIRenderer` to work with the
+//! new `StateCoordinator` API.  The original implementation assumed that
+//! `StateCoordinator` provided helper methods like `current_directory()` and
+//! `get_dir_state()`.  In the rewritten design, all application state is
+//! accessed through a single `StateCoordinator` which internally holds
+//! `AppState`, `UIState` and `FSState` behind locks.  To render the main
+//! file table we now lock the filesystem state, fetch the active pane and
+//! its current working directory, and then either render the directory
+//! contents or a loading widget depending on the pane’s loading flag.  The
+//! rest of the renderer remains largely unchanged, retaining the layout
+//! caching and zero‑allocation overlay logic.
 
 use crate::controller::state_coordinator::StateCoordinator;
+use crate::model::fs_state::PaneState;
 use crate::model::ui_state::{NotificationLevel, RedrawFlag, UIOverlay, UIState};
 use crate::view::components::*;
 
@@ -52,10 +58,11 @@ impl UIRenderer {
         let render_start = Instant::now();
         let ui_state = state_coordinator.ui_state();
 
-        // TEMP: Disable early return completely until redraw flags work properly
-        // if !ui_state.needs_redraw() && self.component_dirty_flags == 0 && self.frame_count > 0 {
-        //     return;
-        // }
+        // Early return optimization - skip rendering if nothing needs redraw
+        if !ui_state.needs_redraw() && self.component_dirty_flags == 0 && self.frame_count > 0 {
+            tracing::debug!("Skipping render - no redraw needed");
+            return;
+        }
 
         self.update_layout_cache(frame.area());
 
@@ -77,9 +84,11 @@ impl UIRenderer {
         }
 
         self.update_performance_metrics(render_start);
-        ui_state.clear_redraw();
         self.component_dirty_flags = 0;
         self.frame_count += 1;
+        
+        // Clear redraw flags AFTER rendering completes
+        ui_state.clear_redraw();
     }
 
     fn render_main_components(
@@ -105,17 +114,27 @@ impl UIRenderer {
 
         if needs_main_redraw {
             tracing::debug!("Rendering main content (file table).");
-            // Get current path from StateCoordinator
-            let current_path: PathBuf = state_coordinator.current_directory();
-            if let Some(dir_state) = state_coordinator.get_dir_state(&current_path) {
-                let file_table = OptimizedFileTable::new();
-                file_table.render_optimized(frame, ui_state, &dir_state, &current_path, layout[0]);
-            } else {
-                // Render a loading state if the directory isn't in the cache yet
-                let loading_block = Block::default()
-                    .title(" Loading Directory... ")
-                    .borders(Borders::ALL);
-                frame.render_widget(loading_block, layout[0]);
+            // Acquire the filesystem state and fetch the active pane and its path.
+            {
+                let fs_state = state_coordinator.fs_state();
+                let pane: &PaneState = fs_state.active_pane();
+                let current_path: PathBuf = pane.cwd.clone();
+                // Determine if the pane is still loading entries.
+                let is_loading = pane.is_loading.load(Ordering::Relaxed);
+                if !is_loading {
+                    let fs_st = fs_state.clone();
+
+                    let file_table = OptimizedFileTable::new();
+                    // Render the file table using the pane state and current path.
+                    file_table.render_optimized(frame, ui_state, pane, &current_path, layout[0]);
+                } else {
+                    // Render a loading state if the directory isn't in the cache yet
+                    let loading_block = Block::default()
+                        .title(" Loading Directory... ")
+                        .borders(Borders::ALL);
+                    frame.render_widget(loading_block, layout[0]);
+                }
+                // fs_state lock is dropped here at the end of the scope
             }
         }
 

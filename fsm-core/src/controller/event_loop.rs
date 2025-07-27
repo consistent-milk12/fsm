@@ -1,41 +1,44 @@
 use crate::controller::actions::Action;
 use crate::controller::state_coordinator::StateCoordinator;
 use crate::model::app_state::AppState;
-use crossterm::event::{Event as TermEvent, EventStream, KeyCode};
-use futures::StreamExt;
 use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Duration;
-use std::time::Instant;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+use tokio::select;
 use tokio::sync::mpsc::UnboundedReceiver;
-use tokio::sync::{Mutex, mpsc};
-use tokio::time::timeout;
-use tracing::{debug, error, info, trace, warn};
+use tokio::time::{sleep, timeout};
+use tracing::{trace, warn};
 
-/// Enhanced task result with performance metrics
+/// Enhanced task result with performance metrics.
+///
+/// In the modern architecture tasks may carry rich metadata about their
+/// execution.  Variants mirror the legacy implementation but can be
+/// extended to include timing and memory usage metrics.  When adding
+/// new variants ensure they implement the helper methods defined
+/// at the end of this file.
 #[derive(Debug, Clone)]
 pub enum TaskResult {
-    /// Legacy task result format
+    /// Legacy task result format.
     Legacy {
         task_id: u64,
-        result: Result<String, String>,
-        progress: Option<f64>,
-        current_item: Option<String>,
+        result: Result<(), crate::error::AppError>,
+        progress: Option<u64>,
+        current_item: Option<PathBuf>,
         completed: Option<u64>,
         total: Option<u64>,
         message: Option<String>,
-        execution_time: Option<std::time::Duration>,
-        memory_usage: Option<u64>,
+        execution_time: Option<Duration>,
+        memory_usage: Option<usize>,
     },
 
-    /// File operation completion
+    /// File operation completion.
     FileOperationComplete {
         operation_id: String,
         result: Result<(), crate::error::AppError>,
     },
 
-    /// Real-time progress reporting for file operations
+    /// Real‑time progress reporting for file operations.
     FileOperationProgress {
         operation_id: String,
         operation_type: String,
@@ -45,268 +48,219 @@ pub enum TaskResult {
         files_completed: u32,
         total_files: u32,
         start_time: Instant,
-        throughput_bps: Option<u64>,
+        throughput_bps: Option<f64>,
     },
 }
 
-/// EventLoop facade - Phase 4.0: StateCoordinator integration
-use crate::controller::handler_registry::HandlerRegistry;
-
-/// EventLoop: façade yielding the next high‑level `Action`.
+/// EventLoop façade yielding high‑level `Action`s.
+///
+/// This event loop bridges asynchronous task results and upstream actions
+/// into a unified stream of `Action`s for the controller.  It can be
+/// integrated with the modern [`StateCoordinator`] to apply task
+/// results via lock‑free mechanisms, while still supporting legacy
+/// updates through the contained [`AppState`].
 pub struct EventLoop {
-    /// Legacy AppState retained for Phase 1 components.
+    /// Legacy application state retained for backwards compatibility.
     app_state: Arc<Mutex<AppState>>,
 
     /// Background task results stream.
     task_rx: UnboundedReceiver<TaskResult>,
 
-    /// High‑level actions stream produced upstream.
+    /// High‑level actions produced upstream (e.g. key mappings).
     action_rx: UnboundedReceiver<Action>,
 
-    /// Phase 4 coordinator (optional during migration).
-    state_coordinator: Option<Arc<StateCoordinator>>,
-
-    /// Central handler registry exposed to the outer loop.
-    pub handler_registry: Arc<Mutex<HandlerRegistry>>,
+    /// Shared state coordinator for Phase 4 integration.
+    state_coordinator: Arc<StateCoordinator>,
 
     /// Small local queue for follow‑up actions computed from tasks.
     pending: VecDeque<Action>,
 }
 
 impl EventLoop {
-    /// Construct a new EventLoop façade.
+    /// Construct a new event loop façade.
     pub fn new(
         app_state: Arc<Mutex<AppState>>,
         task_rx: UnboundedReceiver<TaskResult>,
         action_rx: UnboundedReceiver<Action>,
-        state_coordinator: Option<Arc<StateCoordinator>>,
-        _ekey_processor: Arc<crate::controller::ekey_processor::EKeyProcessor>,
-        handler_registry: Arc<Mutex<HandlerRegistry>>,
+        state_coordinator: Arc<StateCoordinator>,
     ) -> Self {
-        // Create an empty queue for derived actions.
-        let pending = VecDeque::with_capacity(8);
-
-        // Log core wiring for diagnostics.
-        debug!("EventLoop initialized");
-
-        // Return the assembled loop façade.
         Self {
             app_state,
             task_rx,
             action_rx,
             state_coordinator,
-            handler_registry,
-            pending,
+            pending: VecDeque::with_capacity(16),
         }
     }
 
-    /// Await and return the *next* high‑level `Action`.
+    /// Await and return the next high‑level `Action`.
     ///
-    /// Contract
-    /// - Never returns `None`. It suspends until an `Action` can be
-    ///   produced, while eagerly draining `TaskResult`s.
-    /// - The outer loop may call this repeatedly.
+    /// The method never returns `None`.  It suspends until an action can
+    /// be produced.  Task results are drained non‑blocking and any
+    /// generated follow‑up actions are queued locally.  A small timeout
+    /// ensures the caller can maintain a steady UI redraw cadence.
     pub async fn next_action(&mut self) -> Action {
-        // If there are locally pending actions, return one first.
+        // If there are locally queued actions, return one immediately.
         if let Some(a) = self.pending.pop_front() {
-            trace!("yielding pending action: {:?}", a);
+            trace!("Yielding pending action: {:?}", a);
             return a;
         }
 
-        // Main wait loop: react to whichever source fires first.
         loop {
-            // Try a fast, non‑awaiting drain of task results to keep
-            // state hot without blocking the caller unnecessarily.
+            // Drain available task results without awaiting.
             self.drain_tasks_nonblocking().await;
 
-            // If tasks produced follow‑up actions, yield one now.
+            // If draining produced actions, yield the first.
             if let Some(a) = self.pending.pop_front() {
-                trace!("yielding post‑task action: {:?}", a);
+                trace!("Yielding action from tasks: {:?}", a);
                 return a;
             }
 
-            // Otherwise await any of the primary sources.
-            tokio::select! {
-                // Prefer ready actions: upstream mapping already done.
+            // Await whichever source fires first: upstream action or task.
+            select! {
                 biased;
 
-                // High‑level actions ready right now.
                 maybe_act = self.action_rx.recv() => {
                     match maybe_act {
                         Some(a) => {
-                            trace!("received upstream action: {:?}", a);
+                            trace!("Received upstream action: {:?}", a);
                             return a;
-                        }
+                        },
                         None => {
-                            // Upstream closed. If we still have tasks,
-                            // continue serving them; else quit gracefully.
-                            warn!("action_rx closed; falling back to tasks");
-                            // Fallthrough to check tasks again.
-                        }
+                            // action channel closed; continue to serve tasks
+                            warn!("action_rx closed; relying on task results");
+                        },
                     }
-                }
+                },
 
-                // A single task arrived. Process and loop.
                 maybe_task = self.task_rx.recv() => {
                     match maybe_task {
-                        Some(t) => {
-                            self.process_task_result(t).await;
-                            // If it produced actions, yield one now.
+                        Some(task) => {
+                            self.process_task_result(task).await;
                             if let Some(a) = self.pending.pop_front() {
-                                trace!("yielding action from task: {:?}", a);
+                                trace!("Yielding action derived from task: {:?}", a);
                                 return a;
                             }
-                            // Otherwise continue waiting.
-                        }
+                        },
                         None => {
-                            // Tasks channel closed. We can still serve
-                            // any actions coming from action_rx.
-                            warn!("task_rx closed; relying on action_rx only");
-                        }
+                            // task channel closed; fall back to upstream actions
+                            warn!("task_rx closed; no more background tasks");
+                        },
                     }
-                }
+                },
 
-                // Small timeout to prevent starvation and allow the
-                // outer loop to keep a steady redraw cadence.
-                _ = tokio::time::sleep(Duration::from_millis(8)) => {
-                    // No event; loop to retry drains and waits.
-                }
+                // Prevent starvation by sleeping briefly; allows UI to refresh.
+                _ = sleep(Duration::from_millis(8)) => {
+                    // Continue the loop; tasks may arrive shortly.
+                },
             }
         }
     }
 
-    /// Drain all immediately available `TaskResult`s without waiting.
+    /// Drain available `TaskResult`s without blocking.
     async fn drain_tasks_nonblocking(&mut self) {
-        // Attempt to pull several task results quickly.
         for _ in 0..32 {
-            // Use a tiny timeout to avoid blocking the loop.
             match timeout(Duration::from_millis(0), self.task_rx.recv()).await {
                 Ok(Some(task)) => {
                     self.process_task_result(task).await;
-                    continue;
+                    // Continue draining up to 32 tasks
                 }
                 Ok(None) => {
-                    // Channel closed; nothing else to drain.
+                    // Channel closed; stop draining
                     break;
                 }
                 Err(_) => {
-                    // No item ready; stop the draining pass.
+                    // No more tasks ready right now
                     break;
                 }
             }
         }
     }
 
-    /// Process a single `TaskResult` and schedule any follow‑ups.
+    /// Process a single `TaskResult` and enqueue follow‑up actions.
     async fn process_task_result(&mut self, task: TaskResult) {
-        trace!("processing TaskResult: {:?}", task.kind());
+        trace!("Processing TaskResult");
 
-        // Acquire legacy state if needed by the task.
-        // Keep the critical section short to avoid contention.
+        // Acquire legacy AppState.  Try non‑blocking first to reduce contention.
         let mut app_locked = match self.app_state.try_lock() {
             Ok(guard) => guard,
             Err(_) => {
-                // Fallback to awaited lock if contended.
+                // Fallback to awaiting the lock if contended.
                 trace!("app_state contended; awaiting lock");
-                self.app_state.lock().await
+                self.app_state.lock().expect("AppState mutex poisoned")
             }
         };
 
-        // Apply the task into the legacy state.
-        // Each task variant should update the affected fields and,
-        // when necessary, schedule one or more follow‑up actions for
-        // the outer loop.
-        //
-        // Because we do not know all variants here, we use a method
-        // on TaskResult to apply itself, returning any follow‑ups.
-        //
-        // If your concrete `TaskResult` does not expose this API,
-        // replace the match below with your real variants and logic.
-        //
-        // Example shape (pseudo):
-        //   TaskResult::DirScan(update) => { ...; Some(Action::Redraw) }
-        //   TaskResult::SearchDone(r)   => { ...; Some(Action::ShowResults) }
-        //
-        // We guard the coordinator usage behind Option, so builds that
-        // temporarily omit it will still succeed.
-
+        // Apply the task; collect any produced actions.
         let followups: Vec<Action> = match self.apply_task(&mut *app_locked, &task).await {
             Ok(v) => v,
             Err(e) => {
-                error!("task application failed: {e}");
+                warn!("task application failed: {}", e);
                 Vec::new()
             }
         };
 
-        // Enqueue any produced follow‑up actions.
+        // Enqueue follow‑up actions locally.
         for a in followups {
             self.pending.push_back(a);
         }
     }
 
-    /// Apply a `TaskResult` into state and produce follow‑ups.
+    /// Apply a `TaskResult` into state and produce follow‑up actions.
     async fn apply_task(
         &self,
         app: &mut AppState,
         task: &TaskResult,
     ) -> anyhow::Result<Vec<Action>> {
-        // If available, provide coordinator to tasks for fast, lock‑free
-        // updates. Otherwise fallback to legacy `AppState` paths.
-        let coordinator = self.state_coordinator.as_ref().cloned();
+        // Provide coordinator to tasks for fast, lock‑free updates.
+        let coordinator = self.state_coordinator.clone();
 
-        // Delegate to the task object if it supports application.
-        // Replace this with concrete matching if your type differs.
-        if let Some(coord) = coordinator {
-            // Prefer Phase 4 path when coordinator exists.
-            let actions = task.apply_coordinator(app, &coord).await?;
-            return Ok(actions);
-        } else {
-            // Fallback to Phase 1 legacy application.
-            let actions = task.apply_legacy(app).await?;
-            return Ok(actions);
+        // Delegate to the task’s apply method if available.
+        match task {
+            TaskResult::Legacy { .. }
+            | TaskResult::FileOperationComplete { .. }
+            | TaskResult::FileOperationProgress { .. } => {
+                task.apply_coordinator(app, &coordinator).await
+            }
         }
     }
 }
 
-/* =================================================================== */
-/* Trait-like helper methods on TaskResult                              */
-/* =================================================================== */
-
-// The real `TaskResult` in your code likely has concrete variants.
-// To keep this file self‑contained and compile‑safe, provide blanket
-// helper methods here. If your implementation already exposes these,
-// remove these shims and use the real ones.
+/* ===================================================================== */
+/* Helper methods on TaskResult                                          */
+/* ===================================================================== */
 
 impl TaskResult {
-    /// Return a short, log‑friendly discriminator for diagnostics.
+    /// Return a short discriminator for logging purposes.
     pub fn kind(&self) -> &'static str {
-        // If `TaskResult` is an enum, return a &str per variant.
-        // Replace this placeholder as needed.
-        "task"
+        match self {
+            TaskResult::Legacy { .. } => "legacy",
+            TaskResult::FileOperationComplete { .. } => "file_op_complete",
+            TaskResult::FileOperationProgress { .. } => "file_op_progress",
+        }
     }
 
-    /// Apply this task to Phase 4 coordinator + legacy state.
+    /// Apply this task to the modern coordinator and legacy state.
     ///
-    /// Replace the body with real logic matching your variants.
+    /// Replace this placeholder implementation with real logic matching
+    /// your application’s task semantics.  The default implementation
+    /// performs no updates and returns no actions.
     pub async fn apply_coordinator(
         &self,
         _app: &mut AppState,
         _coord: &StateCoordinator,
     ) -> anyhow::Result<Vec<Action>> {
-        // Example:
-        // - Update caches in coordinator
-        // - Mark redraw flags
-        // - Return follow‑up actions
+        // TODO: integrate concrete task updates here
         Ok(Vec::new())
     }
 
-    /// Apply this task to legacy Phase 1 state only.
+    /// Apply this task to the legacy state only.
     ///
-    /// Replace the body with real logic matching your variants.
+    /// Replace this placeholder implementation with real logic matching
+    /// your application’s task semantics.  The default implementation
+    /// performs no updates and returns no actions.
     pub async fn apply_legacy(&self, _app: &mut AppState) -> anyhow::Result<Vec<Action>> {
-        // Example:
-        // - Update legacy AppState structures
-        // - Queue redraw
+        // TODO: implement legacy task handling if coordinator is unavailable
         Ok(Vec::new())
     }
 }

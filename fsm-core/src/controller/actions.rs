@@ -5,6 +5,8 @@
 //! clear interface for the `Controller` to process.
 
 use crate::fs::object_info::ObjectInfo;
+use crate::tasks::filename_search_task::RawFileSearchResult;
+use crate::tasks::search_task::RawSearchResult;
 use crossterm::event::{KeyEvent, MouseEvent};
 use std::path::PathBuf;
 
@@ -95,7 +97,9 @@ pub enum Action {
     ShowRichSearchResults(Vec<String>),
 
     /// Show raw ripgrep search results.
-    ShowRawSearchResults(crate::tasks::search_task::RawSearchResult),
+    ShowRawSearchResults(RawSearchResult),
+
+    ShowRawFileSearchResults(RawFileSearchResult),
 
     /// Simulate a loading state (for demo/testing).
     SimulateLoading,
@@ -123,6 +127,9 @@ pub enum Action {
 
     /// Jump to last entry.
     SelectLast,
+
+    /// Select entry by index (0-based)
+    SelectIndex(usize),
 
     /// Enter selected directory or open file.
     EnterSelected,
@@ -181,6 +188,9 @@ pub enum Action {
     /// Submit input from a prompt
     SubmitInputPrompt(String),
 
+    /// Update input field text
+    UpdateInput(String),
+
     /// Rename selected entry
     RenameEntry(String),
 
@@ -189,10 +199,14 @@ pub enum Action {
 
     // ===== Enhanced File Operations =====
     /// Start file copy operation (shows destination prompt)
-    StartCopy { source: PathBuf },
+    StartCopy {
+        source: PathBuf,
+    },
 
     /// Start file move operation (shows destination prompt)
-    StartMove { source: PathBuf },
+    StartMove {
+        source: PathBuf,
+    },
 
     /// Execute copy operation
     ExecuteCopy {
@@ -223,7 +237,9 @@ pub enum Action {
     },
 
     /// File operation completed
-    FileOperationComplete { operation_id: OperationId },
+    FileOperationComplete {
+        operation_id: OperationId,
+    },
 
     /// File operation failed
     FileOperationError {
@@ -232,5 +248,7 @@ pub enum Action {
     },
 
     /// Cancel ongoing file operation
-    CancelFileOperation { operation_id: OperationId },
+    CancelFileOperation {
+        operation_id: OperationId,
+    },
 }

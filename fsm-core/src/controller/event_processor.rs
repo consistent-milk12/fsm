@@ -69,7 +69,10 @@ pub enum Event {
     Action { action: Action, priority: Priority },
 
     /// Zero-allocation action injection.
-    EAction { eaction: EAction, priority: Priority },
+    EAction {
+        eaction: EAction,
+        priority: Priority,
+    },
 
     /// Periodic tick for UI updates.
     Tick,

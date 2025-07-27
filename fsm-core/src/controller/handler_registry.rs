@@ -1,13 +1,18 @@
-//! HandlerRegistry: Centralized handler management for Phase 4.0
+//! HandlerRegistry: Simplified handler management without circular dependencies
 //!
 //! Manages specialized event handlers with priority-based routing:
-//! - Lock-free handler registration and lookup
+//! - Simple handler registration and lookup
 //! - Priority-based event dispatching
-//! - Conflict-free handler coordination
 //! - Performance monitoring per handler type
+//! - No circular dependencies with StateCoordinator
+
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
+use std::time::Instant;
+
+use tracing::{debug, info, warn};
 
 use super::{
-    Action,
     ekey_processor::EKeyProcessor,
     event_processor::{Event, EventHandler},
     handlers::{
@@ -15,14 +20,9 @@ use super::{
         keyboard_handler::KeyboardHandler, navigation_handler::NavigationHandler,
         search_handler::SearchHandler,
     },
-    state_coordinator::StateCoordinator,
 };
 
-use std::collections::BTreeMap;
-use std::sync::Arc;
-use std::sync::atomic::Ordering;
-use std::time::Instant;
-use tracing::{debug, info, warn};
+use crate::controller::actions::Action;
 
 /// Handler types with unique identifiers for performance tracking
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -44,16 +44,22 @@ pub struct HandlerRegistration {
     pub total_processing_time: std::sync::atomic::AtomicU64, // nanoseconds
 }
 
-/// Centralized handler registry with priority management
+/// Handler performance statistics
+#[derive(Debug, Clone)]
+pub struct HandlerStats {
+    pub handler_type: HandlerType,
+    pub is_enabled: bool,
+    pub event_count: u64,
+    pub average_processing_time_ns: u64,
+}
+
+/// Simplified handler registry without circular dependencies
 pub struct HandlerRegistry {
     // Handlers with their registration metadata
     handlers: Vec<HandlerEntry>,
 
-    // Shared state coordinator
-    state_coordinator: Arc<StateCoordinator>,
-
     // EKey processor for legacy compatibility
-    ekey_processor: Arc<EKeyProcessor>,
+    ekey_processor: Option<Arc<EKeyProcessor>>,
 }
 
 /// Entry for each registered handler
@@ -63,19 +69,23 @@ struct HandlerEntry {
 }
 
 impl HandlerRegistry {
-    /// Create new handler registry with all specialized handlers
-    pub fn new(
-        state_coordinator: Arc<StateCoordinator>,
-        ekey_processor: Arc<EKeyProcessor>,
-    ) -> Self {
+    /// Create new empty handler registry
+    pub fn new() -> Self {
+        Self {
+            handlers: Vec::new(),
+            ekey_processor: None,
+        }
+    }
+
+    /// Create handler registry with EKey processor
+    pub fn with_ekey_processor(ekey_processor: Arc<EKeyProcessor>) -> Self {
         let mut registry = Self {
             handlers: Vec::new(),
-            state_coordinator: state_coordinator.clone(),
-            ekey_processor: ekey_processor.clone(),
+            ekey_processor: Some(ekey_processor),
         };
 
-        // Register all handlers with their priorities
-        registry.register_all_handlers();
+        // Register basic handlers that don't need StateCoordinator
+        registry.register_basic_handlers();
 
         info!(
             "HandlerRegistry initialized with {} handlers",
@@ -84,15 +94,19 @@ impl HandlerRegistry {
         registry
     }
 
-    /// Register all specialized handlers
-    fn register_all_handlers(&mut self) {
+    /// Create completely empty registry for breaking circular dependencies
+    pub fn empty() -> Self {
+        Self {
+            handlers: Vec::new(),
+            ekey_processor: None,
+        }
+    }
+
+    /// Register basic handlers that don't require StateCoordinator
+    fn register_basic_handlers(&mut self) {
         // Register NavigationHandler
         let nav_handler = Box::new(NavigationHandler::new());
         self.register_handler(nav_handler, HandlerType::Navigation);
-
-        // Register ClipboardHandler
-        let clipboard_handler = Box::new(ClipboardHandler::new());
-        self.register_handler(clipboard_handler, HandlerType::Clipboard);
 
         // Register SearchHandler
         let search_handler = Box::new(SearchHandler::new());
@@ -102,14 +116,15 @@ impl HandlerRegistry {
         let file_ops_handler = Box::new(FileOpsHandler::new());
         self.register_handler(file_ops_handler, HandlerType::FileOps);
 
-        // Register KeyboardHandler as fallback
-        let keyboard_handler = Box::new(KeyboardHandlerWrapper::new(
-            self.ekey_processor.clone(),
-            self.state_coordinator.clone(),
-        ));
+        // Register ClipboardHandler
+        let clipboard_handler = Box::new(ClipboardHandler::new());
+        self.register_handler(clipboard_handler, HandlerType::Clipboard);
+
+        // Register KeyboardHandler as fallback (simplified without EKey processor)
+        let keyboard_handler = Box::new(KeyboardHandler::new());
         self.register_handler(keyboard_handler, HandlerType::Keyboard);
 
-        debug!("All handlers registered");
+        debug!("Basic handlers registered");
     }
 
     /// Register a single handler
@@ -198,152 +213,52 @@ impl HandlerRegistry {
         }
     }
 
-    /// Get handler performance statistics
-    pub fn get_handler_stats(&self, handler_type: HandlerType) -> Option<HandlerStats> {
-        self.handlers
-            .iter()
-            .find(|entry| entry.metadata.handler_type == handler_type)
-            .map(|entry| {
-                let metadata = &entry.metadata;
-                let event_count = metadata.event_count.load(Ordering::Relaxed);
-                let total_time_ns = metadata.total_processing_time.load(Ordering::Relaxed);
-
-                HandlerStats {
-                    handler_type,
-                    is_enabled: metadata.is_enabled,
-                    event_count,
-                    total_processing_time_us: total_time_ns as f64 / 1000.0,
-                    avg_processing_time_us: if event_count > 0 {
-                        (total_time_ns as f64 / 1000.0) / event_count as f64
-                    } else {
-                        0.0
-                    },
-                }
-            })
-    }
-
     /// Get performance report for all handlers
     pub fn get_performance_report(&self) -> Vec<HandlerStats> {
         self.handlers
             .iter()
             .map(|entry| {
-                let metadata = &entry.metadata;
-                let event_count = metadata.event_count.load(Ordering::Relaxed);
-                let total_time_ns = metadata.total_processing_time.load(Ordering::Relaxed);
+                let event_count = entry.metadata.event_count.load(Ordering::Relaxed);
+                let total_time = entry.metadata.total_processing_time.load(Ordering::Relaxed);
+                let avg_time = if event_count > 0 {
+                    total_time / event_count
+                } else {
+                    0
+                };
 
                 HandlerStats {
-                    handler_type: metadata.handler_type,
-                    is_enabled: metadata.is_enabled,
+                    handler_type: entry.metadata.handler_type,
+                    is_enabled: entry.metadata.is_enabled,
                     event_count,
-                    total_processing_time_us: total_time_ns as f64 / 1000.0,
-                    avg_processing_time_us: if event_count > 0 {
-                        (total_time_ns as f64 / 1000.0) / event_count as f64
-                    } else {
-                        0.0
-                    },
+                    average_processing_time_ns: avg_time,
                 }
             })
             .collect()
     }
 
-    /// Check if any handler can process the given event
-    pub fn can_handle_event(&self, event: &Event) -> bool {
-        self.handlers
-            .iter()
-            .any(|entry| entry.metadata.is_enabled && entry.handler.can_handle(event))
+    /// Get handler count
+    pub fn handler_count(&self) -> usize {
+        self.handlers.len()
     }
 
-    /// Get list of registered handler types
-    pub fn get_registered_handlers(&self) -> Vec<HandlerType> {
-        self.handlers
-            .iter()
-            .map(|entry| entry.metadata.handler_type)
-            .collect()
-    }
-
-    /// Reset handler statistics
-    pub fn reset_stats(&mut self) {
-        for entry in &mut self.handlers {
-            entry.metadata.event_count.store(0, Ordering::Relaxed);
-            entry
-                .metadata
-                .total_processing_time
-                .store(0, Ordering::Relaxed);
-        }
-        info!("Handler statistics reset");
+    /// Check if handlers are registered
+    pub fn has_handlers(&self) -> bool {
+        !self.handlers.is_empty()
     }
 }
 
-/// Handler performance statistics
-#[derive(Debug, Clone)]
-pub struct HandlerStats {
-    pub handler_type: HandlerType,
-    pub is_enabled: bool,
-    pub event_count: u64,
-    pub total_processing_time_us: f64,
-    pub avg_processing_time_us: f64,
-}
-
-impl HandlerStats {
-    /// Check if handler performance is healthy
-    pub fn is_healthy(&self) -> bool {
-        // Handler should respond in under 100μs on average for good UX
-        self.avg_processing_time_us < 100.0
-    }
-
-    /// Generate performance report string
-    pub fn report(&self) -> String {
-        format!(
-            "{:?}: {} events, {:.1}μs avg ({:.1}μs total) [{}]",
-            self.handler_type,
-            self.event_count,
-            self.avg_processing_time_us,
-            self.total_processing_time_us,
-            if self.is_enabled {
-                "enabled"
-            } else {
-                "disabled"
-            }
-        )
+impl Default for HandlerRegistry {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
-/// Wrapper to make KeyboardHandler compatible with EventHandler trait
-pub struct KeyboardHandlerWrapper {
-    keyboard_handler: KeyboardHandler,
-    ekey_processor: Arc<EKeyProcessor>,
-    state_coordinator: Arc<StateCoordinator>,
-}
-
-impl KeyboardHandlerWrapper {
-    pub fn new(
-        ekey_processor: Arc<EKeyProcessor>,
-        state_coordinator: Arc<StateCoordinator>,
-    ) -> Self {
-        Self {
-            keyboard_handler: KeyboardHandler::new(),
-            ekey_processor,
-            state_coordinator,
-        }
-    }
-}
-
-impl EventHandler for KeyboardHandlerWrapper {
-    fn can_handle(&self, event: &Event) -> bool {
-        // Keyboard handler is the fallback - it can handle any key event
-        matches!(event, Event::Key { .. })
-    }
-
-    fn handle(&mut self, event: Event) -> Result<Vec<Action>, crate::error::AppError> {
-        // Delegate to the actual keyboard handler
-        self.keyboard_handler.handle(event)
-    }
-
-    fn priority(&self) -> u8 {
-        self.keyboard_handler.priority()
-    }
-
-    fn name(&self) -> &'static str {
-        "KeyboardHandlerWrapper"
+// Remove the KeyboardHandlerWrapper since we're simplifying
+impl std::fmt::Debug for HandlerRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HandlerRegistry")
+            .field("handler_count", &self.handlers.len())
+            .field("has_ekey_processor", &self.ekey_processor.is_some())
+            .finish()
     }
 }

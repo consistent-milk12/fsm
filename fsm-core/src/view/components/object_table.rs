@@ -1,7 +1,15 @@
-//! src/view/components/object_table.rs
+//! src/view/components/object_table.rs - Updated for unified StateCoordinator
+//!
+//! This component renders the file table within the main pane.  The original
+//! implementation depended on a `DirState` type returned from the legacy
+//! `StateCoordinator`.  With the updated architecture the file table should
+//! operate directly on a [`PaneState`], which contains all necessary
+//! directory metadata (entries, selected index, etc.).  This rewrite
+//! replaces the `DirState` parameter with `PaneState` and uses the
+//! pane’s atomic `selected` field to set the table’s selected row.
 
 use crate::{
-    controller::state_coordinator::DirState,
+    model::fs_state::PaneState,
     model::ui_state::UIState,
     view::{icons, theme},
 };
@@ -10,6 +18,7 @@ use ratatui::{
     widgets::{Block, Borders, Cell, HighlightSpacing, Row, Table, TableState},
 };
 use std::path::Path;
+use std::sync::atomic::Ordering;
 
 pub struct OptimizedFileTable;
 
@@ -18,20 +27,26 @@ impl OptimizedFileTable {
         Self
     }
 
+    /// Render the file table using a [`PaneState`].  The `PaneState` holds
+    /// directory entries, sorting and selection state.  The selected index
+    /// is loaded atomically to configure the table’s highlight row.  The
+    /// provided `path` is used for the table title.
     pub fn render_optimized(
         &self,
         frame: &mut Frame<'_>,
         ui_state: &UIState,
-        dir_state: &DirState,
+        pane_state: &PaneState,
         path: &Path,
         area: Rect,
     ) {
-        let entries = &dir_state.entries;
+        let entries = &pane_state.entries;
 
+        // Header row with column names
         let header = Row::new(vec!["Name", "Size", "Modified"])
             .style(Style::default().fg(theme::YELLOW).bold())
             .bottom_margin(1);
 
+        // Build rows for each entry with appropriate icons and styles
         let rows: Vec<Row> = entries
             .iter()
             .map(|obj| {
@@ -58,14 +73,18 @@ impl OptimizedFileTable {
             })
             .collect();
 
+        // Column widths
         let widths = [
             Constraint::Fill(1),
             Constraint::Length(12),
             Constraint::Length(22),
         ];
 
-        let mut table_state = TableState::default().with_selected(ui_state.selected);
+        // Table selection state based on pane’s selected index
+        let selected_index = pane_state.selected.load(Ordering::Relaxed);
+        let mut table_state = TableState::default().with_selected(Some(selected_index));
 
+        // Table title shows the current path
         let title = format!(" {} ", path.display());
 
         let table = Table::new(rows, widths)
