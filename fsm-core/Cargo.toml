@@ -89,7 +89,7 @@ heapless = "0.8.0"
 arc-swap = "1.7.1"
 
 # Faster Mutex
-parking_lot = "0.12.4"
+parking_lot = { version = "0.12.4", features = ["arc_lock", "nightly", "serde"] }
 
 # Concurrent HashMap
 dashmap = "6.1.0"
@@ -109,6 +109,7 @@ crossfire = "2.0.13"
 enum-map = "2.7.3"
 kanal = "0.1.1"
 nanoid = "0.4.0"
+async-trait = "0.1.88"
 
 [[bin]]
 name = "fs"

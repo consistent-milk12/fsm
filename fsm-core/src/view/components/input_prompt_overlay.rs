@@ -1,29 +1,37 @@
 //! src/view/components/input_prompt_overlay.rs
-//! ============================================================================
-//! # InputPromptOverlay: Stylized Input Prompt for File/Folder Creation
-
-use crate::model::app_state::AppState;
+use crate::controller::actions::InputPromptType;
+use crate::model::ui_state::UIState;
 use crate::view::theme;
 use ratatui::{
     Frame,
-    layout::{Alignment, Constraint, Direction, Layout, Rect},
+    layout::{Alignment, Rect},
     style::Style,
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
 
-pub struct InputPromptOverlay;
+pub struct OptimizedPromptOverlay;
 
-impl InputPromptOverlay {
-    pub fn render(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
-        let overlay_area = Self::centered_rect(50, 10, area);
-        frame.render_widget(Clear, overlay_area);
+impl OptimizedPromptOverlay {
+    pub fn new() -> Self {
+        Self
+    }
 
-        let title = match app.ui.input_prompt_type {
-            Some(crate::controller::actions::InputPromptType::CreateFile) => " Create New File ",
-            Some(crate::controller::actions::InputPromptType::CreateDirectory) => {
-                " Create New Directory "
-            }
-            _ => " Input ",
+    pub fn render_input(
+        &self,
+        frame: &mut Frame<'_>,
+        ui_state: &UIState,
+        prompt_type: &InputPromptType,
+        area: Rect,
+    ) {
+        frame.render_widget(Clear, area);
+
+        let title = match prompt_type {
+            InputPromptType::CreateFile => " Create New File ",
+            InputPromptType::CreateDirectory => " Create New Directory ",
+            InputPromptType::Rename => " Rename ",
+            InputPromptType::Search => " Search ",
+            // InputPromptType::ContentSearch => " Content Search ",
+            _ => " Content Search ",
         };
 
         let input_block = Block::default()
@@ -33,54 +41,35 @@ impl InputPromptOverlay {
             .border_style(Style::default().fg(theme::PURPLE))
             .style(Style::default().bg(theme::BACKGROUND));
 
-        let input_paragraph = Paragraph::new(app.ui.input.as_str())
+        let input_paragraph = Paragraph::new(ui_state.input.as_str())
             .block(input_block)
             .style(Style::default().fg(theme::FOREGROUND))
             .wrap(Wrap { trim: false });
 
-        frame.render_widget(input_paragraph, overlay_area);
+        frame.render_widget(input_paragraph, area);
 
-        // Show cursor
-        frame.set_cursor_position((
-            overlay_area.x + app.ui.input.len() as u16 + 1,
-            overlay_area.y + 1,
-        ));
+        frame.set_cursor(area.x + ui_state.input.len() as u16 + 1, area.y + 1);
 
-        // Render help text at bottom
         let help_text = "Type name • Enter to confirm • Esc to cancel";
         let help_paragraph = Paragraph::new(help_text)
             .style(Style::default().fg(theme::COMMENT))
             .alignment(Alignment::Center);
 
         let help_area = Rect {
-            x: overlay_area.x,
-            y: overlay_area.y + overlay_area.height,
-            width: overlay_area.width,
+            x: area.x,
+            y: area.y + area.height,
+            width: area.width,
             height: 1,
         };
 
-        if help_area.y < area.height {
+        if help_area.y < frame.size().height {
             frame.render_widget(help_paragraph, help_area);
         }
     }
+}
 
-    fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
-        let popup_layout = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Percentage((100 - percent_y) / 2),
-                Constraint::Percentage(percent_y),
-                Constraint::Percentage((100 - percent_y) / 2),
-            ])
-            .split(area);
-
-        Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Percentage((100 - percent_x) / 2),
-                Constraint::Percentage(percent_x),
-                Constraint::Percentage((100 - percent_x) / 2),
-            ])
-            .split(popup_layout[1])[1]
+impl Default for OptimizedPromptOverlay {
+    fn default() -> Self {
+        Self::new()
     }
 }

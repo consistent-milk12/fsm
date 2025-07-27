@@ -1,4 +1,4 @@
-use crate::AppState;
+//! src/view/components/help_overlay.rs
 use crate::view::theme;
 use ratatui::{
     Frame,
@@ -8,10 +8,14 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Paragraph},
 };
 
-pub struct HelpOverlay;
+pub struct OptimizedHelpOverlay;
 
-impl HelpOverlay {
-    pub fn render(frame: &mut Frame<'_>, _app: &AppState, area: Rect) {
+impl OptimizedHelpOverlay {
+    pub fn new() -> Self {
+        Self
+    }
+
+    pub fn render_fast(&self, frame: &mut Frame<'_>, area: Rect) {
         let help_text = vec![
             Line::from(Span::styled(
                 "File Manager — Help",
@@ -80,7 +84,7 @@ impl HelpOverlay {
             )),
         ];
 
-        let overlay_area = Self::centered_rect(70, 80, area);
+        let overlay_area = self.centered_rect(70, 80, area);
         frame.render_widget(Clear, overlay_area);
 
         let help_paragraph = Paragraph::new(Text::from(help_text))
@@ -98,7 +102,7 @@ impl HelpOverlay {
         frame.render_widget(help_paragraph, overlay_area);
     }
 
-    fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
+    fn centered_rect(&self, percent_x: u16, percent_y: u16, area: Rect) -> Rect {
         let vertical = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -118,5 +122,11 @@ impl HelpOverlay {
             .split(vertical[1]);
 
         horizontal[1]
+    }
+}
+
+impl Default for OptimizedHelpOverlay {
+    fn default() -> Self {
+        Self::new()
     }
 }

@@ -5,8 +5,9 @@
 //! Handles copy, move, and rename operations asynchronously to prevent UI
 //! blocking during large file operations.
 
+use crate::controller::event_loop::TaskResult;
 use crate::error::AppError;
-use crate::{AppState, controller::event_loop::TaskResult};
+use crate::model::app_state::AppState;
 use std::sync::Arc;
 use std::{
     fs::Metadata,
@@ -14,7 +15,6 @@ use std::{
     path::{Path, PathBuf},
     time::Instant,
 };
-use tokio::sync::MutexGuard;
 use tokio::{
     fs::{File, ReadDir},
     sync::{
@@ -53,20 +53,13 @@ pub enum FileOperation {
 
 impl std::fmt::Display for FileOperation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        use super::file_ops_task::FileOperation::*;
-
-        let ret_str: &'static str = match *self {
-            Copy { source: _, dest: _ } => "Copy",
-
-            Move { source: _, dest: _ } => "Move",
-
-            Rename {
-                source: _,
-                new_name: _,
-            } => "Rename",
+        let ret_str = match self {
+            FileOperation::Copy { .. } => "Copy",
+            FileOperation::Move { .. } => "Move",
+            FileOperation::Rename { .. } => "Rename",
         };
 
-        write!(f, "{ret_str}")
+        write!(f, "{}", ret_str)
     }
 }
 
@@ -170,11 +163,7 @@ impl FileOperationTask {
 
         let _send_result: Result<(), SendError<TaskResult>> = self.task_tx.send(completion_result);
 
-        // Cleanup operation from UI state
-        {
-            let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-            app.ui.remove_operation(&self.operation_id);
-        }
+        // Operation cleanup is handled by the UI layer via the completion result
 
         result
     }
@@ -346,7 +335,7 @@ impl FileOperationTask {
             *current_bytes += bytes_read as u64;
 
             // Report progress every 1MB or 10% of file
-            if copied.is_multiple_of(optimal_interval) {
+            if copied % optimal_interval == 0 {
                 self.report_progress(
                     *current_bytes,
                     total_bytes,
@@ -413,8 +402,6 @@ impl FileOperationTask {
         // Get file size for progress tracking
         let metadata: Metadata = TokioFs::metadata(source).await?;
         let file_size: u64 = metadata.len();
-
-        *files_completed += 1;
 
         // Report progress before starting move operation
         self.report_progress(

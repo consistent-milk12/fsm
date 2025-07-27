@@ -1,43 +1,42 @@
-use crate::AppState;
+//! src/view/components/loading_overlay.rs
+use crate::model::ui_state::LoadingState;
 use crate::view::theme;
 use ratatui::{
     Frame,
-    layout::{Alignment, Constraint, Direction, Layout, Rect},
+    layout::{Alignment, Margin, Rect},
     style::{Modifier, Style},
     text::{Line, Span, Text},
     widgets::{Block, Borders, Clear, Gauge, Paragraph},
 };
 
-pub struct LoadingOverlay;
+pub struct OptimizedLoadingOverlay;
 
-impl LoadingOverlay {
-    pub fn render(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
-        let Some(loading) = &app.ui.loading else {
-            return;
-        };
+impl OptimizedLoadingOverlay {
+    pub fn new() -> Self {
+        Self
+    }
 
-        let spinner_frames = ["⠁", "⠃", "⠇", "⠧", "⠷", "⠿", "⠻", "⠹", "⠸"];
-        let spinner = spinner_frames[loading.spinner_frame % spinner_frames.len()];
+    pub fn render_progress(&self, frame: &mut Frame<'_>, loading_state: &LoadingState, area: Rect) {
+        let summary = loading_state.get_summary();
 
         let mut lines = vec![Line::from(Span::styled(
-            format!("{} {}", spinner, loading.message),
+            summary.format_progress(),
             Style::default()
                 .fg(theme::YELLOW)
                 .add_modifier(Modifier::BOLD),
         ))];
 
-        if let Some(ref item) = loading.current_item {
+        if let Some(item) = &summary.current_item {
             lines.push(Line::from(format!("Current: {item}")));
         }
 
-        if let (Some(done), Some(total)) = (loading.completed, loading.total) {
-            lines.push(Line::from(format!("Completed: {done}/{total}")));
+        if let Some(eta) = summary.estimated_remaining {
+            lines.push(Line::from(format!("ETA: {:.0?}", eta)));
         }
 
         lines.push(Line::from(""));
 
-        let overlay_area = Self::centered_rect(50, 20, area);
-        frame.render_widget(Clear, overlay_area);
+        frame.render_widget(Clear, area);
 
         let block = Block::default()
             .title("Loading")
@@ -46,53 +45,31 @@ impl LoadingOverlay {
             .border_style(Style::default().fg(theme::PURPLE))
             .style(Style::default().bg(theme::BACKGROUND).fg(theme::FOREGROUND));
 
-        if let Some(progress) = loading.progress {
+        if !summary.is_indeterminate {
             let gauge = Gauge::default()
                 .block(block)
                 .gauge_style(Style::default().fg(theme::PINK).bg(theme::CURRENT_LINE))
-                .percent((progress * 100.0) as u16)
-                .label(format!("{:.0}%", progress * 100.0));
-            frame.render_widget(gauge, overlay_area);
+                .percent(summary.progress as u16)
+                .label(format!("{:.1}%", summary.progress));
+            frame.render_widget(gauge, area);
 
-            let text_area = Self::inset_rect(overlay_area, 2, 2);
+            let text_area = area.inner(Margin {
+                vertical: 2,
+                horizontal: 2,
+            });
             let para = Paragraph::new(Text::from(lines)).alignment(Alignment::Center);
             frame.render_widget(para, text_area);
         } else {
             let para = Paragraph::new(Text::from(lines))
                 .block(block)
                 .alignment(Alignment::Center);
-            frame.render_widget(para, overlay_area);
+            frame.render_widget(para, area);
         }
     }
+}
 
-    fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
-        let vertical = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Percentage((100 - percent_y) / 2),
-                Constraint::Percentage(percent_y),
-                Constraint::Percentage((100 - percent_y) / 2),
-            ])
-            .split(area);
-
-        let horizontal = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Percentage((100 - percent_x) / 2),
-                Constraint::Percentage(percent_x),
-                Constraint::Percentage((100 - percent_x) / 2),
-            ])
-            .split(vertical[1]);
-
-        horizontal[1]
-    }
-
-    fn inset_rect(area: Rect, margin_x: u16, margin_y: u16) -> Rect {
-        Rect {
-            x: area.x + margin_x,
-            y: area.y + margin_y,
-            width: area.width.saturating_sub(margin_x * 2),
-            height: area.height.saturating_sub(margin_y * 2),
-        }
+impl Default for OptimizedLoadingOverlay {
+    fn default() -> Self {
+        Self::new()
     }
 }
