@@ -5,10 +5,10 @@
 //! clear interface for the `Controller` to process.
 
 use crate::fs::object_info::ObjectInfo;
-use crate::tasks::filename_search_task::RawFileSearchResult;
-use crate::tasks::search_task::RawSearchResult;
 use crossterm::event::{KeyEvent, MouseEvent};
 use std::path::PathBuf;
+
+use super::TaskResult;
 
 /// Type of input prompt to show
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -102,11 +102,6 @@ pub enum Action {
     /// Show rich content search results with line numbers and context.
     ShowRichSearchResults(Vec<String>),
 
-    /// Show raw ripgrep search results.
-    ShowRawSearchResults(RawSearchResult),
-
-    ShowRawFileSearchResults(RawFileSearchResult),
-
     /// Simulate a loading state (for demo/testing).
     SimulateLoading,
 
@@ -114,7 +109,7 @@ pub enum Action {
     Tick,
 
     /// A result from a background task.
-    TaskResult(crate::controller::event_loop::TaskResult),
+    TaskResult(TaskResult),
 
     /// Move selection up.
     MoveSelectionUp,

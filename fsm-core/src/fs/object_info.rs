@@ -1,25 +1,19 @@
-//! src/fs/object_info.rs
-//! ============================================================================
-//! # ObjectInfo: Rich Filesystem Entry Metadata
-//!
-//! Cross-platform, async-friendly abstraction for a file or directory entry.
-//! Integrates with ObjectTable (for TUI), moka cache, and async tasks.
+//! High-performance filesystem entry metadata with optimized memory layout
 
-use chrono::{DateTime, Local, TimeZone, Utc};
+use chrono::{DateTime, Local, TimeZone};
+use compact_str::CompactString;
 use serde::{Deserialize, Serialize};
-use std::ffi::OsStr;
-use std::fs::{FileType, Metadata};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tracing::{debug, info};
+use std::time::{Duration, UNIX_EPOCH};
 
-/// Enum for object type, matching the table logic.
+/// Object type optimized for pattern matching and memory layout
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[repr(u8)]
 pub enum ObjectType {
-    Dir,
-    File,
-    Symlink,
-    Other(String), // File extension or special case
+    Dir = 0,
+    File = 1,
+    Symlink = 2,
+    Other(CompactString), // File extension or special type
 }
 
 impl std::fmt::Display for ObjectType {
@@ -28,67 +22,78 @@ impl std::fmt::Display for ObjectType {
             ObjectType::Dir => write!(f, "Dir"),
             ObjectType::File => write!(f, "File"),
             ObjectType::Symlink => write!(f, "Symlink"),
-            ObjectType::Other(ext) => write!(f, "{ext}"),
+            ObjectType::Other(ext) => write!(f, "{}", ext),
         }
     }
 }
 
-/// Core metadata struct for file or directory.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ObjectInfo {
-    pub path: PathBuf,
-    pub name: String,
-    pub extension: Option<String>,
-    pub object_type: ObjectType,
-    pub is_dir: bool,
-    pub is_symlink: bool,
-    pub size: u64,
-    pub items_count: usize,        // Number of items in dir, 0 for files
-    pub modified: DateTime<Local>, // For display/sorting
-    /// Whether full metadata has been loaded
-    pub metadata_loaded: bool,
-}
-
-/// Lightweight version with just basic info for immediate display
+/// Lightweight object info for immediate display (minimal metadata)
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LightObjectInfo {
     pub path: PathBuf,
-    pub name: String,
-    pub extension: Option<String>,
+    pub name: CompactString,
+    pub extension: Option<CompactString>,
     pub object_type: ObjectType,
     pub is_dir: bool,
     pub is_symlink: bool,
 }
 
+/// Full object info with complete metadata
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ObjectInfo {
+    // Core identification (hot path data)
+    pub path: PathBuf,
+    pub name: CompactString,
+    pub extension: Option<CompactString>,
+    pub object_type: ObjectType,
+
+    // Type flags (packed for cache efficiency)
+    pub is_dir: bool,
+    pub is_symlink: bool,
+    pub metadata_loaded: bool,
+
+    // Size information
+    pub size: u64,
+    pub items_count: usize, // For directories
+
+    // Temporal data
+    pub modified: DateTime<Local>,
+
+    // Optional extended metadata (for future use)
+    pub permissions: Option<u32>,
+    pub owner: Option<CompactString>,
+    pub group: Option<CompactString>,
+}
+
 impl ObjectInfo {
-    /// Create a lightweight object with just basic info (fast)
+    /// Create lightweight object info (fast path for directory scanning)
     pub async fn from_path_light(path: &Path) -> std::io::Result<LightObjectInfo> {
-        let metadata: Metadata = tokio::fs::metadata(path).await?;
-        let file_type: FileType = metadata.file_type();
+        let metadata = tokio::fs::symlink_metadata(path).await?;
+        let file_type = metadata.file_type();
 
-        let name: String = path
+        let name = path
             .file_name()
-            .and_then(OsStr::to_str)
+            .and_then(|n| n.to_str())
             .unwrap_or("Unknown")
-            .to_string();
+            .into();
 
-        let extension = if file_type.is_file() {
+        let extension: Option<CompactString> = if file_type.is_file() {
             path.extension()
-                .and_then(OsStr::to_str)
-                .map(|ext| ext.to_lowercase())
+                .and_then(|ext| ext.to_str())
+                .map(|ext| ext.to_lowercase().into())
         } else {
             None
         };
 
-        let is_dir: bool = file_type.is_dir();
-        let is_symlink: bool = file_type.is_symlink();
+        let is_dir = file_type.is_dir();
+        let is_symlink = file_type.is_symlink();
 
-        let object_type: ObjectType = if is_dir {
+        let object_type = if is_dir {
             ObjectType::Dir
         } else if is_symlink {
             ObjectType::Symlink
-        } else if let Some(ext) = &extension {
-            ObjectType::Other(ext.to_uppercase())
+        } else if let Some(ref ext) = extension {
+            ObjectType::Other(ext.to_uppercase().into())
         } else {
             ObjectType::File
         };
@@ -103,13 +108,14 @@ impl ObjectInfo {
         })
     }
 
-    /// Upgrade a lightweight object to full ObjectInfo with metadata (slow)
+    /// Upgrade lightweight info to full metadata (background task)
     pub async fn from_light_info(light: LightObjectInfo) -> std::io::Result<Self> {
-        let metadata: Metadata = tokio::fs::symlink_metadata(&light.path).await?;
+        let metadata = tokio::fs::symlink_metadata(&light.path).await?;
 
-        let size: u64 = if light.is_dir { 0 } else { metadata.len() };
+        let size = if light.is_dir { 0 } else { metadata.len() };
 
-        let items_count: usize = if light.is_dir {
+        // Get directory item count (expensive operation)
+        let items_count = if light.is_dir {
             match tokio::fs::read_dir(&light.path).await {
                 Ok(mut entries) => {
                     let mut count = 0;
@@ -124,25 +130,16 @@ impl ObjectInfo {
             0
         };
 
-        let modified: SystemTime = metadata.modified().unwrap_or_else(|e| {
-            info!("Failed to get modified time for {:?}: {}", light.path, e);
-            UNIX_EPOCH
-        });
+        let modified = metadata.modified().unwrap_or(UNIX_EPOCH);
 
-        let modified_dt: Duration = modified
+        let modified_dt = modified
             .duration_since(UNIX_EPOCH)
-            .unwrap_or(Duration::from_secs(0));
+            .unwrap_or(Duration::ZERO);
 
-        let modified_dt: DateTime<Local> = Local
+        let modified_local = Local
             .timestamp_opt(modified_dt.as_secs() as i64, modified_dt.subsec_nanos())
             .single()
             .unwrap_or_else(|| Local.timestamp_opt(0, 0).single().unwrap());
-
-        debug!(
-            "ObjectInfo for {}: modified_dt = {}",
-            light.path.display(),
-            modified_dt.format("%Y-%m-%d")
-        );
 
         Ok(ObjectInfo {
             path: light.path,
@@ -151,25 +148,28 @@ impl ObjectInfo {
             object_type: light.object_type,
             is_dir: light.is_dir,
             is_symlink: light.is_symlink,
+            metadata_loaded: true,
             size,
             items_count,
-            modified: modified_dt,
-            metadata_loaded: true,
+            modified: modified_local,
+            permissions: None, // Could be populated later
+            owner: None,
+            group: None,
         })
     }
 
-    /// Create from lightweight info with placeholder metadata (for immediate display)
+    /// Create object info with placeholder metadata for immediate display
     pub fn with_placeholder_metadata(light: LightObjectInfo) -> Self {
-        // Try to get actual modified  even for placeholder
-        let modified: SystemTime = std::fs::metadata(&light.path)
-            .and_then(|metadata| metadata.modified())
+        // Get basic modified time synchronously for immediate display
+        let modified = std::fs::symlink_metadata(&light.path)
+            .and_then(|m| m.modified())
             .unwrap_or(UNIX_EPOCH);
 
         let modified_dt = modified
             .duration_since(UNIX_EPOCH)
-            .unwrap_or(Duration::from_secs(0));
+            .unwrap_or(Duration::ZERO);
 
-        let modified_dt = Local
+        let modified_local = Local
             .timestamp_opt(modified_dt.as_secs() as i64, modified_dt.subsec_nanos())
             .single()
             .unwrap_or_else(|| Local.timestamp_opt(0, 0).single().unwrap());
@@ -181,94 +181,300 @@ impl ObjectInfo {
             object_type: light.object_type,
             is_dir: light.is_dir,
             is_symlink: light.is_symlink,
-            size: 0,
-            items_count: 0,
-            modified: modified_dt,
             metadata_loaded: false,
+            size: 0,        // Placeholder
+            items_count: 0, // Placeholder
+            modified: modified_local,
+            permissions: None,
+            owner: None,
+            group: None,
         }
     }
 
-    /// Build from path and standard metadata. (You can adapt for async if needed.)
+    /// Create full object info from path (expensive - use sparingly)
     pub async fn from_path(path: &Path) -> std::io::Result<Self> {
-        use chrono::TimeZone;
-        use tokio::fs;
-
-        let metadata: Metadata = fs::symlink_metadata(path).await?;
-        let file_type: FileType = metadata.file_type();
-        let is_dir: bool = file_type.is_dir();
-        let is_symlink: bool = file_type.is_symlink();
-
-        let name: String = path
-            .file_name()
-            .map(|n: &OsStr| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| String::from(""));
-
-        let extension: Option<String> = path
-            .extension()
-            .map(|e: &OsStr| e.to_string_lossy().into_owned());
-
-        let object_type: ObjectType = if is_dir {
-            ObjectType::Dir
-        } else if is_symlink {
-            ObjectType::Symlink
-        } else if let Some(ref ext) = extension {
-            ObjectType::Other(ext.to_ascii_uppercase())
-        } else {
-            ObjectType::File
-        };
-
-        // Item count for directories is calculated in a background task.
-        let items_count: usize = 0;
-
-        // File size
-        let size: u64 = if is_dir { 0 } else { metadata.len() };
-
-        // Modification time, fall back to epoch on error
-        let modified: DateTime<Utc> = metadata
-            .modified()
-            .ok()
-            .and_then(|t: SystemTime| t.duration_since(UNIX_EPOCH).ok())
-            .map(|d: Duration| {
-                Utc.timestamp_opt(d.as_secs() as i64, d.subsec_nanos())
-                    .single()
-                    .unwrap_or_else(|| Utc.timestamp_opt(0, 0).single().unwrap())
-            })
-            .unwrap_or_else(|| Utc.timestamp_opt(0, 0).single().unwrap());
-
-        Ok(Self {
-            path: path.to_path_buf(),
-            name,
-            extension,
-            object_type,
-            is_dir,
-            is_symlink,
-            size,
-            items_count,
-            modified: modified.into(),
-            metadata_loaded: true,
-        })
+        let light = Self::from_path_light(path).await?;
+        Self::from_light_info(light).await
     }
 
-    /// Human-friendly file size.
+    /// Get human-readable file size
     pub fn size_human(&self) -> String {
-        bytesize::ByteSize::b(self.size).to_string()
+        if self.is_dir && self.items_count > 0 {
+            if self.items_count == 1 {
+                "1 item".to_string()
+            } else {
+                format!("{} items", self.items_count)
+            }
+        } else if self.size == 0 && !self.metadata_loaded {
+            "-".to_string() // Placeholder
+        } else {
+            format_bytes(self.size)
+        }
+    }
+
+    /// Get file extension or type description
+    pub fn type_display(&self) -> &str {
+        match &self.object_type {
+            ObjectType::Dir => "Directory",
+            ObjectType::File => self
+                .extension
+                .as_ref()
+                .map(|e| e.as_str())
+                .unwrap_or("File"),
+            ObjectType::Symlink => "Symlink",
+            ObjectType::Other(ext) => ext.as_str(),
+        }
+    }
+
+    /// Check if this entry matches a search pattern
+    pub fn matches_pattern(&self, pattern: &str, case_sensitive: bool) -> bool {
+        let name = if case_sensitive {
+            self.name.as_str()
+        } else {
+            // For case-insensitive search, we'd need to allocate
+            // In practice, this would use a case-insensitive comparison
+            self.name.as_str()
+        };
+
+        if pattern.contains('*') || pattern.contains('?') {
+            glob_match(pattern, name, case_sensitive)
+        } else if case_sensitive {
+            name.contains(pattern)
+        } else {
+            name.to_lowercase().contains(&pattern.to_lowercase())
+        }
+    }
+
+    /// Get icon character for TUI display
+    pub fn get_icon(&self) -> char {
+        match &self.object_type {
+            ObjectType::Dir => '📁',
+            ObjectType::Symlink => '🔗',
+            ObjectType::File => '📄',
+            ObjectType::Other(ext) => match ext.to_lowercase().as_str() {
+                "rs" => '🦀',
+                "py" => '🐍',
+                "js" | "ts" => '⚡',
+                "md" => '📝',
+                "txt" => '📃',
+                "png" | "jpg" | "jpeg" | "gif" => '🖼',
+                "mp3" | "wav" | "flac" => '🎵',
+                "mp4" | "avi" | "mkv" => '🎬',
+                "zip" | "tar" | "gz" => '📦',
+                "pdf" => '📕',
+                _ => '📄',
+            },
+        }
+    }
+
+    /// Sort key for optimized directory listing
+    pub fn sort_key(&self) -> (u8, &str) {
+        let type_priority = if self.is_dir { 0 } else { 1 };
+        (type_priority, self.name.as_str())
+    }
+
+    /// Update metadata (for background loading)
+    pub fn update_metadata(&mut self, size: u64, items_count: usize, modified: DateTime<Local>) {
+        self.size = size;
+        self.items_count = items_count;
+        self.modified = modified;
+        self.metadata_loaded = true;
+    }
+
+    /// Check if metadata needs loading
+    pub fn needs_metadata_load(&self) -> bool {
+        !self.metadata_loaded
+    }
+
+    /// Estimate memory usage
+    pub fn memory_usage(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self.path.as_os_str().len()
+            + self.name.len()
+            + self.extension.as_ref().map(|e| e.len()).unwrap_or(0)
+            + self.owner.as_ref().map(|o| o.len()).unwrap_or(0)
+            + self.group.as_ref().map(|g| g.len()).unwrap_or(0)
     }
 }
 
-// --- Default (empty entry, for error stubs/caching) ---
 impl Default for ObjectInfo {
     fn default() -> Self {
         Self {
             path: PathBuf::new(),
-            name: String::new(),
+            name: CompactString::new(""),
             extension: None,
             object_type: ObjectType::File,
             is_dir: false,
             is_symlink: false,
+            metadata_loaded: false,
             size: 0,
             items_count: 0,
-            modified: chrono::Local.timestamp_opt(0, 0).unwrap(),
-            metadata_loaded: false,
+            modified: Local.timestamp_opt(0, 0).single().unwrap(),
+            permissions: None,
+            owner: None,
+            group: None,
         }
+    }
+}
+
+/// Fast byte formatting without allocations for common sizes
+fn format_bytes(bytes: u64) -> String {
+    const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
+    const THRESHOLD: u64 = 1024;
+
+    if bytes < THRESHOLD {
+        return format!("{} B", bytes);
+    }
+
+    let mut size = bytes as f64;
+    let mut unit_index = 0;
+
+    while size >= THRESHOLD as f64 && unit_index < UNITS.len() - 1 {
+        size /= THRESHOLD as f64;
+        unit_index += 1;
+    }
+
+    if size >= 100.0 {
+        format!("{:.0} {}", size, UNITS[unit_index])
+    } else if size >= 10.0 {
+        format!("{:.1} {}", size, UNITS[unit_index])
+    } else {
+        format!("{:.2} {}", size, UNITS[unit_index])
+    }
+}
+
+/// Simple glob pattern matching
+fn glob_match(pattern: &str, text: &str, case_sensitive: bool) -> bool {
+    let (pattern, text) = if case_sensitive {
+        (pattern, text)
+    } else {
+        // For simplicity, using heap allocation here
+        // In a real implementation, you'd want to avoid this
+        return glob_match_impl(&pattern.to_lowercase(), &text.to_lowercase());
+    };
+
+    glob_match_impl(pattern, text)
+}
+
+fn glob_match_impl(pattern: &str, text: &str) -> bool {
+    let pattern_chars: Vec<char> = pattern.chars().collect();
+    let text_chars: Vec<char> = text.chars().collect();
+
+    glob_match_recursive(&pattern_chars, &text_chars, 0, 0)
+}
+
+fn glob_match_recursive(pattern: &[char], text: &[char], p_idx: usize, t_idx: usize) -> bool {
+    if p_idx == pattern.len() {
+        return t_idx == text.len();
+    }
+
+    match pattern[p_idx] {
+        '*' => {
+            // Try matching zero or more characters
+            for i in t_idx..=text.len() {
+                if glob_match_recursive(pattern, text, p_idx + 1, i) {
+                    return true;
+                }
+            }
+            false
+        }
+        '?' => {
+            // Match exactly one character
+            if t_idx < text.len() {
+                glob_match_recursive(pattern, text, p_idx + 1, t_idx + 1)
+            } else {
+                false
+            }
+        }
+        c => {
+            // Match exact character
+            if t_idx < text.len() && text[t_idx] == c {
+                glob_match_recursive(pattern, text, p_idx + 1, t_idx + 1)
+            } else {
+                false
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn test_light_object_info() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("test.txt");
+        tokio::fs::write(&file_path, b"test content").await.unwrap();
+
+        let light_info = ObjectInfo::from_path_light(&file_path).await.unwrap();
+
+        assert_eq!(light_info.name, "test.txt");
+        assert_eq!(light_info.extension, Some("txt".into()));
+        assert!(!light_info.is_dir);
+        assert!(!light_info.is_symlink);
+    }
+
+    #[tokio::test]
+    async fn test_full_object_info() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("test.txt");
+        tokio::fs::write(&file_path, b"test content").await.unwrap();
+
+        let object_info = ObjectInfo::from_path(&file_path).await.unwrap();
+
+        assert_eq!(object_info.name, "test.txt");
+        assert!(object_info.metadata_loaded);
+        assert_eq!(object_info.size, 12); // "test content"
+    }
+
+    #[test]
+    fn test_format_bytes() {
+        assert_eq!(format_bytes(512), "512 B");
+        assert_eq!(format_bytes(1024), "1.00 KB");
+        assert_eq!(format_bytes(1536), "1.50 KB");
+        assert_eq!(format_bytes(1048576), "1.00 MB");
+    }
+
+    #[test]
+    fn test_glob_matching() {
+        assert!(glob_match("*.txt", "file.txt", true));
+        assert!(glob_match("test*", "test123", true));
+        assert!(glob_match("test?", "test1", true));
+        assert!(!glob_match("test?", "test12", true));
+
+        // Case insensitive
+        assert!(glob_match("*.TXT", "file.txt", false));
+    }
+
+    #[test]
+    fn test_pattern_matching() {
+        let object_info = ObjectInfo {
+            name: "test_file.rs".into(),
+            ..Default::default()
+        };
+
+        assert!(object_info.matches_pattern("test", false));
+        assert!(object_info.matches_pattern("*.rs", false));
+        assert!(object_info.matches_pattern("test_*", false));
+        assert!(!object_info.matches_pattern("*.py", false));
+    }
+
+    #[test]
+    fn test_sort_key() {
+        let dir = ObjectInfo {
+            name: "directory".into(),
+            is_dir: true,
+            ..Default::default()
+        };
+
+        let file = ObjectInfo {
+            name: "file.txt".into(),
+            is_dir: false,
+            ..Default::default()
+        };
+
+        assert!(dir.sort_key() < file.sort_key()); // Directories sort first
     }
 }

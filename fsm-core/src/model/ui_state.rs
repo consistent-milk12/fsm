@@ -1,80 +1,61 @@
-//! UIState: High-Performance UI State for Phase 4.0
-//!
-//! Optimized for lock-free updates with ArcSwap integration:
-//! - Compact bit flags for redraw optimization
-//! - Cache-friendly data layout with atomic counters
-//! - Zero-allocation state transitions
-//! - SIMD-optimized selection operations
+//! Optimized UI state for high-performance TUI with atomic operations
+
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::time::Instant;
+
+use compact_str::CompactString;
+use smallvec::SmallVec;
+use tokio_util::sync::CancellationToken;
 
 use crate::controller::actions::InputPromptType;
 use crate::fs::object_info::ObjectInfo;
-use crate::model::command_palette::{Command, CommandAction, CommandPaletteState};
-use crate::tasks::search_task::RawSearchResult;
 
-use clipr::ClipBoard;
-use compact_str::CompactString;
-use smallvec::SmallVec;
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
-use std::time::{Duration, Instant};
-use tokio_util::sync::CancellationToken;
-
-/// Granular redraw flags optimized for bitwise operations
+/// Atomic redraw flags for lock-free UI updates
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum RedrawFlag {
-    Main = 0b0000_0001,
-    StatusBar = 0b0000_0010,
-    Overlay = 0b0000_0100,
-    Notification = 0b0000_1000,
-    Command = 0b0001_0000,
-    Sidebar = 0b0010_0000,
-    Preview = 0b0100_0000,
-    All = 0b0111_1111,
+    Main = 1,
+    StatusBar = 2,
+    Overlay = 4,
+    Notification = 8,
+    All = 15,
 }
 
 impl RedrawFlag {
-    #[inline(always)]
+    #[inline]
     pub const fn bits(self) -> u8 {
         self as u8
     }
 }
 
-/// UI modes optimized for branch prediction
+/// UI operation modes
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(u8)]
 pub enum UIMode {
     #[default]
     Browse = 0,
-    Visual = 1,
-    Search = 2,
-    Prompt = 3,
-    Command = 4,
-    Scripting = 5,
-    BatchOp = 6,
+    Search = 1,
+    Command = 2,
+    Visual = 3,
 }
 
-/// Overlays with optimized enum representation
+/// UI overlays
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(u8)]
 pub enum UIOverlay {
     #[default]
     None = 0,
     Help = 1,
-    Search = 2,
-    FileNameSearch = 3,
-    ContentSearch = 4,
-    SearchResults = 5,
+    FileNameSearch = 2,
+    ContentSearch = 3,
+    SearchResults = 4,
+    Prompt = 5,
     Loading = 6,
-    Status = 7,
-    Prompt = 8,
-    Batch = 9,
-    Scripting = 10,
 }
 
-/// Notification levels with performance priorities
+/// Notification levels
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum NotificationLevel {
@@ -84,484 +65,182 @@ pub enum NotificationLevel {
     Error = 3,
 }
 
-/// Compact notification structure
+/// Compact notification with timestamp
 #[derive(Debug, Clone)]
 pub struct Notification {
     pub message: CompactString,
     pub level: NotificationLevel,
     pub timestamp: Instant,
-    pub auto_dismiss_ms: Option<u32>, // u32 for memory efficiency
+    pub auto_dismiss_ms: Option<u32>,
 }
 
-/// High-performance loading state with atomic counters for Phase 4.0
-#[derive(Debug, Clone)]
+/// High-performance loading state with atomic counters
+#[derive(Debug)]
 pub struct LoadingState {
-    // Static message (set once, read many)
     pub message: CompactString,
-
-    // Atomic progress tracking (0-10000 for 0.00% to 100.00% precision)
-    pub progress: Arc<AtomicU32>, // * 100 for precision, u32 for cache efficiency
-
-    // Animated spinner frame counter
-    pub spinner_frame: Arc<AtomicUsize>,
-
-    // Current processing item (lock-free updates)
-    pub current_item: Arc<parking_lot::RwLock<Option<CompactString>>>,
-
-    // Atomic completion counters
-    pub completed: Arc<AtomicU64>,
+    pub progress: Arc<AtomicU32>, // Progress * 100 for precision
+    pub current: Arc<AtomicU64>,
     pub total: Arc<AtomicU64>,
-
-    // Performance tracking
+    pub current_item: Arc<parking_lot::RwLock<Option<CompactString>>>,
     pub start_time: Instant,
-    pub last_update: Arc<AtomicU64>, // Unix timestamp in nanoseconds
-
-    // Loading type for optimized rendering
-    pub loading_type: LoadingType,
-}
-
-/// Loading operation types for optimized rendering
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub enum LoadingType {
-    DirectoryScan = 0,
-    FileOperation = 1,
-    Search = 2,
-    ContentLoad = 3,
-    NetworkOperation = 4,
-    Generic = 5,
 }
 
 impl LoadingState {
-    /// Create new loading state with optimized defaults
-    pub fn new(message: impl Into<CompactString>, loading_type: LoadingType) -> Self {
+    pub fn new(message: impl Into<CompactString>) -> Self {
         Self {
             message: message.into(),
             progress: Arc::new(AtomicU32::new(0)),
-            spinner_frame: Arc::new(AtomicUsize::new(0)),
-            current_item: Arc::new(parking_lot::RwLock::new(None)),
-            completed: Arc::new(AtomicU64::new(0)),
+            current: Arc::new(AtomicU64::new(0)),
             total: Arc::new(AtomicU64::new(0)),
+            current_item: Arc::new(parking_lot::RwLock::new(None)),
             start_time: Instant::now(),
-            last_update: Arc::new(AtomicU64::new(
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_nanos() as u64,
-            )),
-            loading_type,
         }
     }
 
-    /// Create indeterminate loading state (no progress tracking)
-    pub fn indeterminate(message: impl Into<CompactString>, loading_type: LoadingType) -> Self {
-        let state = Self::new(message, loading_type);
-        state.total.store(u64::MAX, Ordering::Relaxed); // Marker for indeterminate
-        state
-    }
-
-    /// Update progress atomically (0.0 to 100.0)
     #[inline]
     pub fn set_progress(&self, progress: f32) {
         let progress_int = (progress.clamp(0.0, 100.0) * 100.0) as u32;
         self.progress.store(progress_int, Ordering::Relaxed);
-        self.update_timestamp();
     }
 
-    /// Update completion counters and calculate progress
     #[inline]
-    pub fn set_completion(&self, completed: u64, total: u64) {
-        self.completed.store(completed, Ordering::Relaxed);
+    pub fn set_completion(&self, current: u64, total: u64) {
+        self.current.store(current, Ordering::Relaxed);
         self.total.store(total, Ordering::Relaxed);
 
         if total > 0 {
-            let progress = ((completed as f64 / total as f64) * 10000.0) as u32;
+            let progress = ((current as f64 / total as f64) * 10000.0) as u32;
             self.progress.store(progress, Ordering::Relaxed);
         }
-
-        self.update_timestamp();
     }
 
-    /// Update current processing item (lock-free)
     #[inline]
     pub fn set_current_item(&self, item: Option<impl Into<CompactString>>) {
         *self.current_item.write() = item.map(|i| i.into());
-        self.update_timestamp();
     }
 
-    /// Increment spinner frame for animation
-    #[inline]
-    pub fn tick_spinner(&self) {
-        self.spinner_frame.fetch_add(1, Ordering::Relaxed);
-    }
-
-    /// Get current progress as percentage (0.0 to 100.0)
     #[inline]
     pub fn get_progress(&self) -> f32 {
         self.progress.load(Ordering::Relaxed) as f32 / 100.0
     }
 
-    /// Get completion ratio (0.0 to 1.0)
-    #[inline]
     pub fn get_completion_ratio(&self) -> f32 {
-        let completed = self.completed.load(Ordering::Relaxed);
+        let current = self.current.load(Ordering::Relaxed);
         let total = self.total.load(Ordering::Relaxed);
 
-        if total == 0 || total == u64::MAX {
-            0.0 // Indeterminate or no work
-        } else {
-            (completed as f32 / total as f32).clamp(0.0, 1.0)
-        }
-    }
-
-    /// Check if this is an indeterminate loading operation
-    #[inline]
-    pub fn is_indeterminate(&self) -> bool {
-        self.total.load(Ordering::Relaxed) == u64::MAX
-    }
-
-    /// Get current spinner frame for animation
-    #[inline]
-    pub fn get_spinner_frame(&self) -> usize {
-        self.spinner_frame.load(Ordering::Relaxed)
-    }
-
-    /// Get spinner character for current frame
-    pub fn get_spinner_char(&self) -> char {
-        const SPINNER_CHARS: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-        let frame = self.get_spinner_frame() % SPINNER_CHARS.len();
-        SPINNER_CHARS[frame]
-    }
-
-    /// Get current processing item (clone for safety)
-    pub fn get_current_item(&self) -> Option<CompactString> {
-        self.current_item.read().clone()
-    }
-
-    /// Get completion counts
-    #[inline]
-    pub fn get_completion_counts(&self) -> (u64, u64) {
-        (
-            self.completed.load(Ordering::Relaxed),
-            self.total.load(Ordering::Relaxed),
-        )
-    }
-
-    /// Get elapsed time since start
-    #[inline]
-    pub fn elapsed(&self) -> Duration {
-        self.start_time.elapsed()
-    }
-
-    /// Get estimated time remaining (based on current progress)
-    pub fn estimate_remaining(&self) -> Option<Duration> {
-        if self.is_indeterminate() {
-            return None;
-        }
-
-        let completed = self.completed.load(Ordering::Relaxed);
-        let total = self.total.load(Ordering::Relaxed);
-
-        if completed == 0 || total == 0 || completed >= total {
-            return None;
-        }
-
-        let elapsed = self.elapsed();
-        let rate = completed as f64 / elapsed.as_secs_f64();
-
-        if rate > 0.0 {
-            let remaining_items = total - completed;
-            let remaining_seconds = remaining_items as f64 / rate;
-            Some(Duration::from_secs_f64(remaining_seconds))
-        } else {
-            None
-        }
-    }
-
-    /// Get throughput (items per second)
-    pub fn get_throughput(&self) -> f64 {
-        let completed = self.completed.load(Ordering::Relaxed);
-        let elapsed = self.elapsed().as_secs_f64();
-
-        if elapsed > 0.0 {
-            completed as f64 / elapsed
-        } else {
+        if total == 0 {
             0.0
-        }
-    }
-
-    /// Check if loading has been active for a significant time
-    #[inline]
-    pub fn is_long_running(&self) -> bool {
-        self.elapsed() > Duration::from_secs(3)
-    }
-
-    /// Get loading summary for display
-    pub fn get_summary(&self) -> LoadingSummary {
-        let (completed, total) = self.get_completion_counts();
-        let progress = self.get_progress();
-        let current_item = self.get_current_item();
-        let estimated_remaining = self.estimate_remaining();
-        let throughput = self.get_throughput();
-
-        LoadingSummary {
-            message: self.message.clone(),
-            loading_type: self.loading_type,
-            progress,
-            completed,
-            total,
-            current_item,
-            elapsed: self.elapsed(),
-            estimated_remaining,
-            throughput,
-            is_indeterminate: self.is_indeterminate(),
-            spinner_char: self.get_spinner_char(),
-        }
-    }
-
-    /// Update internal timestamp
-    #[inline]
-    fn update_timestamp(&self) {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos() as u64;
-        self.last_update.store(now, Ordering::Relaxed);
-    }
-
-    /// Mark loading as complete
-    pub fn complete(&self) {
-        if !self.is_indeterminate() {
-            let total = self.total.load(Ordering::Relaxed);
-            self.completed.store(total, Ordering::Relaxed);
-            self.progress.store(10000, Ordering::Relaxed); // 100.00%
-        }
-        self.update_timestamp();
-    }
-
-    /// Cancel loading operation
-    pub fn cancel(&self) {
-        self.progress.store(0, Ordering::Relaxed);
-        self.update_timestamp();
-    }
-}
-
-/// Loading state summary for UI display
-#[derive(Debug, Clone)]
-pub struct LoadingSummary {
-    pub message: CompactString,
-    pub loading_type: LoadingType,
-    pub progress: f32,
-    pub completed: u64,
-    pub total: u64,
-    pub current_item: Option<CompactString>,
-    pub elapsed: Duration,
-    pub estimated_remaining: Option<Duration>,
-    pub throughput: f64,
-    pub is_indeterminate: bool,
-    pub spinner_char: char,
-}
-
-impl LoadingSummary {
-    /// Format progress for display
-    pub fn format_progress(&self) -> String {
-        if self.is_indeterminate {
-            format!("{} {}", self.spinner_char, self.message)
-        } else if self.total > 0 {
-            format!(
-                "{} {} [{}/{}] {:.1}%",
-                self.spinner_char, self.message, self.completed, self.total, self.progress
-            )
         } else {
-            format!(
-                "{} {} {:.1}%",
-                self.spinner_char, self.message, self.progress
-            )
+            (current as f32 / total as f32).clamp(0.0, 1.0)
         }
-    }
-
-    /// Format detailed progress with ETA
-    pub fn format_detailed(&self) -> String {
-        let mut details = self.format_progress();
-
-        if let Some(item) = &self.current_item {
-            details.push_str(&format!("\nProcessing: {item}"));
-        }
-
-        if let Some(eta) = self.estimated_remaining {
-            details.push_str(&format!("\nETA: {eta:?}"));
-        }
-
-        if self.throughput > 0.0 {
-            details.push_str(&format!("\nSpeed: {:.1} items/sec", self.throughput));
-        }
-
-        details
     }
 }
 
-impl Default for LoadingState {
-    fn default() -> Self {
-        Self::new("Loading...", LoadingType::Generic)
+impl Clone for LoadingState {
+    fn clone(&self) -> Self {
+        Self {
+            message: self.message.clone(),
+            progress: Arc::clone(&self.progress),
+            current: Arc::clone(&self.current),
+            total: Arc::clone(&self.total),
+            current_item: Arc::clone(&self.current_item),
+            start_time: self.start_time,
+        }
     }
 }
 
-/// Helper functions for common loading scenarios
-impl LoadingState {
-    /// Create loading state for directory scanning
-    pub fn directory_scan(path: &Path) -> Self {
-        Self::new(
-            format!(
-                "Scanning {}",
-                path.file_name().unwrap_or_default().to_string_lossy()
-            ),
-            LoadingType::DirectoryScan,
-        )
-    }
-
-    /// Create loading state for file operations
-    pub fn file_operation(operation: &str, file_count: u64) -> Self {
-        let state = Self::new(format!("{operation} files..."), LoadingType::FileOperation);
-        state.set_completion(0, file_count);
-        state
-    }
-
-    /// Create loading state for search operations
-    pub fn search_operation(query: &str) -> Self {
-        Self::indeterminate(format!("Searching for '{query}'..."), LoadingType::Search)
-    }
-
-    /// Create loading state for content loading
-    pub fn content_load(item_name: &str) -> Self {
-        Self::indeterminate(format!("Loading {item_name}..."), LoadingType::ContentLoad)
-    }
-}
-
-/// File operation progress with atomic updates
+/// File operation progress tracking
 #[derive(Debug)]
 pub struct FileOperationProgress {
     pub operation_type: CompactString,
     pub current_bytes: AtomicU64,
     pub total_bytes: AtomicU64,
-    pub current_file: parking_lot::RwLock<PathBuf>,
     pub files_completed: AtomicU32,
     pub total_files: AtomicU32,
+    pub current_file: parking_lot::RwLock<CompactString>,
     pub start_time: Instant,
-    pub throughput_bps: AtomicU64,
 }
 
 impl FileOperationProgress {
-    pub fn new(operation_type: CompactString, total_bytes: u64, total_files: u32) -> Self {
+    pub fn new(
+        operation_type: impl Into<CompactString>,
+        total_bytes: u64,
+        total_files: u32,
+    ) -> Self {
         Self {
-            operation_type,
+            operation_type: operation_type.into(),
             current_bytes: AtomicU64::new(0),
             total_bytes: AtomicU64::new(total_bytes),
-            current_file: parking_lot::RwLock::new(PathBuf::new()),
             files_completed: AtomicU32::new(0),
             total_files: AtomicU32::new(total_files),
+            current_file: parking_lot::RwLock::new(CompactString::new("")),
             start_time: Instant::now(),
-            throughput_bps: AtomicU64::new(0),
         }
     }
 
-    /// Update progress atomically
-    pub fn update(&self, current_bytes: u64, current_file: PathBuf, files_completed: u32) {
+    #[inline]
+    pub fn update(
+        &self,
+        current_bytes: u64,
+        current_file: impl Into<CompactString>,
+        files_completed: u32,
+    ) {
         self.current_bytes.store(current_bytes, Ordering::Relaxed);
         self.files_completed
             .store(files_completed, Ordering::Relaxed);
-        *self.current_file.write() = current_file;
-
-        // Calculate throughput with atomic operations
-        let elapsed_secs = self.start_time.elapsed().as_secs();
-        if elapsed_secs > 0 && current_bytes > 0 {
-            let bps = current_bytes / elapsed_secs;
-            self.throughput_bps.store(bps, Ordering::Relaxed);
-        }
+        *self.current_file.write() = current_file.into();
     }
 
-    /// Get progress ratio (0.0 to 1.0)
     pub fn progress_ratio(&self) -> f32 {
         let total = self.total_bytes.load(Ordering::Relaxed);
         if total == 0 {
             0.0
         } else {
             let current = self.current_bytes.load(Ordering::Relaxed);
-            current as f32 / total as f32
+            (current as f32 / total as f32).clamp(0.0, 1.0)
         }
     }
 }
 
-/// Clipboard view mode
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub enum ClipBoardViewMode {
-    #[default]
-    List = 0,
-    Details = 1,
-    Grid = 2,
-}
-
-/// Optimized selection set using SmallVec for common cases
-type SelectionSet = SmallVec<[usize; 8]>; // Most selections are < 8items
-
-/// High-performance UI state with cache-friendly layout
+/// High-performance UI state with atomic operations
 #[derive(Debug)]
 pub struct UIState {
-    // Hot path data - accessed on every frame
-    pub redraw_flags: AtomicU32, // Atomic for lock-free updates
+    // Atomic flags for lock-free updates
+    pub redraw_flags: AtomicU32,
+    pub frame_count: AtomicU64,
+
+    // Mode and overlay state
     pub mode: UIMode,
     pub overlay: UIOverlay,
+
+    // Selection state
     pub selected: Option<usize>,
-    pub active_pane: usize,
+    pub marked_indices: SmallVec<[usize; 8]>,
 
-    // Selection state optimized for small sets
-    pub marked_indices: SelectionSet,
-    pub visual_range: Option<(usize, usize)>,
-
-    // Input state with compact strings and history
+    // Input state with history
     pub input: CompactString,
-    pub input_cursor: usize, // Cursor position for better input editing
-    pub last_query: Option<CompactString>,
+    pub input_cursor: usize,
     pub input_prompt_type: Option<InputPromptType>,
-    pub input_history: SmallVec<[CompactString; 32]>, // Command/search history
-    pub input_history_index: Option<usize>,           // Current position in history navigation
+    pub input_history: SmallVec<[CompactString; 32]>,
+    pub input_history_index: Option<usize>,
 
-    // Display state
+    // Display preferences
     pub show_hidden: bool,
     pub theme: CompactString,
 
-    // Search results with pre-allocated capacity
+    // Search results
     pub search_results: Vec<ObjectInfo>,
     pub filename_search_results: Vec<ObjectInfo>,
-    pub rich_search_results: Vec<CompactString>,
-    pub raw_search_results: Option<RawSearchResult>,
-    pub raw_search_selected: usize,
+    pub content_search_results: Vec<String>,
 
-    // Status and notifications
+    // Status and loading
     pub loading: Option<LoadingState>,
     pub notification: Option<Notification>,
-    pub last_status: Option<CompactString>,
-
-    // Performance tracking
-    pub frame_count: AtomicU64,
     pub last_update: Instant,
 
-    // File operations with atomic progress
+    // File operations
     pub active_file_operations: HashMap<CompactString, Arc<FileOperationProgress>>,
-    pub operations_cancel_tokens: HashMap<CompactString, CancellationToken>,
-
-    // Clipboard system
-    pub clipboard: Arc<ClipBoard>,
-    pub clipboard_overlay_active: bool,
-    pub selected_clipboard_item: Option<CompactString>,
-    pub selected_clipboard_item_index: usize,
-    pub clipboard_view_mode: ClipBoardViewMode,
-
-    // Command palette
-    pub command_palette: CommandPaletteState,
-
-    // Recent actions with circular buffer
-    pub recent_actions: SmallVec<[CompactString; 16]>,
+    pub operation_cancel_tokens: HashMap<CompactString, CancellationToken>,
 }
 
 impl Default for UIState {
@@ -570,88 +249,38 @@ impl Default for UIState {
     }
 }
 
-impl PartialEq for UIState {
-    fn eq(&self, other: &Self) -> bool {
-        self.mode == other.mode && self.overlay == other.overlay
-    }
-}
-
 impl UIState {
-    /// Create new UI state with optimized defaults
     pub fn new() -> Self {
         Self {
-            // Hot path data
             redraw_flags: AtomicU32::new(RedrawFlag::All.bits() as u32),
+            frame_count: AtomicU64::new(0),
             mode: UIMode::Browse,
             overlay: UIOverlay::None,
             selected: Some(0),
-            active_pane: 0,
-
-            // Selection state
-            marked_indices: SelectionSet::new(),
-            visual_range: None,
-
-            // Input state
-            input: CompactString::default(),
+            marked_indices: SmallVec::new(),
+            input: CompactString::new(""),
             input_cursor: 0,
-            last_query: None,
             input_prompt_type: None,
             input_history: SmallVec::new(),
             input_history_index: None,
-
-            // Display state
             show_hidden: false,
-            theme: CompactString::const_new("default"),
-
-            // Search results with capacity hints
+            theme: CompactString::new("default"),
             search_results: Vec::with_capacity(256),
             filename_search_results: Vec::with_capacity(256),
-            rich_search_results: Vec::with_capacity(128),
-            raw_search_results: None,
-            raw_search_selected: 0,
-
-            // Status
+            content_search_results: Vec::with_capacity(128),
             loading: None,
             notification: None,
-            last_status: None,
-
-            // Performance tracking
-            frame_count: AtomicU64::new(0),
             last_update: Instant::now(),
-
-            // File operations
-            active_file_operations: HashMap::with_capacity(8),
-            operations_cancel_tokens: HashMap::with_capacity(8),
-
-            // Clipboard
-            clipboard: Arc::new(ClipBoard::default()),
-            clipboard_overlay_active: false,
-            selected_clipboard_item: None,
-            selected_clipboard_item_index: 0,
-            clipboard_view_mode: ClipBoardViewMode::List,
-
-            // Command palette
-            command_palette: CommandPaletteState::new(vec![Command {
-                title: "Open Config".into(),
-                action: CommandAction::OpenConfig,
-            }]),
-
-            // Recent actions
-            recent_actions: SmallVec::new(),
+            active_file_operations: HashMap::new(),
+            operation_cancel_tokens: HashMap::new(),
         }
     }
 
-    // Atomic redraw flag operations
+    // Atomic redraw operations
     #[inline]
     pub fn request_redraw(&self, flag: RedrawFlag) {
         self.redraw_flags
             .fetch_or(flag.bits() as u32, Ordering::Relaxed);
-    }
-
-    #[inline]
-    pub fn request_redraw_all(&self) {
-        self.redraw_flags
-            .store(RedrawFlag::All.bits() as u32, Ordering::Relaxed);
     }
 
     #[inline]
@@ -664,28 +293,17 @@ impl UIState {
         self.redraw_flags.store(0, Ordering::Relaxed);
     }
 
-    /// Update frame counter for performance metrics
     #[inline]
     pub fn increment_frame(&self) {
         self.frame_count.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Get frames per second
-    pub fn get_fps(&self) -> f64 {
-        let elapsed = self.last_update.elapsed().as_secs_f64();
-        if elapsed > 0.0 {
-            self.frame_count.load(Ordering::Relaxed) as f64 / elapsed
-        } else {
-            0.0
-        }
-    }
-
-    // Optimized selection operations
+    // Selection management
     #[inline]
     pub fn mark_index(&mut self, idx: usize) {
         if !self.marked_indices.contains(&idx) {
             self.marked_indices.push(idx);
-            self.request_redraw(RedrawFlag::All);
+            self.request_redraw(RedrawFlag::Main);
         }
     }
 
@@ -693,18 +311,17 @@ impl UIState {
     pub fn unmark_index(&mut self, idx: usize) {
         if let Some(pos) = self.marked_indices.iter().position(|&x| x == idx) {
             self.marked_indices.remove(pos);
-            self.request_redraw(RedrawFlag::All);
+            self.request_redraw(RedrawFlag::Main);
         }
     }
 
     #[inline]
     pub fn clear_marks(&mut self) {
         self.marked_indices.clear();
-        self.visual_range = None;
-        self.request_redraw(RedrawFlag::All);
+        self.request_redraw(RedrawFlag::Main);
     }
 
-    /// Show notification with optimized string handling
+    // Notification system
     pub fn show_notification(
         &mut self,
         message: impl Into<CompactString>,
@@ -720,7 +337,6 @@ impl UIState {
         self.request_redraw(RedrawFlag::Notification);
     }
 
-    /// Optimized notification helpers
     #[inline]
     pub fn show_info(&mut self, message: impl Into<CompactString>) {
         self.show_notification(message, NotificationLevel::Info, Some(3000));
@@ -741,7 +357,7 @@ impl UIState {
         self.show_notification(message, NotificationLevel::Error, None);
     }
 
-    /// Check and auto-dismiss notifications
+    // Auto-dismiss notifications
     pub fn update_notification(&mut self) -> bool {
         if let Some(notification) = &self.notification
             && let Some(auto_dismiss_ms) = notification.auto_dismiss_ms
@@ -754,31 +370,19 @@ impl UIState {
         false
     }
 
-    /// Optimized action history
-    pub fn push_action(&mut self, action: impl Into<CompactString>) {
-        if self.recent_actions.len() == 16 {
-            self.recent_actions.remove(0);
-        }
-        self.recent_actions.push(action.into());
-    }
-
-    // Enhanced input management for overlays
-
-    /// Clear input and reset cursor position
+    // Input management
     pub fn clear_input(&mut self) {
-        self.input = CompactString::default();
+        self.input = CompactString::new("");
         self.input_cursor = 0;
         self.input_history_index = None;
     }
 
-    /// Set input text and update cursor to end
     pub fn set_input(&mut self, text: impl Into<CompactString>) {
         self.input = text.into();
         self.input_cursor = self.input.len();
         self.input_history_index = None;
     }
 
-    /// Insert character at cursor position
     pub fn insert_char(&mut self, ch: char) {
         let mut input_str = self.input.to_string();
         input_str.insert(self.input_cursor, ch);
@@ -787,13 +391,11 @@ impl UIState {
         self.input_history_index = None;
     }
 
-    /// Delete character before cursor (backspace)
     pub fn delete_char_before(&mut self) -> bool {
         if self.input_cursor > 0 {
             let mut input_str = self.input.to_string();
             let char_indices: Vec<_> = input_str.char_indices().collect();
 
-            // Find the character boundary before cursor
             if let Some((char_pos, _)) = char_indices
                 .iter()
                 .rev()
@@ -809,7 +411,6 @@ impl UIState {
         false
     }
 
-    /// Move cursor left by one character
     pub fn move_cursor_left(&mut self) {
         if self.input_cursor > 0 {
             let input_str = self.input.as_str();
@@ -825,7 +426,6 @@ impl UIState {
         }
     }
 
-    /// Move cursor right by one character
     pub fn move_cursor_right(&mut self) {
         let input_str = self.input.as_str();
         let char_indices: Vec<_> = input_str.char_indices().collect();
@@ -840,19 +440,16 @@ impl UIState {
         }
     }
 
-    /// Add input to history (for commands/searches)
+    // History management
     pub fn add_to_history(&mut self, input: impl Into<CompactString>) {
         let input_str = input.into();
         if !input_str.is_empty() {
-            // Remove duplicate if exists
             if let Some(pos) = self.input_history.iter().position(|x| *x == input_str) {
                 self.input_history.remove(pos);
             }
 
-            // Add to end (most recent)
             self.input_history.push(input_str);
 
-            // Keep only last 32 items
             if self.input_history.len() > 32 {
                 self.input_history.remove(0);
             }
@@ -860,21 +457,15 @@ impl UIState {
         self.input_history_index = None;
     }
 
-    /// Navigate to previous item in history
     pub fn history_prev(&mut self) -> bool {
         if self.input_history.is_empty() {
             return false;
         }
 
         match self.input_history_index {
-            None => {
-                // Start from the end (most recent)
-                self.input_history_index = Some(self.input_history.len() - 1);
-            }
-            Some(idx) if idx > 0 => {
-                self.input_history_index = Some(idx - 1);
-            }
-            _ => return false, // Already at oldest
+            None => self.input_history_index = Some(self.input_history.len() - 1),
+            Some(idx) if idx > 0 => self.input_history_index = Some(idx - 1),
+            _ => return false,
         }
 
         if let Some(idx) = self.input_history_index
@@ -887,7 +478,6 @@ impl UIState {
         false
     }
 
-    /// Navigate to next item in history  
     pub fn history_next(&mut self) -> bool {
         if let Some(idx) = self.input_history_index {
             if idx < self.input_history.len() - 1 {
@@ -898,7 +488,6 @@ impl UIState {
                     return true;
                 }
             } else {
-                // Go to empty (beyond history)
                 self.input_history_index = None;
                 self.clear_input();
                 return true;
@@ -907,7 +496,7 @@ impl UIState {
         false
     }
 
-    /// Get overlay-specific title
+    // Overlay helpers
     pub fn get_overlay_title(&self) -> &'static str {
         match self.overlay {
             UIOverlay::Help => "Help",
@@ -927,31 +516,213 @@ impl UIState {
         }
     }
 
-    /// Check if current overlay supports input
     pub fn overlay_accepts_input(&self) -> bool {
         matches!(
             self.overlay,
             UIOverlay::FileNameSearch | UIOverlay::ContentSearch | UIOverlay::Prompt
         )
     }
+
+    // Performance metrics
+    pub fn get_fps(&self) -> f64 {
+        let elapsed = self.last_update.elapsed().as_secs_f64();
+        if elapsed > 0.0 {
+            self.frame_count.load(Ordering::Relaxed) as f64 / elapsed
+        } else {
+            0.0
+        }
+    }
+
+    // File operation management
+    pub fn add_file_operation(
+        &mut self,
+        operation_id: impl Into<CompactString>,
+        progress: Arc<FileOperationProgress>,
+    ) {
+        let id = operation_id.into();
+        self.active_file_operations.insert(id.clone(), progress);
+        self.request_redraw(RedrawFlag::StatusBar);
+    }
+
+    pub fn remove_file_operation(&mut self, operation_id: &str) {
+        self.active_file_operations.remove(operation_id);
+        self.operation_cancel_tokens.remove(operation_id);
+        self.request_redraw(RedrawFlag::StatusBar);
+    }
+
+    pub fn cancel_file_operation(&mut self, operation_id: &str) {
+        if let Some(token) = self.operation_cancel_tokens.get(operation_id) {
+            token.cancel();
+        }
+        self.remove_file_operation(operation_id);
+    }
+
+    // Loading state management
+    pub fn set_loading(&mut self, loading: LoadingState) {
+        self.loading = Some(loading);
+        self.overlay = UIOverlay::Loading;
+        self.request_redraw(RedrawFlag::All);
+    }
+
+    pub fn clear_loading(&mut self) {
+        self.loading = None;
+        if self.overlay == UIOverlay::Loading {
+            self.overlay = UIOverlay::None;
+        }
+        self.request_redraw(RedrawFlag::All);
+    }
+
+    pub fn update_loading_progress(
+        &mut self,
+        current: u64,
+        total: u64,
+        message: Option<impl Into<CompactString>>,
+    ) {
+        if let Some(loading) = &self.loading {
+            loading.set_completion(current, total);
+            if let Some(msg) = message {
+                loading.set_current_item(Some(msg));
+            }
+            self.request_redraw(RedrawFlag::StatusBar);
+        }
+    }
+
+    // Search result management
+    pub fn set_search_results(&mut self, results: Vec<ObjectInfo>) {
+        self.search_results = results;
+        self.overlay = UIOverlay::SearchResults;
+        self.request_redraw(RedrawFlag::All);
+    }
+
+    pub fn set_filename_search_results(&mut self, results: Vec<ObjectInfo>) {
+        self.filename_search_results = results;
+        self.request_redraw(RedrawFlag::Overlay);
+    }
+
+    pub fn set_content_search_results(&mut self, results: Vec<String>) {
+        self.content_search_results = results;
+        self.overlay = UIOverlay::SearchResults;
+        self.request_redraw(RedrawFlag::All);
+    }
+
+    pub fn clear_search_results(&mut self) {
+        self.search_results.clear();
+        self.filename_search_results.clear();
+        self.content_search_results.clear();
+        if self.overlay == UIOverlay::SearchResults {
+            self.overlay = UIOverlay::None;
+        }
+        self.request_redraw(RedrawFlag::All);
+    }
+
+    // State validation and cleanup
+    pub fn validate_state(&mut self) {
+        // Ensure selection is within bounds when search results change
+        if self.overlay == UIOverlay::SearchResults {
+            let max_results =
+                std::cmp::max(self.search_results.len(), self.content_search_results.len());
+            if max_results == 0 {
+                self.selected = None;
+            } else if let Some(sel) = self.selected {
+                if sel >= max_results {
+                    self.selected = Some(max_results - 1);
+                }
+            }
+        }
+
+        // Clean up marked indices that are out of bounds
+        self.marked_indices.retain(|idx: &mut usize| {
+            match self.overlay {
+                UIOverlay::SearchResults => {
+                    let max_results: usize =
+                        std::cmp::max(self.search_results.len(), self.content_search_results.len());
+                    *idx < max_results
+                }
+                _ => true, // Keep all marks for normal browsing (will be validated by pane state)
+            }
+        });
+    }
+
+    // Bulk update helpers for performance
+    pub fn bulk_update<F>(&mut self, update_fn: F)
+    where
+        F: FnOnce(&mut Self),
+    {
+        // Disable redraws during bulk update
+        let old_flags = self.redraw_flags.load(Ordering::Relaxed);
+        self.redraw_flags.store(0, Ordering::Relaxed);
+
+        // Apply updates
+        update_fn(self);
+
+        // Restore and set redraw flags
+        self.redraw_flags
+            .store(old_flags | RedrawFlag::All.bits() as u32, Ordering::Relaxed);
+    }
+
+    // Memory optimization
+    pub fn shrink_collections(&mut self) {
+        self.search_results.shrink_to_fit();
+        self.filename_search_results.shrink_to_fit();
+        self.content_search_results.shrink_to_fit();
+        self.marked_indices.shrink_to_fit();
+        self.input_history.shrink_to_fit();
+    }
+
+    // Debug helpers
+    pub fn get_memory_usage(&self) -> UIStateMemoryUsage {
+        UIStateMemoryUsage {
+            search_results: self.search_results.capacity() * std::mem::size_of::<ObjectInfo>(),
+            filename_search_results: self.filename_search_results.capacity()
+                * std::mem::size_of::<ObjectInfo>(),
+            content_search_results: self.content_search_results.capacity()
+                * std::mem::size_of::<String>(),
+            marked_indices: self.marked_indices.capacity() * std::mem::size_of::<usize>(),
+            input_history: self.input_history.capacity() * 32, // Approximate CompactString size
+            active_operations: self.active_file_operations.len()
+                * std::mem::size_of::<Arc<FileOperationProgress>>(),
+        }
+    }
 }
 
+/// Memory usage statistics for debugging
+#[derive(Debug, Clone)]
+pub struct UIStateMemoryUsage {
+    pub search_results: usize,
+    pub filename_search_results: usize,
+    pub content_search_results: usize,
+    pub marked_indices: usize,
+    pub input_history: usize,
+    pub active_operations: usize,
+}
+
+impl UIStateMemoryUsage {
+    pub fn total_bytes(&self) -> usize {
+        self.search_results
+            + self.filename_search_results
+            + self.content_search_results
+            + self.marked_indices
+            + self.input_history
+            + self.active_operations
+    }
+
+    pub fn total_kb(&self) -> f64 {
+        self.total_bytes() as f64 / 1024.0
+    }
+}
+
+// Clone implementation for UIState (needed for state coordination)
 impl Clone for UIState {
     fn clone(&self) -> Self {
         Self {
-            // copy atomic flags into new atomics
             redraw_flags: AtomicU32::new(self.redraw_flags.load(Ordering::Relaxed)),
+            frame_count: AtomicU64::new(self.frame_count.load(Ordering::Relaxed)),
             mode: self.mode,
             overlay: self.overlay,
             selected: self.selected,
-            active_pane: self.active_pane,
-
-            // simple clones of collections
             marked_indices: self.marked_indices.clone(),
-            visual_range: self.visual_range,
             input: self.input.clone(),
             input_cursor: self.input_cursor,
-            last_query: self.last_query.clone(),
             input_prompt_type: self.input_prompt_type.clone(),
             input_history: self.input_history.clone(),
             input_history_index: self.input_history_index,
@@ -959,31 +730,109 @@ impl Clone for UIState {
             theme: self.theme.clone(),
             search_results: self.search_results.clone(),
             filename_search_results: self.filename_search_results.clone(),
-            rich_search_results: self.rich_search_results.clone(),
-            raw_search_results: self.raw_search_results.clone(),
-            raw_search_selected: self.raw_search_selected,
+            content_search_results: self.content_search_results.clone(),
             loading: self.loading.clone(),
             notification: self.notification.clone(),
-            last_status: self.last_status.clone(),
-
-            // frame counter
-            frame_count: AtomicU64::new(self.frame_count.load(Ordering::Relaxed)),
             last_update: self.last_update,
-
-            // hash maps with `Clone` or `Arc` items
             active_file_operations: self.active_file_operations.clone(),
-            operations_cancel_tokens: self.operations_cancel_tokens.clone(),
-
-            // clone arcs
-            clipboard: Arc::clone(&self.clipboard),
-            clipboard_overlay_active: self.clipboard_overlay_active,
-            selected_clipboard_item: self.selected_clipboard_item.clone(),
-            selected_clipboard_item_index: self.selected_clipboard_item_index,
-            clipboard_view_mode: self.clipboard_view_mode,
-
-            // command palette and recent actions
-            command_palette: self.command_palette.clone(),
-            recent_actions: self.recent_actions.clone(),
+            operation_cancel_tokens: self.operation_cancel_tokens.clone(),
         }
+    }
+}
+
+// Equality comparison for state changes
+impl PartialEq for UIState {
+    fn eq(&self, other: &Self) -> bool {
+        self.mode == other.mode
+            && self.overlay == other.overlay
+            && self.selected == other.selected
+            && self.input == other.input
+            && self.show_hidden == other.show_hidden
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_atomic_operations() {
+        let ui_state = UIState::new();
+
+        // Test atomic redraw flags
+        ui_state.request_redraw(RedrawFlag::Main);
+        assert!(ui_state.needs_redraw());
+
+        ui_state.clear_redraw();
+        assert!(!ui_state.needs_redraw());
+
+        // Test frame counting
+        ui_state.increment_frame();
+        assert_eq!(ui_state.frame_count.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn test_loading_state() {
+        let loading = LoadingState::new("Testing");
+
+        loading.set_completion(50, 100);
+        assert_eq!(loading.get_completion_ratio(), 0.5);
+
+        loading.set_progress(75.0);
+        assert_eq!(loading.get_progress(), 75.0);
+    }
+
+    #[test]
+    fn test_notification_auto_dismiss() {
+        let mut ui_state = UIState::new();
+
+        ui_state.show_info("Test message");
+        assert!(ui_state.notification.is_some());
+
+        // Auto dismiss won't trigger immediately
+        assert!(!ui_state.update_notification());
+        assert!(ui_state.notification.is_some());
+    }
+
+    #[test]
+    fn test_input_management() {
+        let mut ui_state = UIState::new();
+
+        ui_state.set_input("test");
+        assert_eq!(ui_state.input, "test");
+        assert_eq!(ui_state.input_cursor, 4);
+
+        ui_state.insert_char('!');
+        assert_eq!(ui_state.input, "test!");
+        assert_eq!(ui_state.input_cursor, 5);
+
+        assert!(ui_state.delete_char_before());
+        assert_eq!(ui_state.input, "test");
+        assert_eq!(ui_state.input_cursor, 4);
+    }
+
+    #[test]
+    fn test_selection_management() {
+        let mut ui_state = UIState::new();
+
+        ui_state.mark_index(5);
+        assert!(ui_state.marked_indices.contains(&5));
+
+        ui_state.unmark_index(5);
+        assert!(!ui_state.marked_indices.contains(&5));
+
+        ui_state.mark_index(1);
+        ui_state.mark_index(3);
+        ui_state.clear_marks();
+        assert!(ui_state.marked_indices.is_empty());
+    }
+
+    #[test]
+    fn test_memory_usage() {
+        let ui_state = UIState::new();
+        let usage = ui_state.get_memory_usage();
+
+        assert!(usage.total_bytes() > 0);
+        assert!(usage.total_kb() > 0.0);
     }
 }
