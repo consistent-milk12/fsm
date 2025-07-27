@@ -14,7 +14,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, MutexGuard};
+use std::sync::{Arc, MutexGuard, RwLock};
 
 use tokio::fs as TokioFs;
 use tokio::sync::mpsc::UnboundedSender;
@@ -96,22 +96,18 @@ impl ActionDispatcher {
             Action::MoveSelectionUp => {
                 let fs: MutexGuard<'_, FSState> = self.state.fs_state();
                 fs.active_pane().move_selection_up();
-                self.state.update_ui_state(|ui: &UIState| {
-                    let new_ui: UIState = ui.clone();
-                    new_ui.request_redraw(RF::Main);
-                    new_ui
-                });
+                self.state.update_ui_state(Box::new(|ui: &mut UIState| {
+                    ui.request_redraw(RF::Main);
+                }));
             }
 
             Action::MoveSelectionDown => {
                 let fs: MutexGuard<'_, FSState> = self.state.fs_state();
                 fs.active_pane().move_selection_down();
 
-                self.state.update_ui_state(|ui: &UIState| {
-                    let new_ui: UIState = ui.clone();
-                    new_ui.request_redraw(RF::Main);
-                    new_ui
-                });
+                self.state.update_ui_state(Box::new(|ui: &mut UIState| {
+                    ui.request_redraw(RF::Main);
+                }));
             }
 
             Action::PageUp => {
@@ -122,11 +118,9 @@ impl ActionDispatcher {
                         break;
                     }
                 }
-                self.state.update_ui_state(|ui| {
-                    let new_ui: UIState = ui.clone();
-                    new_ui.request_redraw(RF::Main);
-                    new_ui
-                });
+                self.state.update_ui_state(Box::new(|ui: &mut UIState| {
+                    ui.request_redraw(RF::Main);
+                }));
             }
 
             Action::PageDown => {
@@ -138,11 +132,9 @@ impl ActionDispatcher {
                         break;
                     }
                 }
-                self.state.update_ui_state(|ui| {
-                    let new_ui: UIState = ui.clone();
-                    new_ui.request_redraw(RF::Main);
-                    new_ui
-                });
+                self.state.update_ui_state(Box::new(|ui: &mut UIState| {
+                    ui.request_redraw(RF::Main);
+                }));
             }
 
             Action::SelectFirst => {
@@ -150,11 +142,9 @@ impl ActionDispatcher {
 
                 fs.active_pane().selected.store(0, Ordering::Relaxed);
 
-                self.state.update_ui_state(|ui| {
-                    let new_ui: UIState = ui.clone();
-                    new_ui.request_redraw(RF::Main);
-                    new_ui
-                });
+                self.state.update_ui_state(Box::new(|ui: &mut UIState| {
+                    ui.request_redraw(RF::Main);
+                }));
             }
 
             Action::SelectLast => {
@@ -165,11 +155,9 @@ impl ActionDispatcher {
                     fs.active_pane().selected.store(len - 1, Ordering::Relaxed);
                 }
 
-                self.state.update_ui_state(|ui: &UIState| {
-                    let new_ui: UIState = ui.clone();
-                    new_ui.request_redraw(RF::Main);
-                    new_ui
-                });
+                self.state.update_ui_state(Box::new(|ui: &mut UIState| {
+                    ui.request_redraw(RF::Main);
+                }));
             }
             Action::SelectIndex(index) => {
                 let fs: MutexGuard<'_, FSState> = self.state.fs_state();
@@ -178,11 +166,9 @@ impl ActionDispatcher {
                 if index < len {
                     fs.active_pane().selected.store(index, Ordering::Relaxed);
 
-                    self.state.update_ui_state(|ui: &UIState| {
-                        let new_ui: UIState = ui.clone();
-                        new_ui.request_redraw(RF::Main);
-                        new_ui
-                    });
+                    self.state.update_ui_state(Box::new(|ui: &mut UIState| {
+                        ui.request_redraw(RF::Main);
+                    }));
                 }
             }
             Action::Resize(_width, height) => {
@@ -193,11 +179,9 @@ impl ActionDispatcher {
                     .viewport_height
                     .store(new_height, Ordering::Relaxed);
 
-                self.state.update_ui_state(|ui| {
-                    let new_ui: UIState = ui.clone();
-                    new_ui.request_redraw(RF::Main);
-                    new_ui
-                });
+                self.state.update_ui_state(Box::new(|ui: &mut UIState| {
+                    ui.request_redraw(RF::Main);
+                }));
             }
             Action::EnterSelected => {
                 // Navigate into directories or handle file selection
@@ -226,11 +210,9 @@ impl ActionDispatcher {
                     }
                 }
 
-                self.state.update_ui_state(|ui| {
-                    let new_ui = ui.clone();
-                    new_ui.request_redraw(RF::All);
-                    new_ui
-                });
+                self.state.update_ui_state(Box::new(|ui: &mut UIState| {
+                    ui.request_redraw(RF::All);
+                }));
             }
 
             Action::GoToParent => {
@@ -249,102 +231,92 @@ impl ActionDispatcher {
                     tracing::warn!("Failed to load parent directory: {}", e);
                 }
 
-                self.state.update_ui_state(|ui: &UIState| {
-                    let new_ui: UIState = ui.clone();
-                    new_ui.request_redraw(RF::All);
-                    new_ui
-                });
+                self.state.update_ui_state(Box::new(|ui: &mut UIState| {
+                    ui.request_redraw(RF::All);
+                }));
             }
             Action::Tick => {
-                self.state.update_ui_state(|ui: &UIState| {
-                    let new_ui: UIState = ui.clone();
-                    new_ui.request_redraw(RF::Main);
-                    new_ui
-                });
+                self.state.update_ui_state(Box::new(|ui: &mut UIState| {
+                    ui.request_redraw(RF::Main);
+                }));
             }
             Action::ToggleHelp => {
                 // Toggle help overlay
-                self.state.update_ui_state(|ui: &UIState| {
-                    let mut new_ui: UIState = ui.clone();
-                    new_ui.overlay = if new_ui.overlay == UIOverlay::Help {
+                self.state.update_ui_state(Box::new(|ui: &mut UIState| {
+                    ui.overlay = if ui.overlay == UIOverlay::Help {
                         UIOverlay::None
                     } else {
                         UIOverlay::Help
                     };
-                    new_ui.request_redraw(RF::Overlay);
-                    new_ui
-                });
+                    ui.request_redraw(RF::Overlay);
+                }));
             }
             Action::EnterCommandMode => {
                 // Enter command mode overlay
-                self.state.update_ui_state(|ui: &UIState| {
-                    let mut new_ui: UIState = ui.clone();
-                    new_ui.overlay = UIOverlay::Prompt;
-                    new_ui.clear_input(); // Use enhanced input management
-                    new_ui.input_prompt_type = Some(InputPromptType::Custom("command".to_string()));
-                    new_ui.request_redraw(RF::All); // Redraw everything for overlay transition
-                    new_ui
-                });
+                self.state.update_ui_state(Box::new(|ui: &mut UIState| {
+                    ui.overlay = UIOverlay::Prompt;
+                    ui.clear_input(); // Use enhanced input management
+                    ui.input_prompt_type = Some(InputPromptType::Custom("command".to_string()));
+                    ui.request_redraw(RF::All); // Redraw everything for overlay transition
+                }));
             }
             Action::ToggleFileNameSearch => {
                 // Toggle filename search overlay
-                self.state.update_ui_state(|ui: &UIState| {
-                    let mut new_ui: UIState = ui.clone();
-
-                    new_ui.overlay = if new_ui.overlay == UIOverlay::FileNameSearch {
+                self.state.update_ui_state(Box::new(|ui: &mut UIState| {
+                    ui.overlay = if ui.overlay == UIOverlay::FileNameSearch {
                         UIOverlay::None
                     } else {
                         UIOverlay::FileNameSearch
                     };
 
-                    new_ui.clear_input(); // Use enhanced input management
-                    new_ui.request_redraw(RF::All); // Redraw everything for overlay transition
-                    new_ui
-                });
+                    ui.clear_input(); // Use enhanced input management
+                    ui.request_redraw(RF::All); // Redraw everything for overlay transition
+                }));
             }
             Action::CloseOverlay => {
                 // Close any active overlay
-                self.state.update_ui_state(|ui: &UIState| {
-                    let mut new_ui: UIState = ui.clone();
-                    new_ui.overlay = UIOverlay::None;
-                    new_ui.clear_input(); // Use enhanced input management
-                    new_ui.input_prompt_type = None; // Clear prompt type
-                    new_ui.request_redraw(RF::All); // Redraw everything for overlay transition
-                    new_ui
-                });
+                self.state.update_ui_state(Box::new(|ui: &mut UIState| {
+                    ui.overlay = UIOverlay::None;
+                    ui.clear_input(); // Use enhanced input management
+                    ui.input_prompt_type = None; // Clear prompt type
+                    ui.request_redraw(RF::All); // Redraw everything for overlay transition
+                }));
             }
             Action::FileNameSearch(query) => {
                 // Update search input and perform filename filtering
                 let search_results: Vec<ObjectInfo> = self.perform_filename_search(&query);
 
-                self.state.update_ui_state(|ui: &UIState| {
-                    let mut new_ui: UIState = ui.clone();
-                    new_ui.set_input(&query); // Use enhanced input management
-                    new_ui.filename_search_results = search_results;
-                    new_ui.request_redraw(RF::Overlay);
-                    new_ui
-                });
+                self.state
+                    .update_ui_state(Box::new(move |ui: &mut UIState| {
+                        ui.set_input(&query); // Use enhanced input management
+                        ui.filename_search_results = search_results;
+                        ui.request_redraw(RF::Overlay);
+                    }));
 
-                tracing::debug!("Filename search updated for query: '{}'", query);
+                // tracing::debug!("Filename search updated for query: '{}'", query);
             }
             Action::SubmitInputPrompt(input) => {
                 // Handle input submission from overlays
-                let ui_state: Arc<UIState> = self.state.ui_state();
-                let prompt_type: Option<InputPromptType> = ui_state.input_prompt_type.clone();
+                let ui_state: Arc<RwLock<UIState>> = self.state.ui_state();
+                let prompt_type: Option<InputPromptType> = {
+                    let ui_guard = ui_state.read().expect("UIState RwLock poisoned");
+                    ui_guard.input_prompt_type.clone()
+                };
 
                 match prompt_type {
                     Some(InputPromptType::Custom(ref name)) if name == "command" => {
                         // Command execution
                         if !input.is_empty() {
+                            let tmp_input: String = input.clone();
+
                             // Add to command history
-                            self.state.update_ui_state(|ui: &UIState| {
-                                let mut new_ui: UIState = ui.clone();
-                                new_ui.add_to_history(&input);
-                                new_ui
-                            });
+                            self.state
+                                .update_ui_state(Box::new(move |ui: &mut UIState| {
+                                    ui.add_to_history(&input);
+                                }));
 
                             // Execute the command
-                            if let Err(e) = self.execute_command(&input).await {
+                            if let Err(e) = self.execute_command(&tmp_input).await {
                                 if e.to_string().contains("quit") {
                                     return false; // Quit requested
                                 }
@@ -353,14 +325,12 @@ impl ActionDispatcher {
                         }
 
                         // Close overlay after execution
-                        self.state.update_ui_state(|ui: &UIState| {
-                            let mut new_ui: UIState = ui.clone();
-                            new_ui.overlay = UIOverlay::None;
-                            new_ui.clear_input();
-                            new_ui.input_prompt_type = None;
-                            new_ui.request_redraw(RF::All);
-                            new_ui
-                        });
+                        self.state.update_ui_state(Box::new(|ui: &mut UIState| {
+                            ui.overlay = UIOverlay::None;
+                            ui.clear_input();
+                            ui.input_prompt_type = None;
+                            ui.request_redraw(RF::All);
+                        }));
                     }
                     Some(InputPromptType::CreateFile) => {
                         if !input.is_empty() {
@@ -371,14 +341,12 @@ impl ActionDispatcher {
                         }
 
                         // Close overlay
-                        self.state.update_ui_state(|ui| {
-                            let mut new_ui: UIState = ui.clone();
-                            new_ui.overlay = UIOverlay::None;
-                            new_ui.clear_input();
-                            new_ui.input_prompt_type = None;
-                            new_ui.request_redraw(RF::All);
-                            new_ui
-                        });
+                        self.state.update_ui_state(Box::new(|ui: &mut UIState| {
+                            ui.overlay = UIOverlay::None;
+                            ui.clear_input();
+                            ui.input_prompt_type = None;
+                            ui.request_redraw(RF::All);
+                        }));
                     }
                     Some(InputPromptType::CreateDirectory) => {
                         if !input.is_empty() {
@@ -389,14 +357,12 @@ impl ActionDispatcher {
                         }
 
                         // Close overlay
-                        self.state.update_ui_state(|ui: &UIState| {
-                            let mut new_ui: UIState = ui.clone();
-                            new_ui.overlay = UIOverlay::None;
-                            new_ui.clear_input();
-                            new_ui.input_prompt_type = None;
-                            new_ui.request_redraw(RF::All);
-                            new_ui
-                        });
+                        self.state.update_ui_state(Box::new(|ui: &mut UIState| {
+                            ui.overlay = UIOverlay::None;
+                            ui.clear_input();
+                            ui.input_prompt_type = None;
+                            ui.request_redraw(RF::All);
+                        }));
                     }
                     Some(InputPromptType::GoToPath) => {
                         if !input.is_empty() {
@@ -407,36 +373,31 @@ impl ActionDispatcher {
                         }
 
                         // Close overlay
-                        self.state.update_ui_state(|ui: &UIState| {
-                            let mut new_ui: UIState = ui.clone();
-                            new_ui.overlay = UIOverlay::None;
-                            new_ui.clear_input();
-                            new_ui.input_prompt_type = None;
-                            new_ui.request_redraw(RF::All);
-                            new_ui
-                        });
+                        self.state.update_ui_state(Box::new(|ui: &mut UIState| {
+                            ui.overlay = UIOverlay::None;
+                            ui.clear_input();
+                            ui.input_prompt_type = None;
+                            ui.request_redraw(RF::All);
+                        }));
                     }
                     _ => {
                         // Generic input handling - just close overlay
-                        self.state.update_ui_state(|ui: &UIState| {
-                            let mut new_ui: UIState = ui.clone();
-                            new_ui.overlay = UIOverlay::None;
-                            new_ui.clear_input();
-                            new_ui.input_prompt_type = None;
-                            new_ui.request_redraw(RF::All);
-                            new_ui
-                        });
+                        self.state.update_ui_state(Box::new(|ui: &mut UIState| {
+                            ui.overlay = UIOverlay::None;
+                            ui.clear_input();
+                            ui.input_prompt_type = None;
+                            ui.request_redraw(RF::All);
+                        }));
                     }
                 }
             }
             Action::UpdateInput(input) => {
                 // Update input field for overlay typing
-                self.state.update_ui_state(|ui: &UIState| {
-                    let mut new_ui: UIState = ui.clone();
-                    new_ui.set_input(&input);
-                    new_ui.request_redraw(RF::Overlay);
-                    new_ui
-                });
+                self.state
+                    .update_ui_state(Box::new(move |ui: &mut UIState| {
+                        ui.set_input(&input);
+                        ui.request_redraw(RF::Overlay);
+                    }));
             }
             // Unhandled actions can be routed here.  To support a
             // particular action, add a match arm that mutates the
@@ -650,7 +611,7 @@ impl ActionDispatcher {
                         Ok(_) => {
                             self.show_success(&format!("Created file: {name}"));
                             // Reload current directory to show new file
-                            let current = current_dir.clone();
+                            let current: PathBuf = current_dir.clone();
                             self.load_directory(current).await?;
                         }
                         Err(e) => {
@@ -671,24 +632,23 @@ impl ActionDispatcher {
 
             "pwd" => {
                 let fs: MutexGuard<'_, FSState> = self.state.fs_state();
-                let current_dir = fs.active_pane().cwd.clone();
+                let current_dir: PathBuf = fs.active_pane().cwd.clone();
+
                 self.show_info(&format!("Current directory: {}", current_dir.display()));
             }
 
             "ls" => {
-                let fs = self.state.fs_state();
+                let fs: MutexGuard<'_, FSState> = self.state.fs_state();
                 let entry_count = fs.active_pane().entries.len();
                 self.show_info(&format!("Directory contains {entry_count} entries"));
             }
 
             "help" => {
                 // Toggle help overlay
-                self.state.update_ui_state(|ui| {
-                    let mut new_ui = ui.clone();
-                    new_ui.overlay = UIOverlay::Help;
-                    new_ui.request_redraw(RedrawFlag::Overlay);
-                    new_ui
-                });
+                self.state.update_ui_state(Box::new(|ui: &mut UIState| {
+                    ui.overlay = UIOverlay::Help;
+                    ui.request_redraw(RedrawFlag::Overlay);
+                }));
             }
 
             "quit" | "q" => {
@@ -702,20 +662,16 @@ impl ActionDispatcher {
             "find" => {
                 if let Some(pattern) = args.first() {
                     let results: Vec<ObjectInfo> = self.perform_filename_search(pattern);
+                    let matches: usize = results.len();
 
-                    self.state.update_ui_state(|ui: &UIState| {
-                        let mut new_ui: UIState = ui.clone();
-                        new_ui.filename_search_results = results.clone();
-                        new_ui.overlay = UIOverlay::SearchResults;
-                        new_ui.request_redraw(RedrawFlag::All);
-                        new_ui
-                    });
+                    self.state
+                        .update_ui_state(Box::new(move |ui: &mut UIState| {
+                            ui.filename_search_results = results.clone();
+                            ui.overlay = UIOverlay::SearchResults;
+                            ui.request_redraw(RedrawFlag::All);
+                        }));
 
-                    self.show_info(&format!(
-                        "Found {} matches for '{}'",
-                        results.len(),
-                        pattern
-                    ));
+                    self.show_info(&format!("Found {} matches for '{}'", matches, pattern));
                 } else {
                     self.show_error("Usage: find <pattern>");
                 }
@@ -731,12 +687,10 @@ impl ActionDispatcher {
             }
             "clear" => {
                 // Clear any notifications
-                self.state.update_ui_state(|ui: &UIState| {
-                    let mut new_ui: UIState = ui.clone();
-                    new_ui.notification = None;
-                    new_ui.request_redraw(RedrawFlag::All);
-                    new_ui
-                });
+                self.state.update_ui_state(Box::new(|ui: &mut UIState| {
+                    ui.notification = None;
+                    ui.request_redraw(RedrawFlag::All);
+                }));
             }
             _ => {
                 self.show_error(&format!("Unknown command: {cmd}"));
@@ -748,28 +702,28 @@ impl ActionDispatcher {
 
     /// Show success notification
     fn show_success(&self, message: &str) {
-        self.state.update_ui_state(|ui: &UIState| {
-            let mut new_ui: UIState = ui.clone();
-            new_ui.show_success(message);
-            new_ui
-        });
+        let msg = message.to_string();
+        self.state
+            .update_ui_state(Box::new(move |ui: &mut UIState| {
+                ui.show_success(&msg);
+            }));
     }
 
     /// Show info notification  
     fn show_info(&self, message: &str) {
-        self.state.update_ui_state(|ui: &UIState| {
-            let mut new_ui: UIState = ui.clone();
-            new_ui.show_info(message);
-            new_ui
-        });
+        let msg = message.to_string();
+        self.state
+            .update_ui_state(Box::new(move |ui: &mut UIState| {
+                ui.show_info(&msg);
+            }));
     }
 
     /// Show error notification
     fn show_error(&self, message: &str) {
-        self.state.update_ui_state(|ui: &UIState| {
-            let mut new_ui: UIState = ui.clone();
-            new_ui.show_error(message);
-            new_ui
-        });
+        let msg = message.to_string();
+        self.state
+            .update_ui_state(Box::new(move |ui: &mut UIState| {
+                ui.show_error(&msg);
+            }));
     }
 }

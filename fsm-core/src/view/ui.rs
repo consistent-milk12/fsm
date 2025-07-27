@@ -8,7 +8,7 @@
 //! `AppState`, `UIState` and `FSState` behind locks.  To render the main
 //! file table we now lock the filesystem state, fetch the active pane and
 //! its current working directory, and then either render the directory
-//! contents or a loading widget depending on the pane’s loading flag.  The
+//! contents or a loading widget depending on the pane's loading flag.  The
 //! rest of the renderer remains largely unchanged, retaining the layout
 //! caching and zero‑allocation overlay logic.
 
@@ -21,6 +21,7 @@ use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders};
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
+use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
 /// High-performance UI renderer with atomic optimization
@@ -59,9 +60,12 @@ impl UIRenderer {
         let ui_state = state_coordinator.ui_state();
 
         // Early return optimization - skip rendering if nothing needs redraw
-        if !ui_state.needs_redraw() && self.component_dirty_flags == 0 && self.frame_count > 0 {
-            tracing::debug!("Skipping render - no redraw needed");
-            return;
+        {
+            let ui_guard = ui_state.read().expect("UIState RwLock poisoned");
+            if !ui_guard.needs_redraw() && self.component_dirty_flags == 0 && self.frame_count > 0 {
+                tracing::debug!("Skipping render - no redraw needed");
+                return;
+            }
         }
 
         self.update_layout_cache(frame.area());
@@ -75,12 +79,15 @@ impl UIRenderer {
 
         self.render_main_components(frame, &ui_state, state_coordinator, &main_layout);
 
-        if ui_state.overlay != UIOverlay::None || ui_state.clipboard_overlay_active {
-            self.render_overlays(frame, &ui_state);
-        }
+        {
+            let ui_guard = ui_state.read().expect("UIState RwLock poisoned");
+            if ui_guard.overlay != UIOverlay::None || ui_guard.clipboard_overlay_active {
+                self.render_overlays(frame, &ui_guard);
+            }
 
-        if ui_state.notification.is_some() {
-            self.render_notifications(frame, &ui_state);
+            if ui_guard.notification.is_some() {
+                self.render_notifications(frame, &ui_guard);
+            }
         }
 
         self.update_performance_metrics(render_start);
@@ -88,23 +95,27 @@ impl UIRenderer {
         self.frame_count += 1;
 
         // Clear redraw flags AFTER rendering completes
-        ui_state.clear_redraw();
+        state_coordinator.clear_redraw();
     }
 
     fn render_main_components(
         &mut self,
         frame: &mut Frame<'_>,
-        ui_state: &UIState,
+        ui_state: &Arc<RwLock<UIState>>,
         state_coordinator: &StateCoordinator,
         layout: &[Rect; 2],
     ) {
         tracing::debug!("render_main_components called, layout: {:?}", layout);
 
-        let redraw_flags = ui_state.redraw_flags.load(Ordering::Relaxed);
-        let needs_main_redraw = (redraw_flags & RedrawFlag::Main.bits() as u32) != 0
-            || (self.component_dirty_flags & component_flags::MAIN_TABLE) != 0;
-        let needs_status_redraw = (redraw_flags & RedrawFlag::StatusBar.bits() as u32) != 0
-            || (self.component_dirty_flags & component_flags::STATUS_BAR) != 0;
+        let (needs_main_redraw, needs_status_redraw) = {
+            let ui_guard = ui_state.read().expect("UIState RwLock poisoned");
+            let redraw_flags = ui_guard.redraw_flags.load(Ordering::Relaxed);
+            let needs_main = (redraw_flags & RedrawFlag::Main.bits() as u32) != 0
+                || (self.component_dirty_flags & component_flags::MAIN_TABLE) != 0;
+            let needs_status = (redraw_flags & RedrawFlag::StatusBar.bits() as u32) != 0
+                || (self.component_dirty_flags & component_flags::STATUS_BAR) != 0;
+            (needs_main, needs_status)
+        };
 
         tracing::debug!(
             "Redraw flags: main={}, status={}",
@@ -126,7 +137,8 @@ impl UIRenderer {
 
                     let file_table = OptimizedFileTable::new();
                     // Render the file table using the pane state and current path.
-                    file_table.render_optimized(frame, ui_state, pane, &current_path, layout[0]);
+                    let ui_guard = ui_state.read().expect("UIState RwLock poisoned");
+                    file_table.render_optimized(frame, &ui_guard, pane, &current_path, layout[0]);
                 } else {
                     // Render a loading state if the directory isn't in the cache yet
                     let loading_block = Block::default()
@@ -141,11 +153,15 @@ impl UIRenderer {
         if needs_status_redraw {
             tracing::debug!("Rendering status bar.");
             let status_bar = OptimizedStatusBar::new();
-            status_bar.render_with_metrics(frame, ui_state, state_coordinator, layout[1]);
+            let ui_guard = ui_state.read().expect("UIState RwLock poisoned");
+            status_bar.render_with_metrics(frame, &ui_guard, state_coordinator, layout[1]);
         }
 
-        if !ui_state.active_file_operations.is_empty() {
-            self.render_file_operations_progress(frame, ui_state, layout[0]);
+        {
+            let ui_guard = ui_state.read().expect("UIState RwLock poisoned");
+            if !ui_guard.active_file_operations.is_empty() {
+                self.render_file_operations_progress(frame, &ui_guard, layout[0]);
+            }
         }
     }
 

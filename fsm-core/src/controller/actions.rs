@@ -257,4 +257,9 @@ pub enum Action {
     CancelFileOperation {
         operation_id: OperationId,
     },
+
+    UpdateTaskStatus {
+        task_id: u64,
+        completed: bool,
+    },
 }

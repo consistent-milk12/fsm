@@ -14,7 +14,7 @@ use std::{
     io::{self, Stdout},
     panic::PanicHookInfo,
     path::PathBuf,
-    sync::{Arc, Mutex, MutexGuard, atomic::Ordering},
+    sync::{Arc, Mutex, MutexGuard, RwLock, atomic::Ordering},
     time::{Duration, Instant},
 };
 
@@ -128,7 +128,7 @@ impl App {
         // Create StateCoordinator first (no circular dependency)
         let state_coordinator: Arc<StateCoordinator> = Arc::new(StateCoordinator::new_simple(
             app_state.clone(),
-            ui_state,
+            RwLock::new(ui_state),
             fs_state_arc,
         ));
 
@@ -162,8 +162,7 @@ impl App {
             let pane: &mut PaneState = fs_state_guard.active_pane_mut();
 
             pane.cwd = current_dir.clone();
-            pane.is_loading
-                .store(true, std::sync::atomic::Ordering::Relaxed);
+            pane.is_loading.store(true, Ordering::Relaxed);
             // Lock automatically dropped here
         }
 
