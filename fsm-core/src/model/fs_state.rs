@@ -238,7 +238,7 @@ impl PaneState {
             EntryFilter::FilesOnly => entries.retain(|e| !e.is_dir),
             EntryFilter::DirsOnly => entries.retain(|e| e.is_dir),
             EntryFilter::Extension(ext) => {
-                entries.retain(|e| e.extension.as_ref().map_or(false, |e_ext| e_ext == ext));
+                entries.retain(|e| e.extension.as_ref().is_some_and(|e_ext| e_ext == ext));
             }
             EntryFilter::Pattern(pattern) => {
                 entries.retain(|e| e.name.contains(pattern.as_str()));

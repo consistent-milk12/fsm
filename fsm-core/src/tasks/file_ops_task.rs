@@ -17,7 +17,7 @@ use std::time::Instant;
 use tokio::fs as TokioFs;
 use tokio::fs::{File, ReadDir};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::mpsc::{self, UnboundedSender, error::SendError};
+use tokio::sync::mpsc::{UnboundedSender, error::SendError};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -63,7 +63,7 @@ impl fmt::Display for FileOperation {
             FileOperation::Move { .. } => "Move",
             FileOperation::Rename { .. } => "Rename",
         };
-        write!(f, "{}", s)
+        write!(f, "{s}")
     }
 }
 
@@ -267,10 +267,10 @@ impl FileOperationTask {
             dest.to_path_buf()
         };
         // Ensure parent directory exists.
-        if let Some(parent) = final_dst.parent() {
-            if !parent.exists() {
-                TokioFs::create_dir_all(parent).await?;
-            }
+        if let Some(parent) = final_dst.parent()
+            && !parent.exists()
+        {
+            TokioFs::create_dir_all(parent).await?;
         }
         // Get the file size for progress tracking.
         let metadata = TokioFs::metadata(source).await?;
@@ -310,7 +310,7 @@ impl FileOperationTask {
             copied += bytes_read as u64;
             *current_bytes += bytes_read as u64;
             // Emit a progress update at defined intervals.
-            if copied % optimal_interval == 0 {
+            if copied.is_multiple_of(optimal_interval) {
                 self.report_progress(
                     *current_bytes,
                     total_bytes,
@@ -359,10 +359,10 @@ impl FileOperationTask {
             dest.to_path_buf()
         };
         // Ensure parent directory exists.
-        if let Some(parent) = final_dst.parent() {
-            if !parent.exists() {
-                TokioFs::create_dir_all(parent).await?;
-            }
+        if let Some(parent) = final_dst.parent()
+            && !parent.exists()
+        {
+            TokioFs::create_dir_all(parent).await?;
         }
         // Get file size for progress tracking.
         let metadata = TokioFs::metadata(source).await?;

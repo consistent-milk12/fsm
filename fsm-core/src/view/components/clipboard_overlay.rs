@@ -128,7 +128,7 @@ impl OptimizedClipboardOverlay {
         if let Some(sep_pos) = path.rfind('/') {
             let filename = &path[sep_pos + 1..];
             if filename.len() < max_len - 4 {
-                return format!(".../{}", filename);
+                return format!(".../{filename}");
             }
         }
         format!("...{}", &path[path.len().saturating_sub(max_len - 3)..])
@@ -146,7 +146,7 @@ impl OptimizedClipboardOverlay {
             unit_idx += 1;
         }
         if unit_idx == 0 {
-            format!("{}B", size)
+            format!("{size}B")
         } else {
             format!("{:.1}{}", size_f, units[unit_idx])
         }

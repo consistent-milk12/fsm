@@ -16,6 +16,12 @@ pub struct NavigationHandler {
     sequence_buffer: Vec<KeyEvent>,
 }
 
+impl Default for NavigationHandler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl NavigationHandler {
     pub fn new() -> Self {
         let mut bindings: HashMap<KeyEvent, Action> = HashMap::with_capacity(15);

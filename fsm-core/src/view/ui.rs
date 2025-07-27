@@ -86,7 +86,7 @@ impl UIRenderer {
         self.update_performance_metrics(render_start);
         self.component_dirty_flags = 0;
         self.frame_count += 1;
-        
+
         // Clear redraw flags AFTER rendering completes
         ui_state.clear_redraw();
     }
@@ -193,12 +193,15 @@ impl UIRenderer {
 
     fn render_clipboard_overlay(&mut self, frame: &mut Frame<'_>, ui_state: &UIState, area: Rect) {
         let clipboard_overlay = OptimizedClipboardOverlay::new();
-        if let Err(_) = clipboard_overlay.render_zero_alloc(
-            frame,
-            area,
-            &ui_state.clipboard,
-            ui_state.selected_clipboard_item_index,
-        ) {
+        if clipboard_overlay
+            .render_zero_alloc(
+                frame,
+                area,
+                &ui_state.clipboard,
+                ui_state.selected_clipboard_item_index,
+            )
+            .is_err()
+        {
             let error_area = Rect {
                 y: area.y + area.height.saturating_sub(3),
                 height: 3,
@@ -246,10 +249,10 @@ impl UIRenderer {
     }
 
     fn get_cached_overlay_area(&mut self, screen_size: Rect, overlay_type: UIOverlay) -> Rect {
-        if let Some((cached_size, cached_area)) = self.layout_cache.overlay_layout {
-            if cached_size == screen_size {
-                return cached_area;
-            }
+        if let Some((cached_size, cached_area)) = self.layout_cache.overlay_layout
+            && cached_size == screen_size
+        {
+            return cached_area;
         }
         let area = match overlay_type {
             UIOverlay::Help => self.calculate_centered_overlay(screen_size, 80, 80),

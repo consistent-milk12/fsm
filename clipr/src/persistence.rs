@@ -94,12 +94,12 @@ impl ClipboardPersistence {
         let backup_path = file_path.with_extension("bak");
 
         // Ensure parent directory exists
-        if let Some(parent) = file_path.parent() {
-            if !parent.exists() {
-                std::fs::create_dir_all(parent).map_err(|e| {
-                    ClipError::persistence_error(format!("Failed to create directory: {}", e))
-                })?;
-            }
+        if let Some(parent) = file_path.parent()
+            && !parent.exists()
+        {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                ClipError::persistence_error(format!("Failed to create directory: {e}"))
+            })?;
         }
 
         Ok(Self {
@@ -128,10 +128,7 @@ impl ClipboardPersistence {
         // Verify performance target
         let save_time = start_time.elapsed();
         if save_time > Duration::from_millis(1) {
-            eprintln!(
-                "Warning: Clipboard save exceeded 1ms target: {:?}",
-                save_time
-            );
+            eprintln!("Warning: Clipboard save exceeded 1ms target: {save_time:?}");
         }
 
         Ok(())
@@ -147,7 +144,7 @@ impl ClipboardPersistence {
             Err(e) if e.is_persistence_error() => {
                 // Try loading from backup if main file is corrupted
                 if self.backup_path.exists() {
-                    eprintln!("Main persistence file corrupted, trying backup: {:?}", e);
+                    eprintln!("Main persistence file corrupted, trying backup: {e:?}");
                     self.try_load_from_file(&self.backup_path)
                         .await
                         .unwrap_or_else(|_| ClipBoard::new(Default::default()))
@@ -161,10 +158,7 @@ impl ClipboardPersistence {
         // Verify performance target
         let load_time = start_time.elapsed();
         if load_time > Duration::from_micros(500) {
-            eprintln!(
-                "Warning: Clipboard load exceeded 500µs target: {:?}",
-                load_time
-            );
+            eprintln!("Warning: Clipboard load exceeded 500µs target: {load_time:?}");
         }
 
         Ok(clipboard)
@@ -179,7 +173,7 @@ impl ClipboardPersistence {
         // Read file data
         let data = fs::read(path)
             .await
-            .map_err(|e| ClipError::persistence_error(format!("Failed to read file: {}", e)))?;
+            .map_err(|e| ClipError::persistence_error(format!("Failed to read file: {e}")))?;
 
         // Deserialize clipboard data
         self.deserialize_clipboard(&data).await
@@ -191,7 +185,7 @@ impl ClipboardPersistence {
             fs::copy(&self.file_path, &self.backup_path)
                 .await
                 .map_err(|e| {
-                    ClipError::persistence_error(format!("Failed to create backup: {}", e))
+                    ClipError::persistence_error(format!("Failed to create backup: {e}"))
                 })?;
         }
         Ok(())
@@ -200,15 +194,15 @@ impl ClipboardPersistence {
     /// Perform atomic save operation
     async fn atomic_save(&self, data: &[u8]) -> ClipResult<()> {
         // Write to temporary file
-        fs::write(&self.temp_path, data).await.map_err(|e| {
-            ClipError::atomic_save_error(format!("Failed to write temp file: {}", e))
-        })?;
+        fs::write(&self.temp_path, data)
+            .await
+            .map_err(|e| ClipError::atomic_save_error(format!("Failed to write temp file: {e}")))?;
 
         // Atomic rename to final location
         fs::rename(&self.temp_path, &self.file_path)
             .await
             .map_err(|e| {
-                ClipError::atomic_save_error(format!("Failed to rename temp file: {}", e))
+                ClipError::atomic_save_error(format!("Failed to rename temp file: {e}"))
             })?;
 
         Ok(())
@@ -261,12 +255,12 @@ impl ClipboardPersistence {
         }
 
         // Checksum validation if enabled
-        if self.config.validate_checksums {
-            if let Some(stored_checksum) = persisted_data.checksum {
-                let calculated_checksum = self.calculate_checksum(&persisted_data.items);
-                if stored_checksum != calculated_checksum {
-                    return Err(ClipError::persistence_corrupted(&self.file_path));
-                }
+        if self.config.validate_checksums
+            && let Some(stored_checksum) = persisted_data.checksum
+        {
+            let calculated_checksum = self.calculate_checksum(&persisted_data.items);
+            if stored_checksum != calculated_checksum {
+                return Err(ClipError::persistence_corrupted(&self.file_path));
             }
         }
 

@@ -385,11 +385,11 @@ impl LoadingSummary {
         let mut details = self.format_progress();
 
         if let Some(item) = &self.current_item {
-            details.push_str(&format!("\nProcessing: {}", item));
+            details.push_str(&format!("\nProcessing: {item}"));
         }
 
         if let Some(eta) = self.estimated_remaining {
-            details.push_str(&format!("\nETA: {:?}", eta));
+            details.push_str(&format!("\nETA: {eta:?}"));
         }
 
         if self.throughput > 0.0 {
@@ -421,25 +421,19 @@ impl LoadingState {
 
     /// Create loading state for file operations
     pub fn file_operation(operation: &str, file_count: u64) -> Self {
-        let state = Self::new(
-            format!("{} files...", operation),
-            LoadingType::FileOperation,
-        );
+        let state = Self::new(format!("{operation} files..."), LoadingType::FileOperation);
         state.set_completion(0, file_count);
         state
     }
 
     /// Create loading state for search operations
     pub fn search_operation(query: &str) -> Self {
-        Self::indeterminate(format!("Searching for '{}'...", query), LoadingType::Search)
+        Self::indeterminate(format!("Searching for '{query}'..."), LoadingType::Search)
     }
 
     /// Create loading state for content loading
     pub fn content_load(item_name: &str) -> Self {
-        Self::indeterminate(
-            format!("Loading {}...", item_name),
-            LoadingType::ContentLoad,
-        )
+        Self::indeterminate(format!("Loading {item_name}..."), LoadingType::ContentLoad)
     }
 }
 
@@ -530,7 +524,7 @@ pub struct UIState {
     pub last_query: Option<CompactString>,
     pub input_prompt_type: Option<InputPromptType>,
     pub input_history: SmallVec<[CompactString; 32]>, // Command/search history
-    pub input_history_index: Option<usize>, // Current position in history navigation
+    pub input_history_index: Option<usize>,           // Current position in history navigation
 
     // Display state
     pub show_hidden: bool,
@@ -749,14 +743,13 @@ impl UIState {
 
     /// Check and auto-dismiss notifications
     pub fn update_notification(&mut self) -> bool {
-        if let Some(notification) = &self.notification {
-            if let Some(auto_dismiss_ms) = notification.auto_dismiss_ms {
-                if notification.timestamp.elapsed().as_millis() > auto_dismiss_ms as u128 {
-                    self.notification = None;
-                    self.request_redraw(RedrawFlag::Notification);
-                    return true;
-                }
-            }
+        if let Some(notification) = &self.notification
+            && let Some(auto_dismiss_ms) = notification.auto_dismiss_ms
+            && notification.timestamp.elapsed().as_millis() > auto_dismiss_ms as u128
+        {
+            self.notification = None;
+            self.request_redraw(RedrawFlag::Notification);
+            return true;
         }
         false
     }
@@ -770,21 +763,21 @@ impl UIState {
     }
 
     // Enhanced input management for overlays
-    
+
     /// Clear input and reset cursor position
     pub fn clear_input(&mut self) {
         self.input = CompactString::default();
         self.input_cursor = 0;
         self.input_history_index = None;
     }
-    
+
     /// Set input text and update cursor to end
     pub fn set_input(&mut self, text: impl Into<CompactString>) {
         self.input = text.into();
         self.input_cursor = self.input.len();
         self.input_history_index = None;
     }
-    
+
     /// Insert character at cursor position
     pub fn insert_char(&mut self, ch: char) {
         let mut input_str = self.input.to_string();
@@ -793,17 +786,19 @@ impl UIState {
         self.input_cursor += ch.len_utf8();
         self.input_history_index = None;
     }
-    
+
     /// Delete character before cursor (backspace)
     pub fn delete_char_before(&mut self) -> bool {
         if self.input_cursor > 0 {
             let mut input_str = self.input.to_string();
             let char_indices: Vec<_> = input_str.char_indices().collect();
-            
+
             // Find the character boundary before cursor
-            if let Some((char_pos, _)) = char_indices.iter()
+            if let Some((char_pos, _)) = char_indices
+                .iter()
                 .rev()
-                .find(|(pos, _)| *pos < self.input_cursor) {
+                .find(|(pos, _)| *pos < self.input_cursor)
+            {
                 input_str.remove(*char_pos);
                 self.input = input_str.into();
                 self.input_cursor = *char_pos;
@@ -813,34 +808,38 @@ impl UIState {
         }
         false
     }
-    
+
     /// Move cursor left by one character
     pub fn move_cursor_left(&mut self) {
         if self.input_cursor > 0 {
             let input_str = self.input.as_str();
             let char_indices: Vec<_> = input_str.char_indices().collect();
-            
-            if let Some((pos, _)) = char_indices.iter()
+
+            if let Some((pos, _)) = char_indices
+                .iter()
                 .rev()
-                .find(|(pos, _)| *pos < self.input_cursor) {
+                .find(|(pos, _)| *pos < self.input_cursor)
+            {
                 self.input_cursor = *pos;
             }
         }
     }
-    
+
     /// Move cursor right by one character
     pub fn move_cursor_right(&mut self) {
         let input_str = self.input.as_str();
         let char_indices: Vec<_> = input_str.char_indices().collect();
-        
-        if let Some((pos, _)) = char_indices.iter()
-            .find(|(pos, _)| *pos > self.input_cursor) {
+
+        if let Some((pos, _)) = char_indices
+            .iter()
+            .find(|(pos, _)| *pos > self.input_cursor)
+        {
             self.input_cursor = *pos;
         } else if self.input_cursor < input_str.len() {
             self.input_cursor = input_str.len();
         }
     }
-    
+
     /// Add input to history (for commands/searches)
     pub fn add_to_history(&mut self, input: impl Into<CompactString>) {
         let input_str = input.into();
@@ -849,10 +848,10 @@ impl UIState {
             if let Some(pos) = self.input_history.iter().position(|x| *x == input_str) {
                 self.input_history.remove(pos);
             }
-            
+
             // Add to end (most recent)
             self.input_history.push(input_str);
-            
+
             // Keep only last 32 items
             if self.input_history.len() > 32 {
                 self.input_history.remove(0);
@@ -860,13 +859,13 @@ impl UIState {
         }
         self.input_history_index = None;
     }
-    
+
     /// Navigate to previous item in history
     pub fn history_prev(&mut self) -> bool {
         if self.input_history.is_empty() {
             return false;
         }
-        
+
         match self.input_history_index {
             None => {
                 // Start from the end (most recent)
@@ -877,17 +876,17 @@ impl UIState {
             }
             _ => return false, // Already at oldest
         }
-        
-        if let Some(idx) = self.input_history_index {
-            if let Some(history_item) = self.input_history.get(idx) {
-                self.input = history_item.clone();
-                self.input_cursor = self.input.len();
-                return true;
-            }
+
+        if let Some(idx) = self.input_history_index
+            && let Some(history_item) = self.input_history.get(idx)
+        {
+            self.input = history_item.clone();
+            self.input_cursor = self.input.len();
+            return true;
         }
         false
     }
-    
+
     /// Navigate to next item in history  
     pub fn history_next(&mut self) -> bool {
         if let Some(idx) = self.input_history_index {
@@ -907,13 +906,13 @@ impl UIState {
         }
         false
     }
-    
+
     /// Get overlay-specific title
     pub fn get_overlay_title(&self) -> &'static str {
         match self.overlay {
             UIOverlay::Help => "Help",
             UIOverlay::FileNameSearch => "File Search",
-            UIOverlay::ContentSearch => "Content Search", 
+            UIOverlay::ContentSearch => "Content Search",
             UIOverlay::Prompt => match &self.input_prompt_type {
                 Some(InputPromptType::Custom(name)) if name == "command" => "Command Mode",
                 Some(InputPromptType::CreateFile) => "Create File",
@@ -927,13 +926,12 @@ impl UIState {
             _ => "Overlay",
         }
     }
-    
+
     /// Check if current overlay supports input
     pub fn overlay_accepts_input(&self) -> bool {
-        matches!(self.overlay, 
-            UIOverlay::FileNameSearch | 
-            UIOverlay::ContentSearch | 
-            UIOverlay::Prompt
+        matches!(
+            self.overlay,
+            UIOverlay::FileNameSearch | UIOverlay::ContentSearch | UIOverlay::Prompt
         )
     }
 }

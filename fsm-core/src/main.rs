@@ -348,9 +348,13 @@ impl App {
     }
 
     /// Handle input when overlays are active
-    async fn handle_overlay_input(&self, key_event: KeyEvent, ui_state: &fsm_core::model::ui_state::UIState) -> Result<Option<Action>> {
+    async fn handle_overlay_input(
+        &self,
+        key_event: KeyEvent,
+        ui_state: &fsm_core::model::ui_state::UIState,
+    ) -> Result<Option<Action>> {
         use fsm_core::model::ui_state::UIOverlay;
-        
+
         match key_event.code {
             KeyCode::Esc => {
                 // Always close overlay on Esc

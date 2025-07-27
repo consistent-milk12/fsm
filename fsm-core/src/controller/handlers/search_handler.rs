@@ -30,6 +30,12 @@ enum SearchMode {
     CommandMode,    // After ':' pressed
 }
 
+impl Default for SearchHandler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SearchHandler {
     /// Create new search handler
     pub fn new() -> Self {

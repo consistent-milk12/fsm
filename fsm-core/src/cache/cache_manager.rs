@@ -531,7 +531,7 @@ mod tests {
     fn create_test_info(path: &str) -> ObjectInfo {
         ObjectInfo {
             path: PathBuf::from(path),
-            name: path.split('/').last().unwrap_or_default().to_string(),
+            name: path.split('/').next_back().unwrap_or_default().to_string(),
             ..Default::default()
         }
     }
@@ -685,7 +685,7 @@ mod tests {
 
         // Insert multiple entries
         for i in 0..10 {
-            let path = format!("/test/file{}", i);
+            let path = format!("/test/file{i}");
             cache.insert_path(&path, create_test_info(&path)).await;
         }
 
@@ -702,14 +702,14 @@ mod tests {
 
         // Check that odd entries remain
         for i in 0..10 {
-            let path = format!("/test/file{}", i);
+            let path = format!("/test/file{i}");
             let key = ObjectInfoCache::path_to_key(&path);
             let exists = cache.get(&key).await.is_some();
 
             if i % 2 == 0 {
-                assert!(!exists, "Even entry {} should be invalidated", i);
+                assert!(!exists, "Even entry {i} should be invalidated");
             } else {
-                assert!(exists, "Odd entry {} should remain", i);
+                assert!(exists, "Odd entry {i} should remain");
             }
         }
     }
@@ -723,8 +723,8 @@ mod tests {
         for i in 0..10 {
             let cache_clone = cache.clone();
             let handle = tokio::spawn(async move {
-                let key = ObjectInfoCache::path_to_key(format!("/test/{}", i));
-                let info = create_test_info(&format!("/test/{}", i));
+                let key = ObjectInfoCache::path_to_key(format!("/test/{i}"));
+                let info = create_test_info(&format!("/test/{i}"));
 
                 // Perform multiple operations
                 cache_clone.insert(key.clone(), info.clone()).await;

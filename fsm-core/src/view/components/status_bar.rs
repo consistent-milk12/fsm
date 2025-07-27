@@ -47,8 +47,8 @@ impl OptimizedStatusBar {
         // Acquire current path from the active pane in FSState
         let current_path = {
             let fs_state = state_coordinator.fs_state();
-            let path = fs_state.active_pane().cwd.clone();
-            path
+
+            fs_state.active_pane().cwd.clone()
         };
         let path_display = current_path.to_string_lossy();
 
@@ -83,8 +83,7 @@ impl OptimizedStatusBar {
         };
 
         let right_text = format!(
-            "Tasks: {} | Handlers: {}/{} | Avg: {:.1}μs",
-            active_tasks, enabled_count, handler_count, avg_time_us
+            "Tasks: {active_tasks} | Handlers: {enabled_count}/{handler_count} | Avg: {avg_time_us:.1}μs"
         );
 
         // Split area into left and right halves

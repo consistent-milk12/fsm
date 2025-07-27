@@ -35,6 +35,12 @@ enum KeyboardMode {
     Debug,
 }
 
+impl Default for KeyboardHandler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl KeyboardHandler {
     /// Create new fallback keyboard handler
     pub fn new() -> Self {
@@ -162,7 +168,7 @@ impl KeyboardHandler {
                 );
 
                 // Warn if too many unhandled keys (possible handler misconfiguration)
-                if self.unhandled_key_count % 10 == 0 {
+                if self.unhandled_key_count.is_multiple_of(10) {
                     warn!(
                         "KeyboardHandler: {} unhandled keys - check
   handler configuration",

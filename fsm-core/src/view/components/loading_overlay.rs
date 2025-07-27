@@ -31,7 +31,7 @@ impl OptimizedLoadingOverlay {
         }
 
         if let Some(eta) = summary.estimated_remaining {
-            lines.push(Line::from(format!("ETA: {:.0?}", eta)));
+            lines.push(Line::from(format!("ETA: {eta:.0?}")));
         }
 
         lines.push(Line::from(""));

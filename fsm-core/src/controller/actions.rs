@@ -29,6 +29,12 @@ pub enum InputPromptType {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct OperationId(String);
 
+impl Default for OperationId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl OperationId {
     /// Generate a new unique operation ID
     pub fn new() -> Self {

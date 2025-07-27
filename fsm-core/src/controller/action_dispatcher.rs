@@ -84,7 +84,7 @@ impl ActionDispatcher {
                 let fs = self.state.fs_state();
                 fs.active_pane().move_selection_up();
                 self.state.update_ui_state(|ui| {
-                    let mut new_ui = ui.clone();
+                    let new_ui = ui.clone();
                     new_ui.request_redraw(RF::Main);
                     new_ui
                 });
@@ -94,7 +94,7 @@ impl ActionDispatcher {
                 fs.active_pane().move_selection_down();
 
                 self.state.update_ui_state(|ui| {
-                    let mut new_ui = ui.clone();
+                    let new_ui = ui.clone();
                     new_ui.request_redraw(RF::Main);
                     new_ui
                 });
@@ -112,7 +112,7 @@ impl ActionDispatcher {
                     }
                 }
                 self.state.update_ui_state(|ui| {
-                    let mut new_ui = ui.clone();
+                    let new_ui = ui.clone();
                     new_ui.request_redraw(RF::Main);
                     new_ui
                 });
@@ -129,7 +129,7 @@ impl ActionDispatcher {
                     }
                 }
                 self.state.update_ui_state(|ui| {
-                    let mut new_ui = ui.clone();
+                    let new_ui = ui.clone();
                     new_ui.request_redraw(RF::Main);
                     new_ui
                 });
@@ -140,7 +140,7 @@ impl ActionDispatcher {
                     .selected
                     .store(0, std::sync::atomic::Ordering::Relaxed);
                 self.state.update_ui_state(|ui| {
-                    let mut new_ui = ui.clone();
+                    let new_ui = ui.clone();
                     new_ui.request_redraw(RF::Main);
                     new_ui
                 });
@@ -154,7 +154,7 @@ impl ActionDispatcher {
                         .store(len - 1, std::sync::atomic::Ordering::Relaxed);
                 }
                 self.state.update_ui_state(|ui| {
-                    let mut new_ui = ui.clone();
+                    let new_ui = ui.clone();
                     new_ui.request_redraw(RF::Main);
                     new_ui
                 });
@@ -167,7 +167,7 @@ impl ActionDispatcher {
                         .selected
                         .store(index, std::sync::atomic::Ordering::Relaxed);
                     self.state.update_ui_state(|ui| {
-                        let mut new_ui = ui.clone();
+                        let new_ui = ui.clone();
                         new_ui.request_redraw(RF::Main);
                         new_ui
                     });
@@ -180,7 +180,7 @@ impl ActionDispatcher {
                     .viewport_height
                     .store(new_height, std::sync::atomic::Ordering::Relaxed);
                 self.state.update_ui_state(|ui| {
-                    let mut new_ui = ui.clone();
+                    let new_ui = ui.clone();
                     new_ui.request_redraw(RF::Main);
                     new_ui
                 });
@@ -213,7 +213,7 @@ impl ActionDispatcher {
                 }
 
                 self.state.update_ui_state(|ui| {
-                    let mut new_ui = ui.clone();
+                    let new_ui = ui.clone();
                     new_ui.request_redraw(RF::All);
                     new_ui
                 });
@@ -227,21 +227,21 @@ impl ActionDispatcher {
                     current_dir.parent().map(|p| p.to_path_buf())
                 };
 
-                if let Some(parent_dir) = should_navigate {
-                    if let Err(e) = self.load_directory(parent_dir).await {
-                        tracing::warn!("Failed to load parent directory: {}", e);
-                    }
+                if let Some(parent_dir) = should_navigate
+                    && let Err(e) = self.load_directory(parent_dir).await
+                {
+                    tracing::warn!("Failed to load parent directory: {}", e);
                 }
 
                 self.state.update_ui_state(|ui| {
-                    let mut new_ui = ui.clone();
+                    let new_ui = ui.clone();
                     new_ui.request_redraw(RF::All);
                     new_ui
                 });
             }
             Action::Tick => {
                 self.state.update_ui_state(|ui| {
-                    let mut new_ui = ui.clone();
+                    let new_ui = ui.clone();
                     new_ui.request_redraw(RF::Main);
                     new_ui
                 });
@@ -335,7 +335,7 @@ impl ActionDispatcher {
                                 if e.to_string().contains("quit") {
                                     return false; // Quit requested
                                 }
-                                self.show_error(&format!("Command failed: {}", e));
+                                self.show_error(&format!("Command failed: {e}"));
                             }
                         }
 
@@ -352,9 +352,8 @@ impl ActionDispatcher {
                     Some(crate::controller::actions::InputPromptType::CreateFile) => {
                         if !input.is_empty() {
                             // Create file using command system
-                            if let Err(e) = self.execute_command(&format!("touch {}", input)).await
-                            {
-                                self.show_error(&format!("Failed to create file: {}", e));
+                            if let Err(e) = self.execute_command(&format!("touch {input}")).await {
+                                self.show_error(&format!("Failed to create file: {e}"));
                             }
                         }
 
@@ -371,9 +370,8 @@ impl ActionDispatcher {
                     Some(crate::controller::actions::InputPromptType::CreateDirectory) => {
                         if !input.is_empty() {
                             // Create directory using command system
-                            if let Err(e) = self.execute_command(&format!("mkdir {}", input)).await
-                            {
-                                self.show_error(&format!("Failed to create directory: {}", e));
+                            if let Err(e) = self.execute_command(&format!("mkdir {input}")).await {
+                                self.show_error(&format!("Failed to create directory: {e}"));
                             }
                         }
 
@@ -390,8 +388,8 @@ impl ActionDispatcher {
                     Some(crate::controller::actions::InputPromptType::GoToPath) => {
                         if !input.is_empty() {
                             // Change directory using command system
-                            if let Err(e) = self.execute_command(&format!("cd {}", input)).await {
-                                self.show_error(&format!("Failed to change directory: {}", e));
+                            if let Err(e) = self.execute_command(&format!("cd {input}")).await {
+                                self.show_error(&format!("Failed to change directory: {e}"));
                             }
                         }
 
@@ -471,10 +469,10 @@ impl ActionDispatcher {
                     let entry_path = entry.path();
 
                     // Skip hidden files for now (can be made configurable later)
-                    if let Some(filename) = entry_path.file_name() {
-                        if filename.to_string_lossy().starts_with('.') {
-                            continue;
-                        }
+                    if let Some(filename) = entry_path.file_name()
+                        && filename.to_string_lossy().starts_with('.')
+                    {
+                        continue;
                     }
 
                     // Create lightweight object info
@@ -577,7 +575,7 @@ impl ActionDispatcher {
 
     /// Execute command from command mode
     async fn execute_command(&mut self, command: &str) -> anyhow::Result<()> {
-        let parts: Vec<&str> = command.trim().split_whitespace().collect();
+        let parts: Vec<&str> = command.split_whitespace().collect();
         if parts.is_empty() {
             return Ok(());
         }
@@ -614,13 +612,13 @@ impl ActionDispatcher {
 
                     match tokio::fs::create_dir(&new_dir).await {
                         Ok(_) => {
-                            self.show_success(&format!("Created directory: {}", name));
+                            self.show_success(&format!("Created directory: {name}"));
                             // Reload current directory to show new folder
                             let current = current_dir.clone();
                             self.load_directory(current).await?;
                         }
                         Err(e) => {
-                            self.show_error(&format!("Failed to create directory: {}", e));
+                            self.show_error(&format!("Failed to create directory: {e}"));
                         }
                     }
                 } else {
@@ -635,13 +633,13 @@ impl ActionDispatcher {
 
                     match tokio::fs::File::create(&new_file).await {
                         Ok(_) => {
-                            self.show_success(&format!("Created file: {}", name));
+                            self.show_success(&format!("Created file: {name}"));
                             // Reload current directory to show new file
                             let current = current_dir.clone();
                             self.load_directory(current).await?;
                         }
                         Err(e) => {
-                            self.show_error(&format!("Failed to create file: {}", e));
+                            self.show_error(&format!("Failed to create file: {e}"));
                         }
                     }
                 } else {
@@ -662,7 +660,7 @@ impl ActionDispatcher {
             "ls" => {
                 let fs = self.state.fs_state();
                 let entry_count = fs.active_pane().entries.len();
-                self.show_info(&format!("Directory contains {} entries", entry_count));
+                self.show_info(&format!("Directory contains {entry_count} entries"));
             }
             "help" => {
                 // Toggle help overlay
@@ -701,8 +699,7 @@ impl ActionDispatcher {
             "grep" => {
                 if let Some(pattern) = args.first() {
                     self.show_info(&format!(
-                        "Content search for '{}' not yet implemented",
-                        pattern
+                        "Content search for '{pattern}' not yet implemented"
                     ));
                 } else {
                     self.show_error("Usage: grep <pattern>");
@@ -718,7 +715,7 @@ impl ActionDispatcher {
                 });
             }
             _ => {
-                self.show_error(&format!("Unknown command: {}", cmd));
+                self.show_error(&format!("Unknown command: {cmd}"));
             }
         }
 

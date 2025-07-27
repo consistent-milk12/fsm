@@ -43,18 +43,24 @@ impl OptimizedPromptOverlay {
         };
 
         // For command mode, show autocomplete and history
-        if let InputPromptType::Custom(name) = prompt_type {
-            if name == "command" {
-                self.render_command_mode(frame, ui_state, area, title);
-                return;
-            }
+        if let InputPromptType::Custom(name) = prompt_type
+            && name == "command"
+        {
+            self.render_command_mode(frame, ui_state, area, title);
+            return;
         }
 
         // Standard input prompt
         self.render_standard_input(frame, ui_state, area, title, prompt_type);
     }
-    
-    fn render_command_mode(&self, frame: &mut Frame<'_>, ui_state: &UIState, area: Rect, title: &str) {
+
+    fn render_command_mode(
+        &self,
+        frame: &mut Frame<'_>,
+        ui_state: &UIState,
+        area: Rect,
+        title: &str,
+    ) {
         // Split area: input field + autocomplete/history
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -66,7 +72,7 @@ impl OptimizedPromptOverlay {
 
         // Render input field with cursor
         self.render_input_field(frame, ui_state, chunks[0], title);
-        
+
         // Show autocomplete or history
         if chunks[1].height > 2 {
             if ui_state.input.is_empty() {
@@ -76,8 +82,15 @@ impl OptimizedPromptOverlay {
             }
         }
     }
-    
-    fn render_standard_input(&self, frame: &mut Frame<'_>, ui_state: &UIState, area: Rect, title: &str, prompt_type: &InputPromptType) {
+
+    fn render_standard_input(
+        &self,
+        frame: &mut Frame<'_>,
+        ui_state: &UIState,
+        area: Rect,
+        title: &str,
+        prompt_type: &InputPromptType,
+    ) {
         let input_block = Block::default()
             .borders(Borders::ALL)
             .title(title)
@@ -105,12 +118,12 @@ impl OptimizedPromptOverlay {
         // Show context-specific help
         let help_text = match prompt_type {
             InputPromptType::CreateFile => "Enter filename • Tab for suggestions • Esc to cancel",
-            InputPromptType::CreateDirectory => "Enter directory name • Esc to cancel", 
+            InputPromptType::CreateDirectory => "Enter directory name • Esc to cancel",
             InputPromptType::Rename => "Enter new name • Esc to cancel",
             InputPromptType::GoToPath => "Enter path • Tab for completion • Esc to cancel",
             _ => "Enter text • Esc to cancel",
         };
-        
+
         let help_paragraph = Paragraph::new(help_text)
             .style(Style::default().fg(theme::COMMENT))
             .alignment(Alignment::Center);
@@ -126,8 +139,14 @@ impl OptimizedPromptOverlay {
             frame.render_widget(help_paragraph, help_area);
         }
     }
-    
-    fn render_input_field(&self, frame: &mut Frame<'_>, ui_state: &UIState, area: Rect, title: &str) {
+
+    fn render_input_field(
+        &self,
+        frame: &mut Frame<'_>,
+        ui_state: &UIState,
+        area: Rect,
+        title: &str,
+    ) {
         let input_block = Block::default()
             .borders(Borders::ALL)
             .title(title)
@@ -139,7 +158,7 @@ impl OptimizedPromptOverlay {
         let prompt = ":";
         let mut display_text = format!("{}{}", prompt, ui_state.input);
         let cursor_pos = prompt.len() + ui_state.input_cursor;
-        
+
         if cursor_pos <= display_text.len() {
             if cursor_pos == display_text.len() {
                 display_text.push('│');
@@ -154,16 +173,16 @@ impl OptimizedPromptOverlay {
 
         frame.render_widget(input_paragraph, area);
     }
-    
+
     fn render_command_autocomplete(&self, frame: &mut Frame<'_>, ui_state: &UIState, area: Rect) {
         let commands = self.get_matching_commands(&ui_state.input);
-        
+
         if commands.is_empty() {
             return;
         }
-        
+
         let title = format!(" {} Suggestions ", commands.len());
-        
+
         let items: Vec<ListItem> = commands
             .into_iter()
             .take(8) // Limit suggestions
@@ -171,38 +190,44 @@ impl OptimizedPromptOverlay {
             .map(|(i, (cmd, desc))| {
                 Line::from(vec![
                     Span::styled(format!("{:2} ", i + 1), Style::default().fg(theme::COMMENT)),
-                    Span::styled(cmd, Style::default().fg(theme::CYAN).add_modifier(Modifier::BOLD)),
+                    Span::styled(
+                        cmd,
+                        Style::default()
+                            .fg(theme::CYAN)
+                            .add_modifier(Modifier::BOLD),
+                    ),
                     Span::styled(" - ", Style::default().fg(theme::COMMENT)),
                     Span::styled(desc, Style::default().fg(theme::FOREGROUND)),
                 ])
             })
             .map(ListItem::new)
             .collect();
-        
+
         let block = Block::default()
             .borders(Borders::ALL)
             .title(title)
             .title_alignment(Alignment::Center)
             .border_style(Style::default().fg(theme::YELLOW))
             .style(Style::default().bg(theme::BACKGROUND));
-        
+
         let list = List::new(items)
             .block(block)
             .style(Style::default().fg(theme::FOREGROUND));
-        
+
         frame.render_widget(list, area);
     }
-    
+
     fn render_command_history(&self, frame: &mut Frame<'_>, ui_state: &UIState, area: Rect) {
         if ui_state.input_history.is_empty() {
             // Show available commands
             self.render_available_commands(frame, area);
             return;
         }
-        
+
         let title = " Recent Commands ";
-        
-        let items: Vec<ListItem> = ui_state.input_history
+
+        let items: Vec<ListItem> = ui_state
+            .input_history
             .iter()
             .rev() // Most recent first
             .take(8)
@@ -215,20 +240,20 @@ impl OptimizedPromptOverlay {
             })
             .map(ListItem::new)
             .collect();
-        
+
         let block = Block::default()
             .borders(Borders::ALL)
             .title(title)
             .title_alignment(Alignment::Center)
             .border_style(Style::default().fg(theme::PURPLE))
             .style(Style::default().bg(theme::BACKGROUND));
-        
+
         let list = List::new(items)
             .block(block)
             .style(Style::default().fg(theme::FOREGROUND));
-        
+
         frame.render_widget(list, area);
-        
+
         // Show help text
         let help_area = Rect {
             x: area.x + 2,
@@ -236,14 +261,13 @@ impl OptimizedPromptOverlay {
             width: area.width.saturating_sub(4),
             height: 1,
         };
-        
+
         let help_text = "↑↓ Navigate history • Tab Autocomplete • Enter Execute";
-        let help_paragraph = Paragraph::new(help_text)
-            .style(Style::default().fg(theme::COMMENT));
-        
+        let help_paragraph = Paragraph::new(help_text).style(Style::default().fg(theme::COMMENT));
+
         frame.render_widget(help_paragraph, help_area);
     }
-    
+
     fn render_available_commands(&self, frame: &mut Frame<'_>, area: Rect) {
         let commands = vec![
             ("reload", "Reload current directory"),
@@ -255,35 +279,40 @@ impl OptimizedPromptOverlay {
             ("config", "Open configuration"),
             ("help", "Show help"),
         ];
-        
+
         let title = " Available Commands ";
-        
+
         let items: Vec<ListItem> = commands
             .into_iter()
             .map(|(cmd, desc)| {
                 Line::from(vec![
-                    Span::styled(cmd, Style::default().fg(theme::CYAN).add_modifier(Modifier::BOLD)),
+                    Span::styled(
+                        cmd,
+                        Style::default()
+                            .fg(theme::CYAN)
+                            .add_modifier(Modifier::BOLD),
+                    ),
                     Span::styled(" - ", Style::default().fg(theme::COMMENT)),
                     Span::styled(desc, Style::default().fg(theme::FOREGROUND)),
                 ])
             })
             .map(ListItem::new)
             .collect();
-        
+
         let block = Block::default()
             .borders(Borders::ALL)
             .title(title)
             .title_alignment(Alignment::Center)
             .border_style(Style::default().fg(theme::GREEN))
             .style(Style::default().bg(theme::BACKGROUND));
-        
+
         let list = List::new(items)
             .block(block)
             .style(Style::default().fg(theme::FOREGROUND));
-        
+
         frame.render_widget(list, area);
     }
-    
+
     fn get_matching_commands(&self, input: &str) -> Vec<(&'static str, &'static str)> {
         let commands = vec![
             ("reload", "Reload current directory"),
@@ -300,11 +329,11 @@ impl OptimizedPromptOverlay {
             ("pwd", "Print working directory"),
             ("clear", "Clear screen"),
         ];
-        
+
         if input.is_empty() {
             return commands;
         }
-        
+
         commands
             .into_iter()
             .filter(|(cmd, _)| cmd.starts_with(input))

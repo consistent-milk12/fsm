@@ -584,7 +584,7 @@ mod tests {
 
         // Test concurrent additions
         let paths: Vec<_> = (0..100)
-            .map(|i| PathBuf::from(format!("/tmp/test_{}", i)))
+            .map(|i| PathBuf::from(format!("/tmp/test_{i}")))
             .collect();
 
         let results = clipboard
@@ -638,7 +638,7 @@ mod tests {
         // Add large number of items to trigger memory mapping
         for i in 0..1000 {
             clipboard
-                .add_copy(PathBuf::from(format!("/tmp/large_test_{}", i)))
+                .add_copy(PathBuf::from(format!("/tmp/large_test_{i}")))
                 .await
                 .unwrap();
         }

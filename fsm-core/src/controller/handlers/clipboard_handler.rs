@@ -34,6 +34,12 @@ enum ClipboardMode {
     OverlayActive,
 }
 
+impl Default for ClipboardHandler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ClipboardHandler {
     /// Create new clipboard handler
     pub fn new() -> Self {

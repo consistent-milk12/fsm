@@ -255,6 +255,12 @@ impl Default for ProcessorConfig {
     }
 }
 
+impl Default for EventProcessor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl EventProcessor {
     /// Create new event processor with default configuration.
     pub fn new() -> Self {

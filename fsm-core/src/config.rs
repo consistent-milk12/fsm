@@ -112,12 +112,15 @@ impl Config {
         if path.exists() {
             info!("Loading config from {}", path.display());
             let text = tokio::fs::read_to_string(&path).await?;
-            
+
             // Try parsing - if it fails, merge with defaults
             match toml::from_str::<Config>(&text) {
                 Ok(cfg) => Ok(cfg),
                 Err(e) => {
-                    info!("Config parse error ({}), merging with defaults and recreating", e);
+                    info!(
+                        "Config parse error ({}), merging with defaults and recreating",
+                        e
+                    );
                     let default_config = Config::default();
                     default_config.save().await?;
                     Ok(default_config)

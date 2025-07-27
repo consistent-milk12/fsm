@@ -110,12 +110,11 @@ impl RawFileSearchResult {
         // Filename heading (no colon)
         if !clean_line.contains(':') {
             // Skip context indicator lines like "63-" or "42+"
-            if let Some(first_char) = clean_line.chars().next() {
-                if first_char.is_ascii_digit() && clean_line.get(1..2) == Some("-")
-                    || clean_line.get(1..2) == Some("+")
-                {
-                    return None;
-                }
+            if let Some(first_char) = clean_line.chars().next()
+                && (first_char.is_ascii_digit() && clean_line.get(1..2) == Some("-")
+                    || clean_line.get(1..2) == Some("+"))
+            {
+                return None;
             }
             let path = base_dir.join(clean_line.trim());
             *current_file = Some(path.clone());

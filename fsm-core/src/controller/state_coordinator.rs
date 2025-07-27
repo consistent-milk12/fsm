@@ -157,7 +157,7 @@ impl StateCoordinator {
     /// Request UI redraw for specific component
     pub fn request_redraw(&self, flag: crate::model::ui_state::RedrawFlag) {
         self.update_ui_state(|ui| {
-            let mut new_ui = ui.clone();
+            let new_ui = ui.clone();
             new_ui.request_redraw(flag);
             new_ui
         });
@@ -166,7 +166,7 @@ impl StateCoordinator {
     /// Clear all redraw flags
     pub fn clear_redraw(&self) {
         self.update_ui_state(|ui| {
-            let mut new_ui = ui.clone();
+            let new_ui = ui.clone();
             new_ui.clear_redraw();
             new_ui
         });

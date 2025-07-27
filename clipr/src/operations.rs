@@ -485,9 +485,7 @@ mod tests {
     #[test]
     fn test_batch_operations() {
         let items: Vec<_> = (0..10)
-            .map(|i| {
-                ClipBoardItem::new_copy(PathBuf::from(format!("/test/file_{}.txt", i))).unwrap()
-            })
+            .map(|i| ClipBoardItem::new_copy(PathBuf::from(format!("/test/file_{i}.txt"))).unwrap())
             .collect();
 
         let dest_dir = PathBuf::from("/dest");
@@ -517,9 +515,7 @@ mod tests {
     #[test]
     fn test_batch_scheduler() {
         let items: Vec<_> = (0..20)
-            .map(|i| {
-                ClipBoardItem::new_copy(PathBuf::from(format!("/test/file_{}.txt", i))).unwrap()
-            })
+            .map(|i| ClipBoardItem::new_copy(PathBuf::from(format!("/test/file_{i}.txt"))).unwrap())
             .collect();
 
         let operations: Vec<_> = items

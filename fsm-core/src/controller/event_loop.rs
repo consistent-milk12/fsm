@@ -192,7 +192,7 @@ impl EventLoop {
         };
 
         // Apply the task; collect any produced actions.
-        let followups: Vec<Action> = match self.apply_task(&mut *app_locked, &task).await {
+        let followups: Vec<Action> = match self.apply_task(&mut app_locked, &task).await {
             Ok(v) => v,
             Err(e) => {
                 warn!("task application failed: {}", e);

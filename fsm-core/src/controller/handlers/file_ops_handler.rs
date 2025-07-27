@@ -66,6 +66,12 @@ enum OperationType {
     Rename,
 }
 
+impl Default for FileOpsHandler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FileOpsHandler {
     /// Create new file operations handler
     pub fn new() -> Self {
