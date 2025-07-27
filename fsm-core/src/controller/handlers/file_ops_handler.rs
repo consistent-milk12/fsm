@@ -55,9 +55,12 @@ struct PendingOperation {
     operation_type: OperationType,
     source_path: PathBuf,
     operation_id: OperationId,
+
+    #[allow(unused)]
     batch_items: Vec<PathBuf>,
 }
 
+#[allow(unused)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OperationType {
     Copy,

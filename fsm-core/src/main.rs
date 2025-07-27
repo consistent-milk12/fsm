@@ -187,11 +187,10 @@ impl App {
                         let entry_path = entry.path();
 
                         // Skip hidden files for now (can be made configurable later)
-                        if let Some(filename) = entry_path.file_name() {
-                            if filename.to_string_lossy().starts_with('.') {
+                        if let Some(filename) = entry_path.file_name()
+                            && filename.to_string_lossy().starts_with('.') {
                                 continue;
                             }
-                        }
 
                         // Create lightweight object info
                         match ObjectInfo::from_path_light(&entry_path).await {
@@ -263,8 +262,8 @@ impl App {
 
                 // Handle terminal input events
                 maybe_event = event_stream.next() => {
-                    if let Some(Ok(terminal_event)) = maybe_event {
-                        if let Some(action) = self.process_terminal_event(terminal_event).await? {
+                    if let Some(Ok(terminal_event)) = maybe_event
+                        && let Some(action) = self.process_terminal_event(terminal_event).await? {
                             if matches!(action, Action::Quit) {
                                 info!("Quit action received from input");
                                 break;
@@ -274,7 +273,6 @@ impl App {
                                 break;
                             }
                         }
-                    }
                 }
 
                 // Handle actions from EventLoop (background tasks, etc.)
@@ -355,12 +353,9 @@ impl App {
     ) -> Result<Option<Action>> {
         use fsm_core::model::ui_state::UIOverlay;
 
-        match key_event.code {
-            KeyCode::Esc => {
-                // Always close overlay on Esc
-                return Ok(Some(Action::CloseOverlay));
-            }
-            _ => {}
+        if key_event.code == KeyCode::Esc {
+            // Always close overlay on Esc
+            return Ok(Some(Action::CloseOverlay));
         }
 
         match ui_state.overlay {

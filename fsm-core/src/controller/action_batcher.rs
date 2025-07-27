@@ -105,6 +105,7 @@ enum NavigationMovement {
 }
 
 /// Batch optimization statistics
+#[allow(unused)]
 #[derive(Debug, Default)]
 struct OptimizationStats {
     navigation_movements_combined: u64,
@@ -459,6 +460,7 @@ impl ActionBatcher {
     }
 
     /// Convert navigation movement back to single action (legacy compatibility)
+    #[allow(unused)]
     fn movement_to_action(&self, movement: NavigationMovement) -> Action {
         use NavigationMovement::*;
         match movement {
