@@ -13,7 +13,6 @@ use std::time::Instant;
 use tracing::{debug, info, warn};
 
 use super::{
-    ekey_processor::EKeyProcessor,
     event_processor::{Event, EventHandler},
     handlers::{
         clipboard_handler::ClipboardHandler, file_ops_handler::FileOpsHandler,
@@ -59,9 +58,6 @@ pub struct HandlerRegistry {
     // Handlers with their registration metadata
     handlers: Vec<HandlerEntry>,
 
-    // EKey processor for legacy compatibility
-    ekey_processor: Option<Arc<EKeyProcessor>>,
-
     // State provider for handlers to access application state
     state_provider: Option<Arc<dyn StateProvider>>,
 }
@@ -77,34 +73,14 @@ impl HandlerRegistry {
     pub fn new() -> Self {
         Self {
             handlers: Vec::new(),
-            ekey_processor: None,
             state_provider: None,
         }
     }
 
-    /// Create handler registry with EKey processor
-    pub fn with_ekey_processor(ekey_processor: Arc<EKeyProcessor>) -> Self {
-        let mut registry = Self {
-            handlers: Vec::new(),
-            ekey_processor: Some(ekey_processor),
-            state_provider: None,
-        };
-
-        // Register basic handlers that don't need StateProvider
-        registry.register_basic_handlers();
-
-        info!(
-            "HandlerRegistry initialized with {} handlers",
-            registry.handlers.len()
-        );
-        registry
-    }
-
     /// Create handler registry with StateProvider for state access
     pub fn with_state_provider(state_provider: Arc<dyn StateProvider>) -> Self {
-        let mut registry = Self {
+        let mut registry: HandlerRegistry = Self {
             handlers: Vec::new(),
-            ekey_processor: None,
             state_provider: Some(state_provider),
         };
 
@@ -114,6 +90,7 @@ impl HandlerRegistry {
             "HandlerRegistry initialized with {} handlers and StateProvider",
             registry.handlers.len()
         );
+
         registry
     }
 
@@ -127,7 +104,6 @@ impl HandlerRegistry {
     pub fn empty() -> Self {
         Self {
             handlers: Vec::new(),
-            ekey_processor: None,
             state_provider: None,
         }
     }
@@ -135,23 +111,23 @@ impl HandlerRegistry {
     /// Register basic handlers that don't require StateProvider
     fn register_basic_handlers(&mut self) {
         // Register NavigationHandler
-        let nav_handler = Box::new(NavigationHandler::new());
+        let nav_handler: Box<NavigationHandler> = Box::new(NavigationHandler::new());
         self.register_handler(nav_handler, HandlerType::Navigation);
 
         // Register SearchHandler
-        let search_handler = Box::new(SearchHandler::new());
+        let search_handler: Box<SearchHandler> = Box::new(SearchHandler::new());
         self.register_handler(search_handler, HandlerType::Search);
 
         // Register FileOpsHandler
-        let file_ops_handler = Box::new(FileOpsHandler::new());
+        let file_ops_handler: Box<FileOpsHandler> = Box::new(FileOpsHandler::new());
         self.register_handler(file_ops_handler, HandlerType::FileOps);
 
         // Register ClipboardHandler
-        let clipboard_handler = Box::new(ClipboardHandler::new());
+        let clipboard_handler: Box<ClipboardHandler> = Box::new(ClipboardHandler::new());
         self.register_handler(clipboard_handler, HandlerType::Clipboard);
 
         // Register KeyboardHandler as fallback (simplified without EKey processor)
-        let keyboard_handler = Box::new(KeyboardHandler::new());
+        let keyboard_handler: Box<KeyboardHandler> = Box::new(KeyboardHandler::new());
         self.register_handler(keyboard_handler, HandlerType::Keyboard);
 
         debug!("Basic handlers registered");
@@ -159,7 +135,7 @@ impl HandlerRegistry {
 
     /// Register a single handler
     pub fn register_handler(&mut self, handler: Box<dyn EventHandler>, handler_type: HandlerType) {
-        let metadata = HandlerRegistration {
+        let metadata: HandlerRegistration = HandlerRegistration {
             handler_type,
             is_enabled: true,
             event_count: std::sync::atomic::AtomicU64::new(0),
@@ -176,16 +152,19 @@ impl HandlerRegistry {
         &mut self,
         event: Event,
     ) -> Result<Vec<Action>, Box<dyn std::error::Error>> {
-        let mut actions = Vec::new();
-        let event_start = Instant::now();
+        let mut actions: Vec<Action> = Vec::new();
+        let event_start: Instant = Instant::now();
 
         // Collect handlers that can handle the event with their current priorities
         let mut candidates: Vec<(&mut Box<dyn EventHandler>, &mut HandlerRegistration, u8)> = self
             .handlers
             .iter_mut()
-            .filter(|entry| entry.metadata.is_enabled && entry.handler.can_handle(&event))
-            .map(|entry| {
-                let priority = entry.handler.priority();
+            .filter(|entry: &&mut HandlerEntry| {
+                entry.metadata.is_enabled && entry.handler.can_handle(&event)
+            })
+            .map(|entry: &mut HandlerEntry| {
+                let priority: u8 = entry.handler.priority();
+
                 (&mut entry.handler, &mut entry.metadata, priority)
             })
             .collect();
@@ -195,11 +174,11 @@ impl HandlerRegistry {
 
         // Process handlers in priority order
         for (handler, metadata, _) in candidates {
-            let process_start = Instant::now();
+            let process_start: Instant = Instant::now();
 
             match handler.handle(event.clone()) {
                 Ok(mut handler_actions) => {
-                    let elapsed = process_start.elapsed().as_nanos() as u64;
+                    let elapsed: u64 = process_start.elapsed().as_nanos() as u64;
 
                     // Update performance metadata
                     metadata.event_count.fetch_add(1, Ordering::Relaxed);
@@ -211,9 +190,9 @@ impl HandlerRegistry {
 
                     debug!("Handler processed event in {:?}", process_start.elapsed());
                 }
+
                 Err(e) => {
                     warn!("Handler failed to process event: {}", e);
-                    // Continue to next handler
                 }
             }
         }
@@ -232,9 +211,10 @@ impl HandlerRegistry {
         if let Some(entry) = self
             .handlers
             .iter_mut()
-            .find(|e| e.metadata.handler_type == handler_type)
+            .find(|e: &&mut HandlerEntry| e.metadata.handler_type == handler_type)
         {
             entry.metadata.is_enabled = enabled;
+
             info!(
                 "Handler {:?} {}",
                 handler_type,
@@ -247,10 +227,11 @@ impl HandlerRegistry {
     pub fn get_performance_report(&self) -> Vec<HandlerStats> {
         self.handlers
             .iter()
-            .map(|entry| {
-                let event_count = entry.metadata.event_count.load(Ordering::Relaxed);
-                let total_time = entry.metadata.total_processing_time.load(Ordering::Relaxed);
-                let avg_time = if event_count > 0 {
+            .map(|entry: &HandlerEntry| {
+                let event_count: u64 = entry.metadata.event_count.load(Ordering::Relaxed);
+                let total_time: u64 = entry.metadata.total_processing_time.load(Ordering::Relaxed);
+
+                let avg_time: u64 = if event_count > 0 {
                     total_time / event_count
                 } else {
                     0
@@ -288,7 +269,6 @@ impl std::fmt::Debug for HandlerRegistry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HandlerRegistry")
             .field("handler_count", &self.handlers.len())
-            .field("has_ekey_processor", &self.ekey_processor.is_some())
             .finish()
     }
 }

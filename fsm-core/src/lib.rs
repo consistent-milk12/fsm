@@ -36,10 +36,6 @@ pub mod controller {
     }
 
     pub mod metrics;
-
-    pub mod eactions;
-    pub mod ekey_processor;
-    pub mod esimd_matcher;
 }
 
 pub mod model {

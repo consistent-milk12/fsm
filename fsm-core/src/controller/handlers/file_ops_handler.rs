@@ -37,14 +37,19 @@ pub struct FileOpsHandler {
 pub enum FileOpsMode {
     /// Normal mode - handle file operation triggers
     Normal,
+
     /// Creating new file - accepting filename input
     CreatingFile,
+
     /// Creating new directory - accepting directory name input
     CreatingDirectory,
+
     /// Renaming existing item - accepting new name input
     Renaming,
+
     /// Copy/move operation - accepting destination path input
     AwaitingDestination,
+
     /// Batch operations mode - multiple selections
     BatchMode,
 }
@@ -64,8 +69,11 @@ struct PendingOperation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OperationType {
     Copy,
+
     Move,
+
     Delete,
+
     Rename,
 }
 
@@ -144,10 +152,15 @@ impl FileOpsHandler {
 
         match self.mode {
             FileOpsMode::Normal => self.handle_normal_mode(key_event),
+
             FileOpsMode::CreatingFile => self.handle_file_creation_mode(key_event),
+
             FileOpsMode::CreatingDirectory => self.handle_directory_creation_mode(key_event),
+
             FileOpsMode::Renaming => self.handle_rename_mode(key_event),
+
             FileOpsMode::AwaitingDestination => self.handle_destination_mode(key_event),
+
             FileOpsMode::BatchMode => self.handle_batch_mode(key_event),
         }
     }
@@ -231,6 +244,7 @@ impl FileOpsHandler {
                 debug!("FileOpsHandler: cancelled file creation");
                 self.mode = FileOpsMode::Normal;
                 self.input_buffer.clear();
+
                 Ok(vec![Action::CloseOverlay])
             }
             KeyCode::Enter => {
@@ -243,17 +257,20 @@ impl FileOpsHandler {
                     self.mode = FileOpsMode::Normal;
                     self.input_buffer.clear();
                     self.operation_count += 1;
+
                     Ok(vec![Action::CreateFileWithName(filename)])
                 }
             }
             KeyCode::Backspace => {
                 self.input_buffer.pop();
+
                 Ok(vec![Action::Key(key_event)]) // Forward for UI update
             }
             KeyCode::Char(c) => {
                 // Validate filename characters
                 if is_valid_filename_char(c) {
                     self.input_buffer.push(c);
+
                     Ok(vec![Action::Key(key_event)]) // Forward for UI update
                 } else {
                     debug!(
@@ -261,14 +278,17 @@ impl FileOpsHandler {
   '{}'",
                         c
                     );
+
                     Ok(vec![]) // Ignore invalid characters
                 }
             }
             KeyCode::Tab => {
                 // Auto-complete filename (future enhancement)
                 debug!("FileOpsHandler: filename auto-complete requested");
+
                 Ok(vec![Action::Key(key_event)])
             }
+
             _ => Ok(vec![Action::Key(key_event)]), // Forward other keys
         }
     }
@@ -283,6 +303,7 @@ impl FileOpsHandler {
                 debug!("FileOpsHandler: cancelled directory creation");
                 self.mode = FileOpsMode::Normal;
                 self.input_buffer.clear();
+
                 Ok(vec![Action::CloseOverlay])
             }
             KeyCode::Enter => {
@@ -295,16 +316,19 @@ impl FileOpsHandler {
                     self.mode = FileOpsMode::Normal;
                     self.input_buffer.clear();
                     self.operation_count += 1;
+
                     Ok(vec![Action::CreateDirectoryWithName(dirname)])
                 }
             }
             KeyCode::Backspace => {
                 self.input_buffer.pop();
+
                 Ok(vec![Action::Key(key_event)])
             }
             KeyCode::Char(c) => {
                 if is_valid_filename_char(c) {
                     self.input_buffer.push(c);
+
                     Ok(vec![Action::Key(key_event)])
                 } else {
                     debug!(
@@ -312,6 +336,7 @@ impl FileOpsHandler {
   character '{}'",
                         c
                     );
+
                     Ok(vec![])
                 }
             }
@@ -320,8 +345,10 @@ impl FileOpsHandler {
                     "FileOpsHandler: directory name auto-complete
   requested"
                 );
+
                 Ok(vec![Action::Key(key_event)])
             }
+
             _ => Ok(vec![Action::Key(key_event)]),
         }
     }
@@ -333,11 +360,13 @@ impl FileOpsHandler {
                 debug!("FileOpsHandler: cancelled rename");
                 self.mode = FileOpsMode::Normal;
                 self.input_buffer.clear();
+
                 Ok(vec![Action::CloseOverlay])
             }
             KeyCode::Enter => {
                 if self.input_buffer.trim().is_empty() {
                     warn!("FileOpsHandler: empty new name provided");
+
                     Ok(vec![])
                 } else {
                     debug!("FileOpsHandler: renaming to '{}'", self.input_buffer);
@@ -345,26 +374,32 @@ impl FileOpsHandler {
                     self.mode = FileOpsMode::Normal;
                     self.input_buffer.clear();
                     self.operation_count += 1;
+
                     Ok(vec![Action::RenameEntry(new_name)])
                 }
             }
             KeyCode::Backspace => {
                 self.input_buffer.pop();
+
                 Ok(vec![Action::Key(key_event)])
             }
             KeyCode::Char(c) => {
                 if is_valid_filename_char(c) {
                     self.input_buffer.push(c);
+
                     Ok(vec![Action::Key(key_event)])
                 } else {
                     debug!("FileOpsHandler: invalid rename character '{}'", c);
+
                     Ok(vec![])
                 }
             }
             KeyCode::Tab => {
                 debug!("FileOpsHandler: rename auto-complete requested");
+
                 Ok(vec![Action::Key(key_event)])
             }
+
             _ => Ok(vec![Action::Key(key_event)]),
         }
     }
@@ -377,6 +412,7 @@ impl FileOpsHandler {
                 self.mode = FileOpsMode::Normal;
                 self.input_buffer.clear();
                 self.pending_operation = None;
+
                 Ok(vec![Action::CloseOverlay])
             }
             KeyCode::Enter => {
@@ -385,14 +421,15 @@ impl FileOpsHandler {
                         "FileOpsHandler: empty destination path
   provided"
                     );
+
                     Ok(vec![])
                 } else {
                     debug!(
                         "FileOpsHandler: executing operation to '{}'",
                         self.input_buffer
                     );
-                    let destination = PathBuf::from(self.input_buffer.clone());
-                    let result = if let Some(pending) = &self.pending_operation {
+                    let destination: PathBuf = PathBuf::from(self.input_buffer.clone());
+                    let result: Vec<Action> = if let Some(pending) = &self.pending_operation {
                         match pending.operation_type {
                             OperationType::Copy => vec![Action::ExecuteCopy {
                                 operation_id: pending.operation_id.clone(),
@@ -414,6 +451,7 @@ impl FileOpsHandler {
                     self.input_buffer.clear();
                     self.pending_operation = None;
                     self.operation_count += 1;
+
                     Ok(result)
                 }
             }
@@ -425,16 +463,20 @@ impl FileOpsHandler {
                 // Allow path characters
                 if is_valid_path_char(c) {
                     self.input_buffer.push(c);
+
                     Ok(vec![Action::Key(key_event)])
                 } else {
                     debug!("FileOpsHandler: invalid path character '{}'", c);
+
                     Ok(vec![])
                 }
             }
             KeyCode::Tab => {
                 debug!("FileOpsHandler: path auto-complete requested");
+
                 Ok(vec![Action::Key(key_event)])
             }
+
             _ => Ok(vec![Action::Key(key_event)]),
         }
     }
@@ -446,6 +488,7 @@ impl FileOpsHandler {
                 debug!("FileOpsHandler: exiting batch mode");
                 self.mode = FileOpsMode::Normal;
                 self.pending_operation = None;
+
                 Ok(vec![Action::CloseOverlay])
             }
             KeyCode::Enter => {
@@ -454,8 +497,10 @@ impl FileOpsHandler {
                 self.mode = FileOpsMode::Normal;
                 self.pending_operation = None;
                 self.operation_count += 1;
+
                 Ok(vec![Action::NoOp]) // Placeholder for batch execution
             }
+
             _ => Ok(vec![Action::Key(key_event)]),
         }
     }
@@ -467,7 +512,7 @@ impl FileOpsHandler {
             self.sequence_buffer.push(key_event);
         }
 
-        let action = match self.sequence_buffer.as_slice() {
+        let action: Option<Action> = match self.sequence_buffer.as_slice() {
             // 'dd' - delete (vim-style)
             [
                 KeyEvent {

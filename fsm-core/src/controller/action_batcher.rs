@@ -151,11 +151,11 @@ impl ActionBatcher {
 
     /// Add action to batcher with intelligent priority assignment
     pub fn add_action(&mut self, action: Action, source: ActionSource) -> Option<Vec<Action>> {
-        let priority = self.determine_priority(&action, source);
-        let batch_group = self.determine_batch_group(&action);
-        let can_batch = self.can_batch_action(&action);
+        let priority: ActionPriority = self.determine_priority(&action, source);
+        let batch_group: Option<BatchGroup> = self.determine_batch_group(&action);
+        let can_batch: bool = self.can_batch_action(&action);
 
-        let metadata = ActionMetadata {
+        let metadata: ActionMetadata = ActionMetadata {
             action: action.clone(),
             priority,
             timestamp: Instant::now(),
@@ -168,12 +168,13 @@ impl ActionBatcher {
         // Handle navigation buffering specially for smooth movement
         if let Some(movement) = self.extract_navigation_movement(&action) {
             self.buffer_navigation_movement(movement);
+
             // Don't add to regular queue, handle in navigation buffer
             return self.check_flush_conditions();
         }
 
         // Add to appropriate priority queue
-        let queue_index = priority as usize;
+        let queue_index: usize = priority as usize;
         self.priority_queues[queue_index].push_back(metadata.clone());
 
         // Add to batch group if applicable
@@ -206,15 +207,15 @@ impl ActionBatcher {
 
     /// Flush all pending batches and return optimized actions
     pub fn flush_all_batches(&mut self) -> Vec<Action> {
-        let flush_start = Instant::now();
-        let mut actions = Vec::new();
+        let flush_start: Instant = Instant::now();
+        let mut actions: Vec<Action> = Vec::new();
 
         // Process navigation buffer first for responsiveness
         actions.extend(self.flush_navigation_buffer());
 
         // Process priority queues in order (critical first)
         for priority_index in 0..5 {
-            let queue_actions = self.flush_priority_queue(priority_index);
+            let queue_actions: Vec<Action> = self.flush_priority_queue(priority_index);
             actions.extend(queue_actions);
         }
 
@@ -243,15 +244,16 @@ impl ActionBatcher {
             return Vec::new();
         }
 
-        let mut actions = Vec::new();
-        let movements = self
+        let mut actions: Vec<Action> = Vec::new();
+        let movements: Vec<NavigationMovement> = self
             .navigation_buffer
             .movements
             .drain(..)
             .collect::<Vec<_>>();
 
         // Combine consecutive movements of the same type
-        let optimized_movements = self.optimize_navigation_movements(movements);
+        let optimized_movements: Vec<NavigationMovement> =
+            self.optimize_navigation_movements(movements);
 
         for movement in optimized_movements {
             // Convert each movement to one or more actions
@@ -259,13 +261,17 @@ impl ActionBatcher {
         }
 
         self.optimization_stats.navigation_movements_combined += 1;
+
         actions
     }
 
     /// Flush specific priority queue
     fn flush_priority_queue(&mut self, priority_index: usize) -> Vec<Action> {
         let queue = &mut self.priority_queues[priority_index];
-        let actions: Vec<Action> = queue.drain(..).map(|meta| meta.action).collect();
+        let actions: Vec<Action> = queue
+            .drain(..)
+            .map(|meta: ActionMetadata| meta.action)
+            .collect();
 
         if !actions.is_empty() {
             debug!(
@@ -313,7 +319,10 @@ impl ActionBatcher {
             BatchGroup::Selection => self.optimize_selection_actions(group_actions),
             _ => {
                 // Default: just extract actions without special optimization
-                group_actions.into_iter().map(|meta| meta.action).collect()
+                group_actions
+                    .into_iter()
+                    .map(|meta: ActionMetadata| meta.action)
+                    .collect()
             }
         }
     }
@@ -339,14 +348,20 @@ impl ActionBatcher {
     fn optimize_file_operations(&self, actions: Vec<ActionMetadata>) -> Vec<Action> {
         // For now, just return all actions
         // TODO: Implement operation grouping (e.g., multiple file copies)
-        actions.into_iter().map(|meta| meta.action).collect()
+        actions
+            .into_iter()
+            .map(|meta: ActionMetadata| meta.action)
+            .collect()
     }
 
     /// Optimize selection actions by combining ranges
     fn optimize_selection_actions(&self, actions: Vec<ActionMetadata>) -> Vec<Action> {
         // For now, just return all actions
         // TODO: Implement selection range optimization
-        actions.into_iter().map(|meta| meta.action).collect()
+        actions
+            .into_iter()
+            .map(|meta: ActionMetadata| meta.action)
+            .collect()
     }
 
     /// Buffer navigation movement for smooth handling
@@ -384,9 +399,9 @@ impl ActionBatcher {
             return Vec::new();
         }
 
-        let mut optimized = Vec::new();
-        let mut current_movement = movements[0];
-        let mut count = 1u32;
+        let mut optimized: Vec<NavigationMovement> = Vec::new();
+        let mut current_movement: NavigationMovement = movements[0];
+        let mut count: u32 = 1u32;
 
         for movement in movements.into_iter().skip(1) {
             if self.can_combine_movements(current_movement, movement) {
@@ -423,11 +438,17 @@ impl ActionBatcher {
         use NavigationMovement::*;
         match movement {
             Up(_) => Up(count),
+
             Down(_) => Down(count),
+
             Left(_) => Left(count),
+
             Right(_) => Right(count),
+
             PageUp(_) => PageUp(count),
+
             PageDown(_) => PageDown(count),
+
             Home | End => movement, // These don't accumulate
         }
     }
@@ -440,21 +461,28 @@ impl ActionBatcher {
                 // Emit multiple single movements to achieve the desired count
                 (0..count).map(|_| Action::MoveSelectionUp).collect()
             }
+
             Down(count) => {
                 // Emit multiple single movements to achieve the desired count
                 (0..count).map(|_| Action::MoveSelectionDown).collect()
             }
+
             Left(count) => {
                 // For left movements, emit multiple parent navigations
                 (0..count).map(|_| Action::GoToParent).collect()
             }
+
             Right(count) => {
                 // For right movements, emit multiple enter actions
                 (0..count).map(|_| Action::EnterSelected).collect()
             }
+
             PageUp(count) => (0..count).map(|_| Action::PageUp).collect(),
+
             PageDown(count) => (0..count).map(|_| Action::PageDown).collect(),
+
             Home => vec![Action::SelectFirst],
+
             End => vec![Action::SelectLast],
         }
     }
@@ -465,12 +493,19 @@ impl ActionBatcher {
         use NavigationMovement::*;
         match movement {
             Up(_) => Action::MoveSelectionUp,
+
             Down(_) => Action::MoveSelectionDown,
+
             Left(_) => Action::GoToParent,
+
             Right(_) => Action::EnterSelected,
+
             PageUp(_) => Action::PageUp,
+
             PageDown(_) => Action::PageDown,
+
             Home => Action::SelectFirst,
+
             End => Action::SelectLast,
         }
     }
@@ -480,13 +515,21 @@ impl ActionBatcher {
         use NavigationMovement::*;
         match action {
             Action::MoveSelectionUp => Some(Up(1)),
+
             Action::MoveSelectionDown => Some(Down(1)),
+
             Action::GoToParent => Some(Left(1)),
+
             Action::EnterSelected => Some(Right(1)),
+
             Action::PageUp => Some(PageUp(1)),
+
             Action::PageDown => Some(PageDown(1)),
+
             Action::SelectFirst => Some(Home),
+
             Action::SelectLast => Some(End),
+
             _ => None,
         }
     }
@@ -581,12 +624,16 @@ impl ActionBatcher {
 
     /// Calculate deadline for action based on priority
     fn calculate_deadline(&self, priority: ActionPriority) -> Option<Instant> {
-        let timeout = match priority {
+        let timeout: Duration = match priority {
             ActionPriority::Critical => Duration::from_millis(1), // Immediate
-            ActionPriority::High => Duration::from_millis(16),    // One frame
-            ActionPriority::Normal => Duration::from_millis(50),  // Responsive
-            ActionPriority::Low => Duration::from_millis(200),    // Noticeable
-            ActionPriority::Deferred => return None,              // No deadline
+
+            ActionPriority::High => Duration::from_millis(16), // One frame
+
+            ActionPriority::Normal => Duration::from_millis(50), // Responsive
+
+            ActionPriority::Low => Duration::from_millis(200), // Noticeable
+
+            ActionPriority::Deferred => return None, // No deadline
         };
 
         Some(Instant::now() + timeout)
@@ -599,12 +646,15 @@ impl ActionBatcher {
 
     /// Get total pending actions across all queues
     fn total_pending_actions(&self) -> usize {
-        self.priority_queues.iter().map(|q| q.len()).sum::<usize>()
+        self.priority_queues
+            .iter()
+            .map(|q: &VecDeque<ActionMetadata>| q.len())
+            .sum::<usize>()
             + self.navigation_buffer.movements.len()
             + self
                 .active_batch_groups
                 .values()
-                .map(|v| v.len())
+                .map(|v: &Vec<ActionMetadata>| v.len())
                 .sum::<usize>()
     }
 

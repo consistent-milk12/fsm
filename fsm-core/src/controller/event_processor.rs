@@ -21,7 +21,6 @@
 //! from `Priority` values to counters:contentReference[oaicite:3]{index=3}.
 
 use crate::controller::actions::Action;
-use crate::controller::eactions::{ActionType, EAction};
 use crate::controller::event_loop::TaskResult;
 use arc_swap::ArcSwap;
 use enum_map::{Enum, EnumMap, enum_map};
@@ -68,12 +67,6 @@ pub enum Event {
     /// Direct action injection.
     Action { action: Action, priority: Priority },
 
-    /// Zero-allocation action injection.
-    EAction {
-        eaction: EAction,
-        priority: Priority,
-    },
-
     /// Periodic tick for UI updates.
     Tick,
 }
@@ -86,32 +79,12 @@ impl Event {
 
             Event::Action { priority, .. } => *priority,
 
-            Event::EAction { priority, .. } => *priority,
-
             Event::Resize { .. } => Priority::High,
 
             Event::Task { .. } => Priority::Normal,
 
             Event::Tick => Priority::Low,
         }
-    }
-}
-
-impl From<EAction> for Event {
-    fn from(eaction: EAction) -> Self {
-        let priority = match eaction.action_type {
-            ActionType::Quit => Priority::Critical,
-            ActionType::NavigateUp
-            | ActionType::NavigateDown
-            | ActionType::NavigatePageUp
-            | ActionType::NavigatePageDown
-            | ActionType::NavigateHome
-            | ActionType::NavigateEnd
-            | ActionType::EnterDirectory
-            | ActionType::NavigateParent => Priority::High,
-            _ => Priority::Normal,
-        };
-        Event::EAction { eaction, priority }
     }
 }
 

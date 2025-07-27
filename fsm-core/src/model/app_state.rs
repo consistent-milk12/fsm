@@ -9,7 +9,6 @@
 use crate::cache::cache_manager::ObjectInfoCache;
 use crate::config::Config;
 use crate::controller::actions::Action;
-use crate::controller::ekey_processor::EKeyProcessor;
 use crate::controller::event_loop::TaskResult;
 use crate::model::fs_state::FSState;
 
@@ -137,9 +136,6 @@ pub struct AppState {
     // Timestamps
     pub started_at: Instant,
     pub last_operation: AtomicU64, // Unix timestamp in milliseconds
-
-    // Key processor
-    pub key_processor: Option<EKeyProcessor>,
 }
 
 impl AppState {
@@ -166,7 +162,6 @@ impl AppState {
             errors_count: AtomicU64::new(0),
             started_at: Instant::now(),
             last_operation: AtomicU64::new(0),
-            key_processor: None,
         }
     }
 
