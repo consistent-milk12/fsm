@@ -4,34 +4,35 @@
 use anyhow::Result;
 use std::sync::{Arc, RwLock, RwLockReadGuard};
 
-use super::{ActionHandler, DispatchResult};
-use crate::UIState;
+use crate::controller::Action;
 use crate::controller::actions::InputPromptType;
-use crate::controller::{Action, state_coordinator::StateCoordinator};
-use crate::model::{RedrawFlag, UIOverlay};
+use crate::controller::state_provider::StateProvider;
+use crate::model::ui_state::{RedrawFlag, UIOverlay, UIState};
+
+use super::{ActionMatcher, ActionPriority, DispatchResult};
 
 /// UI control dispatcher for overlays and interface state
+#[derive(Clone)]
 pub struct UIControlDispatcher {
-    state: Arc<StateCoordinator>,
+    state_provider: Arc<dyn StateProvider>,
 }
 
 impl UIControlDispatcher {
-    pub fn new(state: Arc<StateCoordinator>) -> Self {
-        Self { state }
+    pub fn new(state_provider: Arc<dyn StateProvider>) -> Self {
+        Self { state_provider }
     }
 
     /// Handle overlay toggles efficiently
     fn handle_overlay_toggle(&self, action: &Action) -> Option<DispatchResult> {
         let (new_overlay, redraw_flag) = match action {
             Action::ToggleHelp => {
-                let current: UIOverlay = {
-                    let ui_state: Arc<RwLock<UIState>> = self.state.ui_state();
-                    let ui: RwLockReadGuard<'_, UIState> =
-                        ui_state.read().expect("UI state lock poisoned");
+                let current = {
+                    let ui_state = self.state_provider.ui_state();
+                    let ui = ui_state.read().expect("UI state lock poisoned");
                     ui.overlay.clone()
                 };
 
-                let new_overlay: UIOverlay = if current == UIOverlay::Help {
+                let new_overlay = if current == UIOverlay::Help {
                     UIOverlay::None
                 } else {
                     UIOverlay::Help
@@ -41,14 +42,13 @@ impl UIControlDispatcher {
             }
 
             Action::ToggleFileNameSearch => {
-                let current: UIOverlay = {
-                    let ui_state: Arc<RwLock<UIState>> = self.state.ui_state();
-                    let ui: RwLockReadGuard<'_, UIState> =
-                        ui_state.read().expect("UI state lock poisoned");
+                let current = {
+                    let ui_state = self.state_provider.ui_state();
+                    let ui = ui_state.read().expect("UI state lock poisoned");
                     ui.overlay.clone()
                 };
 
-                let new_overlay: UIOverlay = if current == UIOverlay::FileNameSearch {
+                let new_overlay = if current == UIOverlay::FileNameSearch {
                     UIOverlay::None
                 } else {
                     UIOverlay::FileNameSearch
@@ -61,12 +61,15 @@ impl UIControlDispatcher {
             _ => return None,
         };
 
-        self.state
+        let overlay_clone = new_overlay.clone();
+        let action_clone = action.clone(); // if Action is Clone
+
+        self.state_provider
             .update_ui_state(Box::new(move |ui: &mut UIState| {
-                ui.overlay = new_overlay;
+                ui.overlay = overlay_clone;
                 ui.clear_input();
 
-                if matches!(action, Action::CloseOverlay) {
+                if matches!(action_clone, Action::CloseOverlay) {
                     ui.input_prompt_type = None;
                 }
 
@@ -78,12 +81,12 @@ impl UIControlDispatcher {
 
     /// Handle input prompts
     fn handle_input_prompt(&self, prompt_type: &InputPromptType) -> DispatchResult {
-        self.state
+        let prompt_type = prompt_type.clone();
+        self.state_provider
             .update_ui_state(Box::new(move |ui: &mut UIState| {
                 ui.overlay = UIOverlay::Prompt;
                 ui.clear_input();
-
-                ui.input_prompt_type = Some(prompt_type.clone());
+                ui.input_prompt_type = Some(prompt_type);
                 ui.request_redraw(RedrawFlag::All);
             }));
 
@@ -91,8 +94,9 @@ impl UIControlDispatcher {
     }
 
     /// Handle input updates
-    fn handle_input_update(&self, input: String) -> DispatchResult {
-        self.state
+    fn handle_input_update(&self, input: &str) -> DispatchResult {
+        let input = input.to_string();
+        self.state_provider
             .update_ui_state(Box::new(move |ui: &mut UIState| {
                 ui.set_input(&input);
                 ui.request_redraw(RedrawFlag::Overlay);
@@ -103,19 +107,42 @@ impl UIControlDispatcher {
 
     /// Handle command mode entry
     fn handle_command_mode(&self) -> DispatchResult {
-        self.state.update_ui_state(Box::new(|ui: &mut UIState| {
-            ui.overlay = UIOverlay::Prompt;
-            ui.clear_input();
-
-            ui.input_prompt_type = Some(InputPromptType::Custom("command".to_string()));
-            ui.request_redraw(RedrawFlag::All);
-        }));
+        self.state_provider
+            .update_ui_state(Box::new(|ui: &mut UIState| {
+                ui.overlay = UIOverlay::Prompt;
+                ui.clear_input();
+                ui.input_prompt_type = Some(InputPromptType::Custom("command".to_string()));
+                ui.request_redraw(RedrawFlag::All);
+            }));
 
         DispatchResult::Continue
     }
+
+    /// Handle action asynchronously
+    pub async fn handle(&mut self, action: Action) -> Result<DispatchResult> {
+        // Fast path for overlay toggles
+        if let Some(result) = self.handle_overlay_toggle(&action) {
+            return Ok(result);
+        }
+
+        match action {
+            Action::EnterCommandMode => Ok(self.handle_command_mode()),
+
+            Action::ShowInputPrompt(prompt_type) => Ok(self.handle_input_prompt(&prompt_type)),
+
+            Action::UpdateInput(input) => Ok(self.handle_input_update(&input)),
+
+            Action::Tick => {
+                self.state_provider.request_redraw(RedrawFlag::Main);
+                Ok(DispatchResult::Continue)
+            }
+
+            _ => Ok(DispatchResult::NotHandled),
+        }
+    }
 }
 
-impl ActionHandler for UIControlDispatcher {
+impl ActionMatcher for UIControlDispatcher {
     fn can_handle(&self, action: &Action) -> bool {
         matches!(
             action,
@@ -129,34 +156,100 @@ impl ActionHandler for UIControlDispatcher {
         )
     }
 
-    async fn handle(&mut self, action: &Action) -> Result<DispatchResult> {
-        // Fast path for overlay toggles
-        if let Some(result) = self.handle_overlay_toggle(&action) {
-            return Ok(result);
-        }
+    fn priority(&self) -> ActionPriority {
+        ActionPriority::High // UI responsiveness is important
+    }
 
+    fn dynamic_priority(&self, action: &Action) -> ActionPriority {
         match action {
-            Action::EnterCommandMode => Ok(self.handle_command_mode()),
-
-            Action::ShowInputPrompt(prompt_type) => Ok(self.handle_input_prompt(prompt_type)),
-
-            Action::UpdateInput(input) => Ok(self.handle_input_update(input.to_string())),
-
-            Action::Tick => {
-                self.state.request_redraw(RedrawFlag::Main);
-
-                Ok(DispatchResult::Continue)
-            }
-
-            _ => Ok(DispatchResult::NotHandled),
+            Action::Tick => ActionPriority::Low,
+            Action::CloseOverlay => ActionPriority::High,
+            _ => self.priority(),
         }
     }
 
-    fn priority(&self) -> u8 {
-        20
-    } // High priority for responsive UI
-
     fn name(&self) -> &'static str {
         "ui_control"
+    }
+
+    fn can_disable(&self) -> bool {
+        false // UI control is essential
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{app_state::AppState, fs_state::FSState};
+    use std::sync::{Mutex, RwLock};
+
+    // Mock StateProvider for testing
+    struct MockStateProvider {
+        ui_state: Arc<RwLock<UIState>>,
+        fs_state: Arc<Mutex<FSState>>,
+        app_state: Arc<Mutex<AppState>>,
+    }
+
+    impl StateProvider for MockStateProvider {
+        fn ui_state(&self) -> Arc<RwLock<UIState>> {
+            self.ui_state.clone()
+        }
+
+        fn update_ui_state(&self, update: Box<dyn FnOnce(&mut UIState) + Send>) {
+            if let Ok(mut ui) = self.ui_state.write() {
+                update(&mut ui);
+            }
+        }
+
+        fn fs_state(&self) -> std::sync::MutexGuard<'_, FSState> {
+            self.fs_state.lock().unwrap()
+        }
+
+        fn app_state(&self) -> std::sync::MutexGuard<'_, AppState> {
+            self.app_state.lock().unwrap()
+        }
+
+        fn request_redraw(&self, _flag: RedrawFlag) {}
+        fn needs_redraw(&self) -> bool {
+            false
+        }
+        fn clear_redraw(&self) {}
+    }
+
+    fn create_test_dispatcher() -> UIControlDispatcher {
+        let state_provider = Arc::new(MockStateProvider {
+            ui_state: Arc::new(RwLock::new(UIState::default())),
+            fs_state: Arc::new(Mutex::new(FSState::default())),
+            app_state: Arc::new(Mutex::new(AppState::default())),
+        });
+
+        UIControlDispatcher::new(state_provider)
+    }
+
+    #[tokio::test]
+    async fn test_toggle_help() {
+        let mut dispatcher = create_test_dispatcher();
+
+        let result = dispatcher.handle(Action::ToggleHelp).await;
+        assert!(result.is_ok());
+        assert!(matches!(result.unwrap(), DispatchResult::Continue));
+    }
+
+    #[tokio::test]
+    async fn test_command_mode() {
+        let mut dispatcher = create_test_dispatcher();
+
+        let result = dispatcher.handle(Action::EnterCommandMode).await;
+        assert!(result.is_ok());
+        assert!(matches!(result.unwrap(), DispatchResult::Continue));
+    }
+
+    #[test]
+    fn test_can_handle() {
+        let dispatcher = create_test_dispatcher();
+
+        assert!(dispatcher.can_handle(&Action::ToggleHelp));
+        assert!(dispatcher.can_handle(&Action::Tick));
+        assert!(!dispatcher.can_handle(&Action::Quit));
     }
 }

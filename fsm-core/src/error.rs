@@ -1,16 +1,11 @@
-//! src/error.rs
-//! ============================================================================
-//! # AppError: Unified Error Type for File Manager
-//!
-//! This module defines the comprehensive error enum (`AppError`) used across the
-//! entire application. Each variant carries rich context for diagnostics, and all
-//! major modules are expected to use `Result<T, AppError>` for consistency.
+//! Enhanced AppError with comprehensive error handling and clipboard support
 
+use clipr::ClipError;
 use serde_json;
 use std::{io, path::PathBuf};
 use thiserror::Error;
 
-/// Unified error type for all file manager operations.
+/// Unified error type for all file manager operations including clipboard.
 #[derive(Debug, Error)]
 pub enum AppError {
     /// Standard IO error, auto-converted from `io::Error`.
@@ -72,7 +67,7 @@ pub enum AppError {
     /// File operation specific errors  
     #[error("File operation '{operation}' failed on {path:?}: {reason}")]
     FileOperationFailed {
-        operation: String, // "create", "delete", "rename", etc.
+        operation: String,
         path: PathBuf,
         reason: String,
     },
@@ -83,17 +78,11 @@ pub enum AppError {
 
     /// UI component errors
     #[error("UI component error in {component}: {message}")]
-    UiComponent {
-        component: String, // "ObjectTable", "SearchOverlay", etc.
-        message: String,
-    },
+    UiComponent { component: String, message: String },
 
     /// Input validation errors
     #[error("Invalid input: {field} - {message}")]
-    InvalidInput {
-        field: String, // "filename", "search_pattern", etc.
-        message: String,
-    },
+    InvalidInput { field: String, message: String },
 
     /// Task management errors  
     #[error("Task {task_id} failed: {reason}")]
@@ -109,10 +98,38 @@ pub enum AppError {
     /// Cache operation errors (more specific than generic Cache)
     #[error("Cache operation failed: {operation} on key '{key}': {reason}")]
     CacheOperation {
-        operation: String, // "get", "insert", "evict", etc.
+        operation: String,
         key: String,
         reason: String,
     },
+
+    /// Clipboard operation errors
+    #[error("Clipboard operation '{operation}' failed: {reason}")]
+    ClipboardOperation { operation: String, reason: String },
+
+    /// Clipboard item not found
+    #[error("Clipboard item not found: {item_id}")]
+    ClipboardItemNotFound { item_id: u64 },
+
+    /// Clipboard serialization/persistence error
+    #[error("Clipboard persistence failed: {reason}")]
+    ClipboardPersistence { reason: String },
+
+    /// Clipboard memory mapping error
+    #[error("Clipboard memory mapping failed: {reason}")]
+    ClipboardMemoryMap { reason: String },
+
+    /// Action dispatcher errors
+    #[error("Action dispatch failed for {action}: {reason}")]
+    ActionDispatch { action: String, reason: String },
+
+    /// State coordinator lock errors
+    #[error("State lock error in {component}: {reason}")]
+    StateLock { component: String, reason: String },
+
+    /// Rendering errors
+    #[error("Render error in {component}: {reason}")]
+    Render { component: String, reason: String },
 
     /// Operation cancelled by user or system.
     #[error("Operation was cancelled")]
@@ -219,9 +236,76 @@ impl AppError {
             reason: reason.into(),
         }
     }
+
+    /// Create a clipboard operation error
+    pub fn clipboard_operation<S1, S2>(operation: S1, reason: S2) -> Self
+    where
+        S1: Into<String>,
+        S2: Into<String>,
+    {
+        AppError::ClipboardOperation {
+            operation: operation.into(),
+            reason: reason.into(),
+        }
+    }
+
+    /// Create a clipboard item not found error
+    pub fn clipboard_item_not_found(item_id: u64) -> Self {
+        AppError::ClipboardItemNotFound { item_id }
+    }
+
+    /// Create a clipboard persistence error
+    pub fn clipboard_persistence<S: Into<String>>(reason: S) -> Self {
+        AppError::ClipboardPersistence {
+            reason: reason.into(),
+        }
+    }
+
+    /// Create a clipboard memory mapping error
+    pub fn clipboard_memory_map<S: Into<String>>(reason: S) -> Self {
+        AppError::ClipboardMemoryMap {
+            reason: reason.into(),
+        }
+    }
+
+    /// Create an action dispatch error
+    pub fn action_dispatch<S1, S2>(action: S1, reason: S2) -> Self
+    where
+        S1: Into<String>,
+        S2: Into<String>,
+    {
+        AppError::ActionDispatch {
+            action: action.into(),
+            reason: reason.into(),
+        }
+    }
+
+    /// Create a state lock error
+    pub fn state_lock<S1, S2>(component: S1, reason: S2) -> Self
+    where
+        S1: Into<String>,
+        S2: Into<String>,
+    {
+        AppError::StateLock {
+            component: component.into(),
+            reason: reason.into(),
+        }
+    }
+
+    /// Create a render error
+    pub fn render_error<S1, S2>(component: S1, reason: S2) -> Self
+    where
+        S1: Into<String>,
+        S2: Into<String>,
+    {
+        AppError::Render {
+            component: component.into(),
+            reason: reason.into(),
+        }
+    }
 }
 
-// Manual Clone implementation to handle non-Clone fields
+// Optimized Clone implementation
 impl Clone for AppError {
     fn clone(&self) -> Self {
         match self {
@@ -239,7 +323,6 @@ impl Clone for AppError {
                 source: io::Error::new(source.kind(), source.to_string()),
             },
             AppError::Serde(e) => AppError::Other(format!("Serde error: {e}")),
-
             AppError::ExternalCmd { cmd, code, stderr } => AppError::ExternalCmd {
                 cmd: cmd.clone(),
                 code: *code,
@@ -291,6 +374,31 @@ impl Clone for AppError {
                 key: key.clone(),
                 reason: reason.clone(),
             },
+            AppError::ClipboardOperation { operation, reason } => AppError::ClipboardOperation {
+                operation: operation.clone(),
+                reason: reason.clone(),
+            },
+            AppError::ClipboardItemNotFound { item_id } => {
+                AppError::ClipboardItemNotFound { item_id: *item_id }
+            }
+            AppError::ClipboardPersistence { reason } => AppError::ClipboardPersistence {
+                reason: reason.clone(),
+            },
+            AppError::ClipboardMemoryMap { reason } => AppError::ClipboardMemoryMap {
+                reason: reason.clone(),
+            },
+            AppError::ActionDispatch { action, reason } => AppError::ActionDispatch {
+                action: action.clone(),
+                reason: reason.clone(),
+            },
+            AppError::StateLock { component, reason } => AppError::StateLock {
+                component: component.clone(),
+                reason: reason.clone(),
+            },
+            AppError::Render { component, reason } => AppError::Render {
+                component: component.clone(),
+                reason: reason.clone(),
+            },
             AppError::Cancelled => AppError::Cancelled,
             AppError::Terminal(msg) => AppError::Terminal(msg.clone()),
             AppError::Resize(msg) => AppError::Resize(msg.clone()),
@@ -300,9 +408,20 @@ impl Clone for AppError {
     }
 }
 
-// Allow conversion from `anyhow::Error` as fallback.
 impl From<anyhow::Error> for AppError {
     fn from(e: anyhow::Error) -> Self {
         AppError::Other(e.to_string())
+    }
+}
+
+// Clipboard error conversions
+impl From<ClipError> for AppError {
+    fn from(e: ClipError) -> Self {
+        match e {
+            ClipError::ItemNotFound(id) => AppError::clipboard_item_not_found(id),
+            ClipError::SerializationError(msg) => AppError::clipboard_persistence(msg.to_string()),
+            ClipError::MemoryMapError { .. } => AppError::clipboard_memory_map(e.to_string()),
+            _ => AppError::clipboard_operation("unknown", e.to_string()),
+        }
     }
 }

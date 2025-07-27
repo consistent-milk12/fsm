@@ -5,29 +5,36 @@ use anyhow::{Context, Result};
 use std::ffi::OsStr;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, MutexGuard, RwLock, RwLockReadGuard};
+use std::sync::{Arc, RwLockReadGuard};
 use tokio::fs as TokioFs;
 use tokio::sync::mpsc::UnboundedSender;
 
-use super::{ActionHandler, DispatchResult};
-use crate::UIState;
+use crate::controller::Action;
 use crate::controller::actions::InputPromptType;
 use crate::controller::event_loop::TaskResult;
-use crate::controller::{Action, state_coordinator::StateCoordinator};
+use crate::controller::state_provider::StateProvider;
 use crate::fs::object_info::ObjectInfo;
-use crate::model::{FSState, PaneState, RedrawFlag, UIOverlay};
+use crate::model::ui_state::{RedrawFlag, UIOverlay, UIState};
+
+use super::{ActionMatcher, ActionPriority, DispatchResult};
 
 /// Command dispatcher with validation and async safety
+#[derive(Clone)]
 pub struct CommandDispatcher {
-    state: Arc<StateCoordinator>,
-
+    state_provider: Arc<dyn StateProvider>,
     #[allow(unused)]
     task_tx: UnboundedSender<TaskResult>,
 }
 
 impl CommandDispatcher {
-    pub fn new(state: Arc<StateCoordinator>, task_tx: UnboundedSender<TaskResult>) -> Self {
-        Self { state, task_tx }
+    pub fn new(
+        state_provider: Arc<dyn StateProvider>,
+        task_tx: UnboundedSender<TaskResult>,
+    ) -> Self {
+        Self {
+            state_provider,
+            task_tx,
+        }
     }
 
     /// Parse command with validation
@@ -39,7 +46,7 @@ impl CommandDispatcher {
 
         // Simple shell-like parsing (can be enhanced later)
         let parts: Vec<&str> = trimmed.split_whitespace().collect();
-        let cmd: String = parts[0].to_string();
+        let cmd = parts[0].to_string();
         let args: Vec<String> = parts[1..].iter().map(|s| s.to_string()).collect();
 
         Ok((cmd, args))
@@ -48,12 +55,12 @@ impl CommandDispatcher {
     /// Validate path for safety
     fn validate_path(&self, path: &str) -> Result<PathBuf> {
         // Basic path traversal protection
-        if path.contains("..") || path.starts_with('/') && !path.starts_with("/tmp") {
+        if path.contains("..") || (path.starts_with('/') && !path.starts_with("/tmp")) {
             anyhow::bail!("Potentially unsafe path: {}", path);
         }
 
-        let current_dir: PathBuf = {
-            let fs: MutexGuard<'_, FSState> = self.state.fs_state();
+        let current_dir = {
+            let fs = self.state_provider.fs_state();
             fs.active_pane().cwd.clone()
         };
 
@@ -72,28 +79,16 @@ impl CommandDispatcher {
 
         match cmd.as_str() {
             "cd" => self.handle_cd_command(args).await,
-
             "mkdir" => self.handle_mkdir_command(args).await,
-
             "touch" => self.handle_touch_command(args).await,
-
             "reload" => self.handle_reload_command().await,
-
             "pwd" => self.handle_pwd_command(),
-
             "ls" => self.handle_ls_command(),
-
             "help" => self.handle_help_command(),
-
             "quit" | "q" => Err(anyhow::anyhow!("User requested quit")),
-
             "find" => self.handle_find_command(args),
-
             "clear" => self.handle_clear_command(),
-
-            _ => {
-                anyhow::bail!("Unknown command: {}", cmd);
-            }
+            _ => anyhow::bail!("Unknown command: {}", cmd),
         }
     }
 
@@ -102,7 +97,7 @@ impl CommandDispatcher {
             anyhow::bail!("Usage: cd <path>");
         }
 
-        let target_path: PathBuf = self.validate_path(&args[0])?;
+        let target_path = self.validate_path(&args[0])?;
 
         if !target_path.exists() {
             anyhow::bail!("Directory does not exist: {}", target_path.display());
@@ -113,12 +108,12 @@ impl CommandDispatcher {
         }
 
         // Load directory without holding locks
-        let entries: Vec<ObjectInfo> = self.load_directory_safely(&target_path).await?;
+        let entries = self.load_directory_safely(&target_path).await?;
 
         // Update state
         {
-            let mut fs: MutexGuard<'_, FSState> = self.state.fs_state();
-            let pane: &mut PaneState = fs.active_pane_mut();
+            let mut fs = self.state_provider.fs_state();
+            let pane = fs.active_pane_mut();
             pane.cwd = target_path;
             pane.entries = entries;
             pane.selected.store(0, Ordering::Relaxed);
@@ -133,12 +128,11 @@ impl CommandDispatcher {
             anyhow::bail!("Usage: mkdir <name>");
         }
 
-        let name: &String = &args[0];
-
+        let name = &args[0];
         let (current_dir, new_dir) = {
-            let fs: MutexGuard<'_, FSState> = self.state.fs_state();
-            let current_dir: PathBuf = fs.active_pane().cwd.clone();
-            let new_dir: PathBuf = current_dir.join(name);
+            let fs = self.state_provider.fs_state();
+            let current_dir = fs.active_pane().cwd.clone();
+            let new_dir = current_dir.join(name);
             (current_dir, new_dir)
         };
 
@@ -149,9 +143,9 @@ impl CommandDispatcher {
         self.show_success(&format!("Created directory: {}", name));
 
         // Reload current directory
-        let entries: Vec<ObjectInfo> = self.load_directory_safely(&current_dir).await?;
+        let entries = self.load_directory_safely(&current_dir).await?;
         {
-            let mut fs: MutexGuard<'_, FSState> = self.state.fs_state();
+            let mut fs = self.state_provider.fs_state();
             fs.active_pane_mut().entries = entries;
         }
 
@@ -163,12 +157,11 @@ impl CommandDispatcher {
             anyhow::bail!("Usage: touch <filename>");
         }
 
-        let name: &String = &args[0];
-
+        let name = &args[0];
         let (current_dir, new_file) = {
-            let fs: MutexGuard<'_, FSState> = self.state.fs_state();
-            let current_dir: PathBuf = fs.active_pane().cwd.clone();
-            let new_file: PathBuf = current_dir.join(name);
+            let fs = self.state_provider.fs_state();
+            let current_dir = fs.active_pane().cwd.clone();
+            let new_file = current_dir.join(name);
             (current_dir, new_file)
         };
 
@@ -179,9 +172,9 @@ impl CommandDispatcher {
         self.show_success(&format!("Created file: {}", name));
 
         // Reload current directory
-        let entries: Vec<ObjectInfo> = self.load_directory_safely(&current_dir).await?;
+        let entries = self.load_directory_safely(&current_dir).await?;
         {
-            let mut fs: MutexGuard<'_, FSState> = self.state.fs_state();
+            let mut fs = self.state_provider.fs_state();
             fs.active_pane_mut().entries = entries;
         }
 
@@ -189,27 +182,24 @@ impl CommandDispatcher {
     }
 
     async fn handle_reload_command(&self) -> Result<()> {
-        let current_dir: PathBuf = {
-            let fs: MutexGuard<'_, FSState> = self.state.fs_state();
-
+        let current_dir = {
+            let fs = self.state_provider.fs_state();
             fs.active_pane().cwd.clone()
         };
 
-        let entries: Vec<ObjectInfo> = self.load_directory_safely(&current_dir).await?;
+        let entries = self.load_directory_safely(&current_dir).await?;
         {
-            let mut fs: MutexGuard<'_, FSState> = self.state.fs_state();
-
+            let mut fs = self.state_provider.fs_state();
             fs.active_pane_mut().entries = entries;
         }
 
         self.show_success("Directory reloaded");
-
         Ok(())
     }
 
     fn handle_pwd_command(&self) -> Result<()> {
-        let current_dir: PathBuf = {
-            let fs: MutexGuard<'_, FSState> = self.state.fs_state();
+        let current_dir = {
+            let fs = self.state_provider.fs_state();
             fs.active_pane().cwd.clone()
         };
 
@@ -218,9 +208,8 @@ impl CommandDispatcher {
     }
 
     fn handle_ls_command(&self) -> Result<()> {
-        let entry_count: usize = {
-            let fs: MutexGuard<'_, FSState> = self.state.fs_state();
-
+        let entry_count = {
+            let fs = self.state_provider.fs_state();
             fs.active_pane().entries.len()
         };
 
@@ -229,10 +218,11 @@ impl CommandDispatcher {
     }
 
     fn handle_help_command(&self) -> Result<()> {
-        self.state.update_ui_state(Box::new(|ui: &mut UIState| {
-            ui.overlay = UIOverlay::Help;
-            ui.request_redraw(RedrawFlag::Overlay);
-        }));
+        self.state_provider
+            .update_ui_state(Box::new(|ui: &mut UIState| {
+                ui.overlay = UIOverlay::Help;
+                ui.request_redraw(RedrawFlag::Overlay);
+            }));
         Ok(())
     }
 
@@ -241,28 +231,28 @@ impl CommandDispatcher {
             anyhow::bail!("Usage: find <pattern>");
         }
 
-        let pattern: &String = &args[0];
-        let results: Vec<ObjectInfo> = self.perform_filename_search(pattern);
-        let matches: usize = results.len();
+        let pattern = &args[0];
+        let results = self.perform_filename_search(pattern);
+        let matches = results.len();
 
-        self.state
+        let results_clone = results.clone();
+        self.state_provider
             .update_ui_state(Box::new(move |ui: &mut UIState| {
-                ui.filename_search_results = results;
+                ui.filename_search_results = results_clone;
                 ui.overlay = UIOverlay::SearchResults;
                 ui.request_redraw(RedrawFlag::All);
             }));
 
         self.show_info(&format!("Found {} matches for '{}'", matches, pattern));
-
         Ok(())
     }
 
     fn handle_clear_command(&self) -> Result<()> {
-        self.state.update_ui_state(Box::new(|ui: &mut UIState| {
-            ui.notification = None;
-            ui.request_redraw(RedrawFlag::All);
-        }));
-
+        self.state_provider
+            .update_ui_state(Box::new(|ui: &mut UIState| {
+                ui.notification = None;
+                ui.request_redraw(RedrawFlag::All);
+            }));
         Ok(())
     }
 
@@ -270,13 +260,13 @@ impl CommandDispatcher {
     async fn load_directory_safely(&self, directory: &std::path::Path) -> Result<Vec<ObjectInfo>> {
         use crate::fs::object_info::{LightObjectInfo, ObjectType};
 
-        let mut entries: Vec<ObjectInfo> = Vec::new();
+        let mut entries = Vec::new();
 
         // Add parent directory entry if not at root
         if let Some(parent) = directory.parent() {
-            let light_parent: LightObjectInfo = LightObjectInfo {
+            let light_parent = LightObjectInfo {
                 path: parent.to_path_buf(),
-                name: "..".to_string(),
+                name: "..".to_string().into(),
                 extension: None,
                 object_type: ObjectType::Dir,
                 is_dir: true,
@@ -285,9 +275,9 @@ impl CommandDispatcher {
             entries.push(ObjectInfo::with_placeholder_metadata(light_parent));
         }
 
-        let mut dir_reader: TokioFs::ReadDir = TokioFs::read_dir(directory).await?;
+        let mut dir_reader = TokioFs::read_dir(directory).await?;
         while let Some(entry) = dir_reader.next_entry().await? {
-            let entry_path: PathBuf = entry.path();
+            let entry_path = entry.path();
 
             // Skip hidden files
             if entry_path
@@ -318,14 +308,14 @@ impl CommandDispatcher {
             return Vec::new();
         }
 
-        let fs: MutexGuard<'_, FSState> = self.state.fs_state();
-        let entries: &Vec<ObjectInfo> = &fs.active_pane().entries;
-        let query_lower: String = query.to_lowercase();
+        let fs = self.state_provider.fs_state();
+        let entries = &fs.active_pane().entries;
+        let query_lower = query.to_lowercase();
 
         entries
             .iter()
-            .filter(|entry: &&ObjectInfo| {
-                let name_lower: String = entry.name.to_lowercase();
+            .filter(|entry| {
+                let name_lower = entry.name.to_lowercase();
                 if query.contains('*') {
                     // Simple wildcard matching
                     self.wildcard_match(&query_lower, &name_lower)
@@ -345,7 +335,7 @@ impl CommandDispatcher {
             return text.contains(pattern);
         }
 
-        let mut text_pos: usize = 0;
+        let mut text_pos = 0;
 
         for (i, part) in pattern_parts.iter().enumerate() {
             if part.is_empty() {
@@ -366,8 +356,7 @@ impl CommandDispatcher {
 
         // If pattern doesn't end with *, the last part must match at the end
         if !pattern.ends_with('*') && !pattern_parts.is_empty() {
-            let last_part: &&str = pattern_parts.last().unwrap();
-
+            let last_part = pattern_parts.last().unwrap();
             if !last_part.is_empty() && !text.ends_with(last_part) {
                 return false;
             }
@@ -378,8 +367,8 @@ impl CommandDispatcher {
 
     /// Handle input prompt submission with routing
     async fn handle_submit_input_prompt(&self, input: String) -> Result<DispatchResult> {
-        let prompt_type: Option<InputPromptType> = {
-            let ui_state: Arc<RwLock<UIState>> = self.state.ui_state();
+        let prompt_type = {
+            let ui_state = self.state_provider.ui_state();
             let ui: RwLockReadGuard<'_, UIState> = ui_state.read().expect("UI state lock poisoned");
             ui.input_prompt_type.clone()
         };
@@ -388,11 +377,10 @@ impl CommandDispatcher {
             Some(InputPromptType::Custom(ref name)) if name == "command" => {
                 if !input.is_empty() {
                     // Add to command history
-                    let input_clone: String = input.clone();
-
-                    self.state
+                    let input_clone = input.clone();
+                    self.state_provider
                         .update_ui_state(Box::new(move |ui: &mut UIState| {
-                            ui.add_to_history(&input_clone);
+                            ui.add_to_history(input_clone);
                         }));
 
                     // Execute command
@@ -400,18 +388,18 @@ impl CommandDispatcher {
                         if e.to_string().contains("quit") {
                             return Ok(DispatchResult::Terminate);
                         }
-
                         self.show_error(&format!("Command failed: {}", e));
                     }
                 }
 
                 // Close overlay
-                self.state.update_ui_state(Box::new(|ui: &mut UIState| {
-                    ui.overlay = UIOverlay::None;
-                    ui.clear_input();
-                    ui.input_prompt_type = None;
-                    ui.request_redraw(RedrawFlag::All);
-                }));
+                self.state_provider
+                    .update_ui_state(Box::new(|ui: &mut UIState| {
+                        ui.overlay = UIOverlay::None;
+                        ui.clear_input();
+                        ui.input_prompt_type = None;
+                        ui.request_redraw(RedrawFlag::All);
+                    }));
 
                 Ok(DispatchResult::Continue)
             }
@@ -422,9 +410,7 @@ impl CommandDispatcher {
                         self.show_error(&format!("Failed to create file: {}", e));
                     }
                 }
-
                 self.close_overlay();
-
                 Ok(DispatchResult::Continue)
             }
 
@@ -434,9 +420,7 @@ impl CommandDispatcher {
                         self.show_error(&format!("Failed to create directory: {}", e));
                     }
                 }
-
                 self.close_overlay();
-
                 Ok(DispatchResult::Continue)
             }
 
@@ -446,9 +430,7 @@ impl CommandDispatcher {
                         self.show_error(&format!("Failed to change directory: {}", e));
                     }
                 }
-
                 self.close_overlay();
-
                 Ok(DispatchResult::Continue)
             }
 
@@ -460,28 +442,34 @@ impl CommandDispatcher {
     }
 
     fn close_overlay(&self) {
-        self.state.update_ui_state(Box::new(|ui: &mut UIState| {
-            ui.overlay = UIOverlay::None;
-            ui.clear_input();
+        self.state_provider
+            .update_ui_state(Box::new(|ui: &mut UIState| {
+                ui.overlay = UIOverlay::None;
+                ui.clear_input();
+                ui.input_prompt_type = None;
+                ui.request_redraw(RedrawFlag::All);
+            }));
+    }
 
-            ui.input_prompt_type = None;
-            ui.request_redraw(RedrawFlag::All);
-        }));
+    /// Handle action asynchronously
+    pub async fn handle(&mut self, action: Action) -> Result<DispatchResult> {
+        match action {
+            Action::SubmitInputPrompt(input) => self.handle_submit_input_prompt(input).await,
+            _ => Ok(DispatchResult::NotHandled),
+        }
     }
 
     fn show_success(&self, message: &str) {
-        let msg: String = message.to_string();
-
-        self.state
+        let msg = message.to_string();
+        self.state_provider
             .update_ui_state(Box::new(move |ui: &mut UIState| {
                 ui.show_success(&msg);
             }));
     }
 
     fn show_info(&self, message: &str) {
-        let msg: String = message.to_string();
-
-        self.state
+        let msg = message.to_string();
+        self.state_provider
             .update_ui_state(Box::new(move |ui: &mut UIState| {
                 ui.show_info(&msg);
             }));
@@ -489,34 +477,97 @@ impl CommandDispatcher {
 
     fn show_error(&self, message: &str) {
         let msg = message.to_string();
-
-        self.state
+        self.state_provider
             .update_ui_state(Box::new(move |ui: &mut UIState| {
                 ui.show_error(&msg);
             }));
     }
 }
 
-impl ActionHandler for CommandDispatcher {
+impl ActionMatcher for CommandDispatcher {
     fn can_handle(&self, action: &Action) -> bool {
         matches!(action, Action::SubmitInputPrompt(_))
     }
 
-    async fn handle(&mut self, action: &Action) -> Result<DispatchResult> {
-        match action {
-            Action::SubmitInputPrompt(input) => {
-                self.handle_submit_input_prompt(input.clone()).await
-            }
-
-            _ => Ok(DispatchResult::NotHandled),
-        }
+    fn priority(&self) -> ActionPriority {
+        ActionPriority::Normal
     }
-
-    fn priority(&self) -> u8 {
-        40
-    } // Medium-low priority
 
     fn name(&self) -> &'static str {
         "command"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{app_state::AppState, fs_state::FSState, ui_state::UIState};
+    use std::sync::{Mutex, RwLock};
+
+    // Mock StateProvider for testing
+    struct MockStateProvider {
+        ui_state: Arc<RwLock<UIState>>,
+        fs_state: Arc<Mutex<crate::model::FSState>>,
+        app_state: Arc<Mutex<AppState>>,
+    }
+
+    impl StateProvider for MockStateProvider {
+        fn ui_state(&self) -> Arc<RwLock<UIState>> {
+            self.ui_state.clone()
+        }
+
+        fn update_ui_state(&self, update: Box<dyn FnOnce(&mut UIState) + Send>) {
+            if let Ok(mut ui) = self.ui_state.write() {
+                update(&mut ui);
+            }
+        }
+
+        fn fs_state(&self) -> std::sync::MutexGuard<'_, crate::model::FSState> {
+            self.fs_state.lock().unwrap()
+        }
+
+        fn app_state(&self) -> std::sync::MutexGuard<'_, AppState> {
+            self.app_state.lock().unwrap()
+        }
+
+        fn request_redraw(&self, _flag: RedrawFlag) {}
+        fn needs_redraw(&self) -> bool {
+            false
+        }
+        fn clear_redraw(&self) {}
+    }
+
+    fn create_test_dispatcher() -> (
+        CommandDispatcher,
+        tokio::sync::mpsc::UnboundedReceiver<TaskResult>,
+    ) {
+        let (task_tx, task_rx) = tokio::sync::mpsc::unbounded_channel();
+        let state_provider = Arc::new(MockStateProvider {
+            ui_state: Arc::new(RwLock::new(UIState::default())),
+            fs_state: Arc::new(Mutex::new(crate::model::FSState::default())),
+            app_state: Arc::new(Mutex::new(AppState::default())),
+        });
+
+        let dispatcher = CommandDispatcher::new(state_provider, task_tx);
+        (dispatcher, task_rx)
+    }
+
+    #[tokio::test]
+    async fn test_submit_input_prompt() {
+        let (mut dispatcher, _rx) = create_test_dispatcher();
+
+        let result = dispatcher
+            .handle(Action::SubmitInputPrompt("pwd".to_string()))
+            .await;
+        assert!(result.is_ok());
+        assert!(matches!(result.unwrap(), DispatchResult::Continue));
+    }
+
+    #[test]
+    fn test_can_handle() {
+        let (dispatcher, _rx) = create_test_dispatcher();
+
+        assert!(dispatcher.can_handle(&Action::SubmitInputPrompt("test".to_string())));
+        assert!(!dispatcher.can_handle(&Action::Quit));
     }
 }

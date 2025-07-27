@@ -1,8 +1,4 @@
-//! # Actions: Centralized Application Commands
-//!
-//! Defines the `Action` enum, which represents all possible user inputs and
-//! internal events that the application can respond to. This provides a single,
-//! clear interface for the `Controller` to process.
+//! Enhanced Actions with comprehensive clipboard and file operations support
 
 use crate::fs::object_info::ObjectInfo;
 use crossterm::event::{KeyEvent, MouseEvent};
@@ -23,6 +19,8 @@ pub enum InputPromptType {
     CopyDestination,
     MoveDestination,
     RenameFile,
+    // Clipboard operations
+    PasteDestination,
 }
 
 /// Unique identifier for tracking file operations
@@ -45,10 +43,20 @@ impl OperationId {
     pub fn from_string(id: String) -> Self {
         Self(id)
     }
+
+    /// Get the inner string value
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for OperationId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
 }
 
 /// Represents a high-level action that the application can perform.
-/// This abstracts away raw terminal events into meaningful commands.
 #[derive(Debug, Clone)]
 pub enum Action {
     /// A keyboard event.
@@ -200,14 +208,10 @@ pub enum Action {
 
     // ===== Enhanced File Operations =====
     /// Start file copy operation (shows destination prompt)
-    StartCopy {
-        source: PathBuf,
-    },
+    StartCopy { source: PathBuf },
 
     /// Start file move operation (shows destination prompt)
-    StartMove {
-        source: PathBuf,
-    },
+    StartMove { source: PathBuf },
 
     /// Execute copy operation
     ExecuteCopy {
@@ -238,9 +242,7 @@ pub enum Action {
     },
 
     /// File operation completed
-    FileOperationComplete {
-        operation_id: OperationId,
-    },
+    FileOperationComplete { operation_id: OperationId },
 
     /// File operation failed
     FileOperationError {
@@ -249,12 +251,273 @@ pub enum Action {
     },
 
     /// Cancel ongoing file operation
-    CancelFileOperation {
+    CancelFileOperation { operation_id: OperationId },
+
+    /// Update task status
+    UpdateTaskStatus { task_id: u64, completed: bool },
+
+    // ===== Clipboard Operations =====
+    /// Copy selected item(s) to clipboard
+    Copy(PathBuf),
+
+    /// Cut selected item(s) to clipboard (move operation)
+    Cut(PathBuf),
+
+    /// Copy multiple items to clipboard
+    CopyMultiple(Vec<PathBuf>),
+
+    /// Cut multiple items to clipboard
+    CutMultiple(Vec<PathBuf>),
+
+    /// Paste from clipboard to current directory
+    Paste,
+
+    /// Paste from clipboard to specified directory
+    PasteToDirectory(PathBuf),
+
+    /// Toggle clipboard overlay
+    ToggleClipboard,
+
+    /// Navigate clipboard selection up
+    ClipboardUp,
+
+    /// Navigate clipboard selection down
+    ClipboardDown,
+
+    /// Select clipboard item by index
+    SelectClipboardItem(usize),
+
+    /// Remove item from clipboard
+    RemoveFromClipboard(u64), // clipboard item ID
+
+    /// Clear entire clipboard
+    ClearClipboard,
+
+    /// Paste selected clipboard item
+    PasteClipboardItem { item_id: u64, destination: PathBuf },
+
+    /// Show clipboard item details
+    ShowClipboardItemDetails(u64),
+
+    /// Execute clipboard paste operation
+    ExecuteClipboardPaste {
         operation_id: OperationId,
+        item_ids: Vec<u64>,
+        destination: PathBuf,
     },
 
-    UpdateTaskStatus {
-        task_id: u64,
-        completed: bool,
+    /// Clipboard operation progress
+    ClipboardOperationProgress {
+        operation_id: OperationId,
+        completed_items: u32,
+        total_items: u32,
+        current_item: String,
     },
+
+    /// Clipboard operation completed
+    ClipboardOperationComplete {
+        operation_id: OperationId,
+        items_processed: u32,
+    },
+
+    /// Clipboard operation failed
+    ClipboardOperationError {
+        operation_id: OperationId,
+        item_id: Option<u64>,
+        error: String,
+    },
+
+    // ===== Enhanced Navigation =====
+    /// Bookmark current directory
+    BookmarkDirectory,
+
+    /// Show bookmarks overlay
+    ShowBookmarks,
+
+    /// Navigate to bookmark
+    GoToBookmark(usize),
+
+    /// Remove bookmark
+    RemoveBookmark(usize),
+
+    /// Show recent directories
+    ShowRecentDirectories,
+
+    /// Navigate to recent directory
+    GoToRecentDirectory(usize),
+
+    /// Add directory to navigation history
+    AddToHistory(PathBuf),
+
+    /// Go back in navigation history
+    NavigateBack,
+
+    /// Go forward in navigation history
+    NavigateForward,
+
+    // ===== Enhanced Search =====
+    /// Advanced search with options
+    AdvancedSearch {
+        pattern: String,
+        case_sensitive: bool,
+        regex: bool,
+        include_hidden: bool,
+        file_types: Vec<String>,
+    },
+
+    /// Search in specific directory
+    SearchInDirectory { directory: PathBuf, pattern: String },
+
+    /// Cancel current search operation
+    CancelSearch,
+
+    /// Search result selected
+    SelectSearchResult(usize),
+
+    /// Jump to search result in file
+    JumpToSearchResult {
+        path: PathBuf,
+        line_number: Option<u32>,
+        column: Option<u32>,
+    },
+
+    // ===== Task Management =====
+    /// Show running tasks overlay
+    ShowRunningTasks,
+
+    /// Cancel specific task
+    CancelTask(u64),
+
+    /// Pause/resume task
+    ToggleTaskPause(u64),
+
+    /// Show task details
+    ShowTaskDetails(u64),
+
+    /// Set task priority
+    SetTaskPriority {
+        task_id: u64,
+        priority: i8, // -10 to 10
+    },
+}
+
+impl Action {
+    /// Check if action requires async processing
+    pub fn is_async(&self) -> bool {
+        matches!(
+            self,
+            Action::Copy(_)
+                | Action::Cut(_)
+                | Action::CopyMultiple(_)
+                | Action::CutMultiple(_)
+                | Action::Paste
+                | Action::PasteToDirectory(_)
+                | Action::ExecuteClipboardPaste { .. }
+                | Action::ClearClipboard
+                | Action::ContentSearch(_)
+                | Action::DirectContentSearch(_)
+                | Action::AdvancedSearch { .. }
+                | Action::ExecuteCopy { .. }
+                | Action::ExecuteMove { .. }
+                | Action::ExecuteRename { .. }
+        )
+    }
+
+    /// Get operation priority (lower number = higher priority)
+    pub fn priority(&self) -> u8 {
+        match self {
+            Action::Quit => 0,
+            Action::Key(_) | Action::Mouse(_) => 1,
+            Action::MoveSelectionUp | Action::MoveSelectionDown => 2,
+            Action::ToggleClipboard | Action::ClipboardUp | Action::ClipboardDown => 3,
+            Action::Copy(_) | Action::Cut(_) => 4,
+            Action::Paste | Action::PasteToDirectory(_) => 5,
+            Action::EnterSelected | Action::GoToParent => 6,
+            Action::ContentSearch(_) | Action::FileNameSearch(_) => 7,
+            Action::ExecuteCopy { .. } | Action::ExecuteMove { .. } => 8,
+            Action::FileOperationProgress { .. } => 9,
+            _ => 10,
+        }
+    }
+
+    /// Check if action modifies filesystem
+    pub fn modifies_filesystem(&self) -> bool {
+        matches!(
+            self,
+            Action::CreateFileWithName(_)
+                | Action::CreateDirectoryWithName(_)
+                | Action::Delete
+                | Action::ExecuteCopy { .. }
+                | Action::ExecuteMove { .. }
+                | Action::ExecuteRename { .. }
+                | Action::Paste
+                | Action::PasteToDirectory(_)
+                | Action::ExecuteClipboardPaste { .. }
+        )
+    }
+
+    /// Get human-readable action description
+    pub fn description(&self) -> &'static str {
+        match self {
+            Action::Copy(_) => "Copy to clipboard",
+            Action::Cut(_) => "Cut to clipboard",
+            Action::Paste => "Paste from clipboard",
+            Action::ToggleClipboard => "Toggle clipboard overlay",
+            Action::ClearClipboard => "Clear clipboard",
+            Action::ExecuteCopy { .. } => "Executing copy operation",
+            Action::ExecuteMove { .. } => "Executing move operation",
+            Action::FileOperationProgress { .. } => "File operation in progress",
+            Action::ClipboardOperationProgress { .. } => "Clipboard operation in progress",
+            Action::Quit => "Quit application",
+            Action::EnterSelected => "Enter selected item",
+            Action::GoToParent => "Go to parent directory",
+            Action::Delete => "Delete selected item",
+            Action::ToggleHelp => "Toggle help overlay",
+            Action::ReloadDirectory => "Reload directory",
+            _ => "Unknown action",
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_operation_id_generation() {
+        let id1 = OperationId::new();
+        let id2 = OperationId::new();
+        assert_ne!(id1, id2);
+        assert!(!id1.as_str().is_empty());
+    }
+
+    #[test]
+    fn test_action_priority() {
+        assert_eq!(Action::Quit.priority(), 0);
+        assert!(
+            Action::Copy(PathBuf::new()).priority()
+                < Action::ContentSearch("test".to_string()).priority()
+        );
+    }
+
+    #[test]
+    fn test_filesystem_modification_check() {
+        assert!(Action::Delete.modifies_filesystem());
+        assert!(
+            Action::ExecuteCopy {
+                operation_id: OperationId::new(),
+                source: PathBuf::new(),
+                destination: PathBuf::new(),
+            }
+            .modifies_filesystem()
+        );
+        assert!(!Action::MoveSelectionUp.modifies_filesystem());
+    }
+
+    #[test]
+    fn test_async_action_detection() {
+        assert!(Action::Copy(PathBuf::new()).is_async());
+        assert!(Action::Paste.is_async());
+        assert!(!Action::MoveSelectionUp.is_async());
+    }
 }

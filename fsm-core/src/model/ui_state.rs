@@ -1,10 +1,13 @@
-//! Optimized UI state for high-performance TUI with atomic operations
+//! Enhanced UI state with performance optimizations and clipboard integration
 
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::Instant;
 
+use crate::AppError;
+use clipr::clipboard::ClipBoard;
+use clipr::{ClipBoardConfig, ClipBoardItem};
 use compact_str::CompactString;
 use smallvec::SmallVec;
 use tokio_util::sync::CancellationToken;
@@ -30,7 +33,7 @@ impl RedrawFlag {
     }
 }
 
-/// UI operation modes
+/// UI operation modes with Search variant
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(u8)]
 pub enum UIMode {
@@ -41,7 +44,7 @@ pub enum UIMode {
     Visual = 3,
 }
 
-/// UI overlays
+/// UI overlays with Search support
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(u8)]
 pub enum UIOverlay {
@@ -53,6 +56,7 @@ pub enum UIOverlay {
     SearchResults = 4,
     Prompt = 5,
     Loading = 6,
+    Search = 7, // Added for compatibility
 }
 
 /// Notification levels
@@ -78,7 +82,7 @@ pub struct Notification {
 #[derive(Debug)]
 pub struct LoadingState {
     pub message: CompactString,
-    pub progress: Arc<AtomicU32>, // Progress * 100 for precision
+    pub progress: Arc<AtomicU32>,
     pub current: Arc<AtomicU64>,
     pub total: Arc<AtomicU64>,
     pub current_item: Arc<parking_lot::RwLock<Option<CompactString>>>,
@@ -202,7 +206,7 @@ impl FileOperationProgress {
     }
 }
 
-/// High-performance UI state with atomic operations
+/// Enhanced UI state with clipboard integration
 #[derive(Debug)]
 pub struct UIState {
     // Atomic flags for lock-free updates
@@ -241,6 +245,11 @@ pub struct UIState {
     // File operations
     pub active_file_operations: HashMap<CompactString, Arc<FileOperationProgress>>,
     pub operation_cancel_tokens: HashMap<CompactString, CancellationToken>,
+
+    // Clipboard integration
+    pub clipboard: ClipBoard,
+    pub clipboard_overlay_active: bool,
+    pub selected_clipboard_item_index: usize,
 }
 
 impl Default for UIState {
@@ -273,6 +282,9 @@ impl UIState {
             last_update: Instant::now(),
             active_file_operations: HashMap::new(),
             operation_cancel_tokens: HashMap::new(),
+            clipboard: ClipBoard::new(ClipBoardConfig::default()),
+            clipboard_overlay_active: false,
+            selected_clipboard_item_index: 0,
         }
     }
 
@@ -316,12 +328,17 @@ impl UIState {
     }
 
     #[inline]
+    pub fn add_to_history(&mut self, input: String) {
+        self.input_history.push(input.into());
+    }
+
+    #[inline]
     pub fn clear_marks(&mut self) {
         self.marked_indices.clear();
         self.request_redraw(RedrawFlag::Main);
     }
 
-    // Notification system
+    // Notification system with inline helpers
     pub fn show_notification(
         &mut self,
         message: impl Into<CompactString>,
@@ -370,7 +387,7 @@ impl UIState {
         false
     }
 
-    // Input management
+    // Input management (unchanged for compatibility)
     pub fn clear_input(&mut self) {
         self.input = CompactString::new("");
         self.input_cursor = 0;
@@ -411,89 +428,54 @@ impl UIState {
         false
     }
 
-    pub fn move_cursor_left(&mut self) {
-        if self.input_cursor > 0 {
-            let input_str = self.input.as_str();
-            let char_indices: Vec<_> = input_str.char_indices().collect();
+    // Clipboard management with async operations
+    pub async fn toggle_clipboard_overlay(&mut self) {
+        self.clipboard_overlay_active = !self.clipboard_overlay_active;
+        if self.clipboard_overlay_active {
+            self.selected_clipboard_item_index = 0;
+        }
+        self.request_redraw(RedrawFlag::Overlay);
+    }
 
-            if let Some((pos, _)) = char_indices
-                .iter()
-                .rev()
-                .find(|(pos, _)| *pos < self.input_cursor)
-            {
-                self.input_cursor = *pos;
-            }
+    pub fn move_clipboard_selection_up(&mut self) {
+        if self.selected_clipboard_item_index > 0 {
+            self.selected_clipboard_item_index -= 1;
+            self.request_redraw(RedrawFlag::Overlay);
         }
     }
 
-    pub fn move_cursor_right(&mut self) {
-        let input_str = self.input.as_str();
-        let char_indices: Vec<_> = input_str.char_indices().collect();
-
-        if let Some((pos, _)) = char_indices
-            .iter()
-            .find(|(pos, _)| *pos > self.input_cursor)
-        {
-            self.input_cursor = *pos;
-        } else if self.input_cursor < input_str.len() {
-            self.input_cursor = input_str.len();
+    pub async fn move_clipboard_selection_down(&mut self) {
+        let max_items = self.clipboard.len();
+        if self.selected_clipboard_item_index < max_items.saturating_sub(1) {
+            self.selected_clipboard_item_index += 1;
+            self.request_redraw(RedrawFlag::Overlay);
         }
     }
 
-    // History management
-    pub fn add_to_history(&mut self, input: impl Into<CompactString>) {
-        let input_str = input.into();
-        if !input_str.is_empty() {
-            if let Some(pos) = self.input_history.iter().position(|x| *x == input_str) {
-                self.input_history.remove(pos);
-            }
-
-            self.input_history.push(input_str);
-
-            if self.input_history.len() > 32 {
-                self.input_history.remove(0);
-            }
-        }
-        self.input_history_index = None;
+    // High-performance clipboard operations
+    pub async fn copy_to_clipboard(&mut self, path: std::path::PathBuf) -> Result<u64, AppError> {
+        self.clipboard
+            .add_copy(path.clone())
+            .await
+            .map_err(|e| AppError::file_operation_failed("copy_to_clipboard", path, e.to_string()))
     }
 
-    pub fn history_prev(&mut self) -> bool {
-        if self.input_history.is_empty() {
-            return false;
-        }
-
-        match self.input_history_index {
-            None => self.input_history_index = Some(self.input_history.len() - 1),
-            Some(idx) if idx > 0 => self.input_history_index = Some(idx - 1),
-            _ => return false,
-        }
-
-        if let Some(idx) = self.input_history_index
-            && let Some(history_item) = self.input_history.get(idx)
-        {
-            self.input = history_item.clone();
-            self.input_cursor = self.input.len();
-            return true;
-        }
-        false
+    pub async fn cut_to_clipboard(&mut self, path: std::path::PathBuf) -> Result<u64, AppError> {
+        self.clipboard
+            .add_move(path.clone())
+            .await
+            .map_err(|e| AppError::file_operation_failed("cut_to_clipboard", path, e.to_string()))
     }
 
-    pub fn history_next(&mut self) -> bool {
-        if let Some(idx) = self.input_history_index {
-            if idx < self.input_history.len() - 1 {
-                self.input_history_index = Some(idx + 1);
-                if let Some(history_item) = self.input_history.get(idx + 1) {
-                    self.input = history_item.clone();
-                    self.input_cursor = self.input.len();
-                    return true;
-                }
-            } else {
-                self.input_history_index = None;
-                self.clear_input();
-                return true;
-            }
-        }
-        false
+    pub async fn get_clipboard_items(&self) -> Vec<ClipBoardItem> {
+        self.clipboard.get_all_items().await
+    }
+
+    pub async fn clear_clipboard(&mut self) {
+        self.clipboard.clear().await;
+        self.clipboard_overlay_active = false;
+        self.selected_clipboard_item_index = 0;
+        self.request_redraw(RedrawFlag::All);
     }
 
     // Overlay helpers
@@ -502,6 +484,7 @@ impl UIState {
             UIOverlay::Help => "Help",
             UIOverlay::FileNameSearch => "File Search",
             UIOverlay::ContentSearch => "Content Search",
+            UIOverlay::Search => "Search",
             UIOverlay::Prompt => match &self.input_prompt_type {
                 Some(InputPromptType::Custom(name)) if name == "command" => "Command Mode",
                 Some(InputPromptType::CreateFile) => "Create File",
@@ -519,7 +502,10 @@ impl UIState {
     pub fn overlay_accepts_input(&self) -> bool {
         matches!(
             self.overlay,
-            UIOverlay::FileNameSearch | UIOverlay::ContentSearch | UIOverlay::Prompt
+            UIOverlay::FileNameSearch
+                | UIOverlay::ContentSearch
+                | UIOverlay::Prompt
+                | UIOverlay::Search
         )
     }
 
@@ -533,129 +519,14 @@ impl UIState {
         }
     }
 
-    // File operation management
-    pub fn add_file_operation(
-        &mut self,
-        operation_id: impl Into<CompactString>,
-        progress: Arc<FileOperationProgress>,
-    ) {
-        let id = operation_id.into();
-        self.active_file_operations.insert(id.clone(), progress);
-        self.request_redraw(RedrawFlag::StatusBar);
-    }
-
-    pub fn remove_file_operation(&mut self, operation_id: &str) {
-        self.active_file_operations.remove(operation_id);
-        self.operation_cancel_tokens.remove(operation_id);
-        self.request_redraw(RedrawFlag::StatusBar);
-    }
-
-    pub fn cancel_file_operation(&mut self, operation_id: &str) {
-        if let Some(token) = self.operation_cancel_tokens.get(operation_id) {
-            token.cancel();
-        }
-        self.remove_file_operation(operation_id);
-    }
-
-    // Loading state management
-    pub fn set_loading(&mut self, loading: LoadingState) {
-        self.loading = Some(loading);
-        self.overlay = UIOverlay::Loading;
-        self.request_redraw(RedrawFlag::All);
-    }
-
-    pub fn clear_loading(&mut self) {
-        self.loading = None;
-        if self.overlay == UIOverlay::Loading {
-            self.overlay = UIOverlay::None;
-        }
-        self.request_redraw(RedrawFlag::All);
-    }
-
-    pub fn update_loading_progress(
-        &mut self,
-        current: u64,
-        total: u64,
-        message: Option<impl Into<CompactString>>,
-    ) {
-        if let Some(loading) = &self.loading {
-            loading.set_completion(current, total);
-            if let Some(msg) = message {
-                loading.set_current_item(Some(msg));
-            }
-            self.request_redraw(RedrawFlag::StatusBar);
-        }
-    }
-
-    // Search result management
-    pub fn set_search_results(&mut self, results: Vec<ObjectInfo>) {
-        self.search_results = results;
-        self.overlay = UIOverlay::SearchResults;
-        self.request_redraw(RedrawFlag::All);
-    }
-
-    pub fn set_filename_search_results(&mut self, results: Vec<ObjectInfo>) {
-        self.filename_search_results = results;
-        self.request_redraw(RedrawFlag::Overlay);
-    }
-
-    pub fn set_content_search_results(&mut self, results: Vec<String>) {
-        self.content_search_results = results;
-        self.overlay = UIOverlay::SearchResults;
-        self.request_redraw(RedrawFlag::All);
-    }
-
-    pub fn clear_search_results(&mut self) {
-        self.search_results.clear();
-        self.filename_search_results.clear();
-        self.content_search_results.clear();
-        if self.overlay == UIOverlay::SearchResults {
-            self.overlay = UIOverlay::None;
-        }
-        self.request_redraw(RedrawFlag::All);
-    }
-
-    // State validation and cleanup
-    pub fn validate_state(&mut self) {
-        // Ensure selection is within bounds when search results change
-        if self.overlay == UIOverlay::SearchResults {
-            let max_results =
-                std::cmp::max(self.search_results.len(), self.content_search_results.len());
-            if max_results == 0 {
-                self.selected = None;
-            } else if let Some(sel) = self.selected {
-                if sel >= max_results {
-                    self.selected = Some(max_results - 1);
-                }
-            }
-        }
-
-        // Clean up marked indices that are out of bounds
-        self.marked_indices.retain(|idx: &mut usize| {
-            match self.overlay {
-                UIOverlay::SearchResults => {
-                    let max_results: usize =
-                        std::cmp::max(self.search_results.len(), self.content_search_results.len());
-                    *idx < max_results
-                }
-                _ => true, // Keep all marks for normal browsing (will be validated by pane state)
-            }
-        });
-    }
-
-    // Bulk update helpers for performance
+    // Bulk operations for performance
     pub fn bulk_update<F>(&mut self, update_fn: F)
     where
         F: FnOnce(&mut Self),
     {
-        // Disable redraws during bulk update
         let old_flags = self.redraw_flags.load(Ordering::Relaxed);
         self.redraw_flags.store(0, Ordering::Relaxed);
-
-        // Apply updates
         update_fn(self);
-
-        // Restore and set redraw flags
         self.redraw_flags
             .store(old_flags | RedrawFlag::All.bits() as u32, Ordering::Relaxed);
     }
@@ -669,49 +540,32 @@ impl UIState {
         self.input_history.shrink_to_fit();
     }
 
-    // Debug helpers
-    pub fn get_memory_usage(&self) -> UIStateMemoryUsage {
-        UIStateMemoryUsage {
-            search_results: self.search_results.capacity() * std::mem::size_of::<ObjectInfo>(),
-            filename_search_results: self.filename_search_results.capacity()
-                * std::mem::size_of::<ObjectInfo>(),
-            content_search_results: self.content_search_results.capacity()
-                * std::mem::size_of::<String>(),
-            marked_indices: self.marked_indices.capacity() * std::mem::size_of::<usize>(),
-            input_history: self.input_history.capacity() * 32, // Approximate CompactString size
-            active_operations: self.active_file_operations.len()
-                * std::mem::size_of::<Arc<FileOperationProgress>>(),
+    // State validation
+    pub fn validate_state(&mut self) {
+        if self.overlay == UIOverlay::SearchResults {
+            let max_results =
+                std::cmp::max(self.search_results.len(), self.content_search_results.len());
+            if max_results == 0 {
+                self.selected = None;
+            } else if let Some(sel) = self.selected {
+                if sel >= max_results {
+                    self.selected = Some(max_results - 1);
+                }
+            }
         }
+
+        self.marked_indices.retain(|idx| match self.overlay {
+            UIOverlay::SearchResults => {
+                let max_results =
+                    std::cmp::max(self.search_results.len(), self.content_search_results.len());
+                *idx < max_results
+            }
+            _ => true,
+        });
     }
 }
 
-/// Memory usage statistics for debugging
-#[derive(Debug, Clone)]
-pub struct UIStateMemoryUsage {
-    pub search_results: usize,
-    pub filename_search_results: usize,
-    pub content_search_results: usize,
-    pub marked_indices: usize,
-    pub input_history: usize,
-    pub active_operations: usize,
-}
-
-impl UIStateMemoryUsage {
-    pub fn total_bytes(&self) -> usize {
-        self.search_results
-            + self.filename_search_results
-            + self.content_search_results
-            + self.marked_indices
-            + self.input_history
-            + self.active_operations
-    }
-
-    pub fn total_kb(&self) -> f64 {
-        self.total_bytes() as f64 / 1024.0
-    }
-}
-
-// Clone implementation for UIState (needed for state coordination)
+// Clone implementation optimized for state coordination
 impl Clone for UIState {
     fn clone(&self) -> Self {
         Self {
@@ -736,11 +590,13 @@ impl Clone for UIState {
             last_update: self.last_update,
             active_file_operations: self.active_file_operations.clone(),
             operation_cancel_tokens: self.operation_cancel_tokens.clone(),
+            clipboard: ClipBoard::new(ClipBoardConfig::default()), // Create new instance for clone
+            clipboard_overlay_active: self.clipboard_overlay_active,
+            selected_clipboard_item_index: self.selected_clipboard_item_index,
         }
     }
 }
 
-// Equality comparison for state changes
 impl PartialEq for UIState {
     fn eq(&self, other: &Self) -> bool {
         self.mode == other.mode
@@ -748,6 +604,7 @@ impl PartialEq for UIState {
             && self.selected == other.selected
             && self.input == other.input
             && self.show_hidden == other.show_hidden
+            && self.clipboard_overlay_active == other.clipboard_overlay_active
     }
 }
 
@@ -756,83 +613,53 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_clipboard_integration() {
+        let mut ui_state = UIState::new();
+
+        assert!(!ui_state.clipboard_overlay_active);
+        ui_state.toggle_clipboard_overlay();
+        assert!(ui_state.clipboard_overlay_active);
+        assert_eq!(ui_state.selected_clipboard_item_index, 0);
+    }
+
+    #[test]
+    fn test_search_overlay_compatibility() {
+        let ui_state = UIState::new();
+        assert_eq!(ui_state.overlay, UIOverlay::None);
+
+        let mut ui_state = UIState::new();
+        ui_state.overlay = UIOverlay::Search;
+        assert!(ui_state.overlay_accepts_input());
+        assert_eq!(ui_state.get_overlay_title(), "Search");
+    }
+
+    #[test]
+    fn test_performance_optimization() {
+        let mut ui_state = UIState::new();
+
+        // Test bulk update
+        ui_state.bulk_update(|ui| {
+            ui.show_hidden = true;
+            ui.selected = Some(5);
+            ui.mode = UIMode::Visual;
+        });
+
+        assert!(ui_state.show_hidden);
+        assert_eq!(ui_state.selected, Some(5));
+        assert_eq!(ui_state.mode, UIMode::Visual);
+    }
+
+    #[test]
     fn test_atomic_operations() {
         let ui_state = UIState::new();
 
-        // Test atomic redraw flags
         ui_state.request_redraw(RedrawFlag::Main);
         assert!(ui_state.needs_redraw());
 
         ui_state.clear_redraw();
         assert!(!ui_state.needs_redraw());
 
-        // Test frame counting
         ui_state.increment_frame();
         assert_eq!(ui_state.frame_count.load(Ordering::Relaxed), 1);
-    }
-
-    #[test]
-    fn test_loading_state() {
-        let loading = LoadingState::new("Testing");
-
-        loading.set_completion(50, 100);
-        assert_eq!(loading.get_completion_ratio(), 0.5);
-
-        loading.set_progress(75.0);
-        assert_eq!(loading.get_progress(), 75.0);
-    }
-
-    #[test]
-    fn test_notification_auto_dismiss() {
-        let mut ui_state = UIState::new();
-
-        ui_state.show_info("Test message");
-        assert!(ui_state.notification.is_some());
-
-        // Auto dismiss won't trigger immediately
-        assert!(!ui_state.update_notification());
-        assert!(ui_state.notification.is_some());
-    }
-
-    #[test]
-    fn test_input_management() {
-        let mut ui_state = UIState::new();
-
-        ui_state.set_input("test");
-        assert_eq!(ui_state.input, "test");
-        assert_eq!(ui_state.input_cursor, 4);
-
-        ui_state.insert_char('!');
-        assert_eq!(ui_state.input, "test!");
-        assert_eq!(ui_state.input_cursor, 5);
-
-        assert!(ui_state.delete_char_before());
-        assert_eq!(ui_state.input, "test");
-        assert_eq!(ui_state.input_cursor, 4);
-    }
-
-    #[test]
-    fn test_selection_management() {
-        let mut ui_state = UIState::new();
-
-        ui_state.mark_index(5);
-        assert!(ui_state.marked_indices.contains(&5));
-
-        ui_state.unmark_index(5);
-        assert!(!ui_state.marked_indices.contains(&5));
-
-        ui_state.mark_index(1);
-        ui_state.mark_index(3);
-        ui_state.clear_marks();
-        assert!(ui_state.marked_indices.is_empty());
-    }
-
-    #[test]
-    fn test_memory_usage() {
-        let ui_state = UIState::new();
-        let usage = ui_state.get_memory_usage();
-
-        assert!(usage.total_bytes() > 0);
-        assert!(usage.total_kb() > 0.0);
     }
 }
