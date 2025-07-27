@@ -339,8 +339,17 @@ controller/
 ### Components Status
 **✅ Completed - Production Quality:**
 - **EventProcessor**: Kanal channels, priority routing, lock-free handler registry, comprehensive metrics
-- **KeyboardHandler**: HashMap bindings, sequence handling, mode awareness (needs async trait compatibility)
+- **Specialized Handlers**: NavigationHandler, ClipboardHandler, SearchHandler, FileOpsHandler - conflict-free
+- **KeyboardHandler**: True fallback with emergency functions and debug mode
+- **HandlerRegistry**: Complete registration with priority management and wrapper pattern
 - **Handler Trait System**: Complete EventHandler trait with priority and registration framework
+
+**Handler Key Mappings (Conflict-Free):**
+- **Navigation(10)**: `↑↓←→kjhl` nav, `gg/G` edge, `PgUp/PgDn` page, `Ctrl+udbf` scroll
+- **Clipboard(1-5)**: `cxv` ops, `Tab` overlay, `yy/dd` vim, overlay nav with `↑↓Enter/Esc/Del`
+- **Search(5-100)**: `/` filename, `Ctrl+F` content, `:` command, `?` help, input modes
+- **FileOps(3-50)**: `nN` file, `mM` dir, `dD` delete, `rR` rename, `CX` copy/move, `.` hidden, `F2/F7/F8` alt
+- **Keyboard(1-255)**: Fallback with `qQ` quit, `F1-F12`, emergency `Ctrl+Alt+Q`, debug `Ctrl+Alt+D`
 
 **🚧 In Progress:**
 - Integration of EventProcessor with main event loop
@@ -350,8 +359,8 @@ controller/
 - StateCoordinator implementation with ArcSwap/DashMap
 - ActionBatcher for operation optimization  
 - RenderThrottler for 60fps consistency
-- Additional specialized handlers (navigation, clipboard, search, file_ops)
-- KeyboardHandler async trait compatibility fix
+- Integration of specialized handlers with main event loop
+- Migration from monolithic event_loop.rs (2,463 lines)
 
 ### Performance Targets (Not Yet Achieved)
 - **Lock Contention Reduction**: 10-50x reduction through lock-free structures

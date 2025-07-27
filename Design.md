@@ -30,10 +30,27 @@
 ✅ **Extreme Performance Clipboard** - 10-100x performance improvements with SIMD acceleration  
 ✅ **File Operations** - Background processing with visual progress and cancellation  
 ✅ **Search & Navigation** - Instant filename search and content search with ripgrep  
+✅ **Dedicated Handler Modules** - NavigationHandler, ClipboardHandler, SearchHandler, FileOpsHandler complete
 🚧 **Modular Event Processing** - Foundation built, integration with main event loop pending  
 🚧 **Lock-Free State Management** - Architecture designed, migration from Arc<Mutex<AppState>> pending  
 🚧 **Action Batching** - Component exists, integration with event flow pending  
-🚧 **Performance Monitoring** - Metrics system built, wiring to main event loop pending  
+🚧 **Performance Monitoring** - Metrics system built, wiring to main event loop pending
+
+### Handler Key Mappings (Phase 4.0) - Conflict-Free Architecture
+**NavigationHandler** (Priority: 10):
+`↑↓←→` arrows | `kjhl` vim | `gg` first | `G` last | `PgUp/PgDn` page | `Home/End` edge | `Ctrl+udbf` scroll
+
+**ClipboardHandler** (Priority: 1-5):
+`c` copy | `x` cut | `v` paste | `Tab` overlay | `yy` vim-copy | `dd` vim-delete | `p` show-clipboard | `Ctrl+CXV` alt | Overlay: `↑↓` nav, `Enter` select, `Esc` close, `Del` remove
+
+**SearchHandler** (Priority: 5-100):
+`/` filename | `Ctrl+F` content | `:` command | `?` help | `*#` quick | `nN` next/prev | Commands: `q,w,cd,find,grep` | Modes: filename/content/command input handling
+
+**FileOpsHandler** (Priority: 3-50):
+`nN` file | `mM` dir | `dD` delete | `rR` rename | `CX` copy/move | `.` hidden | `dd` vim-delete | `F2/F7/F8` alt | `Ctrl+ND` advanced | Input modes: filename validation, path completion
+
+**KeyboardHandler** (Priority: 1-255):
+Fallback: `qQ` quit | `F1-F12` functions | `Alt+.` hidden | `Ctrl+L` refresh | Emergency: `Ctrl+Alt+Q,F12` quit | Debug: `Ctrl+Alt+D` toggle  
 
 ### Dependencies & Build Context
 ```rust

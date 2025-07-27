@@ -32,11 +32,12 @@ EventProcessor -> HandlerRegistry -> ActionBatcher -> StateCoordinator -> UI upd
 **Phase 4.0 Details**: [DesignTimeline/Phase_4_0.md](DesignTimeline/Phase_4_0.md) - Architecture reference
 
 ## Current Status (Token-Optimized)
-**Phase 4.0 In Progress**: Modular components built, main event_loop.rs (2,463 lines) integration pending  
-**Critical Gap**: EventProcessor exists but not integrated with monolithic event loop
+**Phase 4.0 Progress**: Modular handlers complete, EventProcessor integration pending  
+**✅ Handlers**: NavigationHandler, ClipboardHandler, SearchHandler, FileOpsHandler, KeyboardHandler - conflict-free  
+**❌ Integration**: main event_loop.rs (2,463 lines) still monolithic, StateCoordinator missing
 
-**Foundation**: Production-ready architecture with extreme performance patterns established  
-**Detail**: See DesignTimeline/ for complete phase documentation
+**Foundation**: Production-ready lock-free architecture with specialized handlers established  
+**Next**: Replace monolithic event loop with modular EventProcessor + StateCoordinator
 
 ## Development Workflow (Claude-Optimized)
 **Session Init**: Load CLAUDE.md → batch read Design.md + Implementation.md + DesignTimeline/Phase_4_0.md → create TodoWrite  
