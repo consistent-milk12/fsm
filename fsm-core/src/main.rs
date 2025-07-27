@@ -188,9 +188,10 @@ impl App {
 
                         // Skip hidden files for now (can be made configurable later)
                         if let Some(filename) = entry_path.file_name()
-                            && filename.to_string_lossy().starts_with('.') {
-                                continue;
-                            }
+                            && filename.to_string_lossy().starts_with('.')
+                        {
+                            continue;
+                        }
 
                         // Create lightweight object info
                         match ObjectInfo::from_path_light(&entry_path).await {
