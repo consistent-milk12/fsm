@@ -85,7 +85,7 @@ impl OptimizedHelpOverlay {
         self.render_footer(frame, area);
     }
 
-    fn get_navigation_help(&self) -> Vec<Line> {
+    fn get_navigation_help(&'_ self) -> Vec<Line<'_>> {
         vec![
             Line::from(Span::styled(
                 "🗂  Navigation & Movement",
@@ -129,7 +129,7 @@ impl OptimizedHelpOverlay {
         ]
     }
 
-    fn get_commands_help(&self) -> Vec<Line> {
+    fn get_commands_help(&'_ self) -> Vec<Line<'_>> {
         vec![
             Line::from(Span::styled(
                 "⌨  Command Mode & Operations",
@@ -173,7 +173,7 @@ impl OptimizedHelpOverlay {
         ]
     }
 
-    fn get_search_help(&self) -> Vec<Line> {
+    fn get_search_help(&'_ self) -> Vec<Line<'_>> {
         vec![
             Line::from(Span::styled(
                 "🔍 Search & Filtering",
@@ -219,7 +219,7 @@ impl OptimizedHelpOverlay {
         ]
     }
 
-    fn get_advanced_help(&self) -> Vec<Line> {
+    fn get_advanced_help(&'_ self) -> Vec<Line<'_>> {
         vec![
             Line::from(Span::styled(
                 "⚙  Advanced Features",
