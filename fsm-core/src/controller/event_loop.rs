@@ -1,3 +1,4 @@
+#![allow(unused)]
 use crate::UIState;
 use crate::controller::actions::Action;
 use crate::controller::state_coordinator::StateCoordinator;
@@ -174,17 +175,11 @@ impl EventLoop {
         // Update any state that needs to be persisted
         // This is typically minimal since most updates go through StateCoordinator
         for action in actions {
-            match action {
-                Action::UpdateTaskStatus { task_id, completed } => {
-                    if let Some(_task_info) = app.get_task(*task_id) {
-                        if *completed {
-                            app.complete_task(*task_id, None);
-                        }
+            if let Action::UpdateTaskStatus { task_id, completed } = action
+                && let Some(_task_info) = app.get_task(*task_id)
+                    && *completed {
+                        app.complete_task(*task_id, None);
                     }
-                }
-                // Handle other actions that need legacy state updates
-                _ => {}
-            }
         }
     }
 
@@ -228,13 +223,13 @@ impl EventLoop {
         match result {
             Ok(()) => {
                 coordinator.update_ui_state(Box::new(move |ui: &mut UIState| {
-                    ui.show_success(format!("Operation {} completed", operation_id));
+                    ui.show_success(format!("Operation {operation_id} completed"));
                 }));
                 Ok(vec![Action::ReloadDirectory])
             }
 
             Err(e) => {
-                let error_msg = format!("Operation {} failed: {}", operation_id, e);
+                let error_msg = format!("Operation {operation_id} failed: {e}");
                 coordinator.update_ui_state(Box::new(move |ui: &mut UIState| {
                     ui.show_error(error_msg);
                 }));

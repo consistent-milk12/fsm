@@ -62,10 +62,10 @@ pub enum Event {
     Resize { width: u16, height: u16 },
 
     /// Background task completion.
-    Task { result: TaskResult },
+    Task { result: Box<TaskResult> },
 
     /// Direct action injection.
-    Action { action: Action, priority: Priority },
+    Action { action: Box<Action>, priority: Priority },
 
     /// Periodic tick for UI updates.
     Tick,
@@ -305,7 +305,7 @@ impl EventProcessor {
     /// `try_send_option` stores the event in an `Option` and only
     /// consumes it upon success, allowing us to recover it on
     /// failure.
-    pub fn submit(&self, event: Event) -> Result<(), Event> {
+    pub fn submit(&self, event: Event) -> Result<(), Box<Event>> {
         let priority: Priority = event.priority();
 
         let tx: &AsyncSender<Event> = match priority {
@@ -328,7 +328,7 @@ impl EventProcessor {
 
                 warn!("Event queue full, dropping event");
 
-                Err(ev)
+                Err(Box::new(ev))
             }
 
             Err(_e) => {
@@ -337,7 +337,7 @@ impl EventProcessor {
                     .take()
                     .expect("event should still be present on channel error");
 
-                Err(ev)
+                Err(Box::new(ev))
             }
         }
     }

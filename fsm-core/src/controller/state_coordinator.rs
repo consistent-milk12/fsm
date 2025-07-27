@@ -85,7 +85,6 @@ impl StateCoordinator {
     /// HandlerRegistry integration methods removed
     /// Handlers now use StateProvider trait for state access
     /// Event processing moved to dedicated handler management layer
-
     /// Request UI redraw for specific component
     pub fn request_redraw(&self, flag: crate::model::ui_state::RedrawFlag) {
         self.update_ui_state(|ui| {

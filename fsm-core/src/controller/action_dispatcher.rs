@@ -412,18 +412,21 @@ impl ActionDispatcher {
         use crate::fs::object_info::{LightObjectInfo, ObjectInfo, ObjectType};
         use tracing::{info, warn};
 
-        let mut fs_state_guard: MutexGuard<'_, FSState> = self.state.fs_state();
-        let pane: &mut PaneState = fs_state_guard.active_pane_mut();
-        pane.cwd = directory.clone();
+        let current_dir_path: PathBuf = directory.clone();
 
-        // Set loading state
-        pane.is_loading.store(true, Ordering::Relaxed);
+        // Update state before async operations
+        {
+            let mut fs_state_guard: MutexGuard<'_, FSState> = self.state.fs_state();
+            let pane: &mut PaneState = fs_state_guard.active_pane_mut();
+            pane.cwd = current_dir_path.clone();
+            pane.is_loading.store(true, Ordering::Relaxed);
+        }
 
         // Load directory entries asynchronously
         let mut entries: Vec<ObjectInfo> = Vec::new();
 
         // Add parent directory entry if not at root
-        if let Some(parent) = directory.parent() {
+        if let Some(parent) = current_dir_path.parent() {
             let light_parent: LightObjectInfo = LightObjectInfo {
                 path: parent.to_path_buf(),
                 name: "..".to_string(),
@@ -437,7 +440,7 @@ impl ActionDispatcher {
         }
 
         // Load directory contents
-        match TokioFs::read_dir(&directory).await {
+        match TokioFs::read_dir(&current_dir_path).await {
             Ok(mut dir_entries) => {
                 while let Ok(Some(entry)) = dir_entries.next_entry().await {
                     let entry_path: PathBuf = entry.path();
@@ -463,18 +466,23 @@ impl ActionDispatcher {
                 info!(
                     "Loaded {} entries from {}",
                     entries.len(),
-                    directory.display()
+                    current_dir_path.display()
                 );
             }
             Err(e) => {
-                warn!("Failed to read directory {:?}: {}", directory, e);
+                warn!("Failed to read directory {:?}: {}", current_dir_path, e);
                 return Err(anyhow::anyhow!("Failed to read directory: {}", e));
             }
         }
 
-        pane.entries = entries;
-        pane.selected.store(0, Ordering::Relaxed);
-        pane.is_loading.store(false, Ordering::Relaxed);
+        // Update state after async operations
+        {
+            let mut fs_state_guard: MutexGuard<'_, FSState> = self.state.fs_state();
+            let pane: &mut PaneState = fs_state_guard.active_pane_mut();
+            pane.entries = entries;
+            pane.selected.store(0, Ordering::Relaxed);
+            pane.is_loading.store(false, Ordering::Relaxed);
+        }
 
         Ok(())
     }
@@ -511,16 +519,10 @@ impl ActionDispatcher {
 
     /// Simple wildcard matching without regex
     fn wildcard_match(&self, pattern: &str, text: &str) -> bool {
-        self.wildcard_match_recursive(pattern, text, 0, 0)
+        Self::wildcard_match_recursive(pattern, text, 0, 0)
     }
 
-    fn wildcard_match_recursive(
-        &self,
-        pattern: &str,
-        text: &str,
-        p_idx: usize,
-        t_idx: usize,
-    ) -> bool {
+    fn wildcard_match_recursive(pattern: &str, text: &str, p_idx: usize, t_idx: usize) -> bool {
         let pattern_chars: Vec<char> = pattern.chars().collect();
         let text_chars: Vec<char> = text.chars().collect();
 
@@ -531,7 +533,7 @@ impl ActionDispatcher {
         if pattern_chars[p_idx] == '*' {
             // Match zero or more characters
             for i in t_idx..=text_chars.len() {
-                if self.wildcard_match_recursive(pattern, text, p_idx + 1, i) {
+                if Self::wildcard_match_recursive(pattern, text, p_idx + 1, i) {
                     return true;
                 }
             }
@@ -540,7 +542,7 @@ impl ActionDispatcher {
             && (pattern_chars[p_idx] == '?' || pattern_chars[p_idx] == text_chars[t_idx])
         {
             // Match single character or exact match
-            self.wildcard_match_recursive(pattern, text, p_idx + 1, t_idx + 1)
+            Self::wildcard_match_recursive(pattern, text, p_idx + 1, t_idx + 1)
         } else {
             false
         }
@@ -562,8 +564,10 @@ impl ActionDispatcher {
                     let target_path = if path.starts_with('/') {
                         std::path::PathBuf::from(path)
                     } else {
-                        let fs = self.state.fs_state();
-                        let current_dir = fs.active_pane().cwd.clone();
+                        let current_dir = {
+                            let fs = self.state.fs_state();
+                            fs.active_pane().cwd.clone()
+                        };
                         current_dir.join(path)
                     };
 
@@ -580,8 +584,10 @@ impl ActionDispatcher {
 
             "mkdir" => {
                 if let Some(name) = args.first() {
-                    let fs: MutexGuard<'_, FSState> = self.state.fs_state();
-                    let current_dir: PathBuf = fs.active_pane().cwd.clone();
+                    let current_dir = {
+                        let fs: MutexGuard<'_, FSState> = self.state.fs_state();
+                        fs.active_pane().cwd.clone()
+                    };
                     let new_dir: PathBuf = current_dir.join(name);
 
                     match TokioFs::create_dir(&new_dir).await {
@@ -603,8 +609,10 @@ impl ActionDispatcher {
 
             "touch" => {
                 if let Some(name) = args.first() {
-                    let fs: MutexGuard<'_, FSState> = self.state.fs_state();
-                    let current_dir: PathBuf = fs.active_pane().cwd.clone();
+                    let current_dir = {
+                        let fs: MutexGuard<'_, FSState> = self.state.fs_state();
+                        fs.active_pane().cwd.clone()
+                    };
                     let new_file: PathBuf = current_dir.join(name);
 
                     match TokioFs::File::create(&new_file).await {
@@ -624,8 +632,10 @@ impl ActionDispatcher {
             }
 
             "reload" => {
-                let fs: MutexGuard<'_, FSState> = self.state.fs_state();
-                let current_dir: PathBuf = fs.active_pane().cwd.clone();
+                let current_dir = {
+                    let fs: MutexGuard<'_, FSState> = self.state.fs_state();
+                    fs.active_pane().cwd.clone()
+                };
                 self.load_directory(current_dir).await?;
                 self.show_success("Directory reloaded");
             }
@@ -671,7 +681,7 @@ impl ActionDispatcher {
                             ui.request_redraw(RedrawFlag::All);
                         }));
 
-                    self.show_info(&format!("Found {} matches for '{}'", matches, pattern));
+                    self.show_info(&format!("Found {matches} matches for '{pattern}'"));
                 } else {
                     self.show_error("Usage: find <pattern>");
                 }
