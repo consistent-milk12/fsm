@@ -1,10 +1,4 @@
-//! HandlerRegistry: Simplified handler management without circular dependencies
-//!
-//! Manages specialized event handlers with priority-based routing:
-//! - Simple handler registration and lookup
-//! - Priority-based event dispatching
-//! - Performance monitoring per handler type
-//! - Uses StateProvider trait to avoid circular dependencies
+// fsm-core/src/controller/handler_registry.rs
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -41,7 +35,7 @@ pub struct HandlerRegistration {
     pub handler_type: HandlerType,
     pub is_enabled: bool,
     pub event_count: std::sync::atomic::AtomicU64,
-    pub total_processing_time: std::sync::atomic::AtomicU64, // nanoseconds
+    pub total_processing_time: std::sync::atomic::AtomicU64,
 }
 
 /// Handler performance statistics
@@ -53,12 +47,9 @@ pub struct HandlerStats {
     pub average_processing_time_ns: u64,
 }
 
-/// Simplified handler registry without circular dependencies
+/// Fixed handler registry with proper priority ordering
 pub struct HandlerRegistry {
-    // Handlers with their registration metadata
     handlers: Vec<HandlerEntry>,
-
-    // State provider for handlers to access application state
     state_provider: Option<Arc<dyn StateProvider>>,
 }
 
@@ -77,14 +68,14 @@ impl HandlerRegistry {
         }
     }
 
-    /// Create handler registry with StateProvider for state access
+    /// Create handler registry with StateProvider and initialize handlers
     pub fn with_state_provider(state_provider: Arc<dyn StateProvider>) -> Self {
-        let mut registry: HandlerRegistry = Self {
+        let mut registry = Self {
             handlers: Vec::new(),
             state_provider: Some(state_provider),
         };
 
-        registry.register_basic_handlers();
+        registry.register_all_handlers();
 
         info!(
             "HandlerRegistry initialized with {} handlers and StateProvider",
@@ -94,48 +85,36 @@ impl HandlerRegistry {
         registry
     }
 
-    /// Add StateProvider to existing registry
-    pub fn set_state_provider(mut self, state_provider: Arc<dyn StateProvider>) -> Self {
-        self.state_provider = Some(state_provider);
-        self
-    }
+    /// Register all handlers in correct priority order
+    fn register_all_handlers(&mut self) {
+        // Register handlers in priority order (lower priority number = higher priority)
 
-    /// Create completely empty registry for breaking circular dependencies
-    pub fn empty() -> Self {
-        Self {
-            handlers: Vec::new(),
-            state_provider: None,
-        }
-    }
-
-    /// Register basic handlers that don't require StateProvider
-    fn register_basic_handlers(&mut self) {
-        // Register NavigationHandler
-        let nav_handler: Box<NavigationHandler> = Box::default();
+        // 1. NavigationHandler - Priority 10 (highest for responsive UI)
+        let nav_handler = Box::new(NavigationHandler::new());
         self.register_handler(nav_handler, HandlerType::Navigation);
 
-        // Register SearchHandler
-        let search_handler: Box<SearchHandler> = Box::default();
-        self.register_handler(search_handler, HandlerType::Search);
-
-        // Register FileOpsHandler
-        let file_ops_handler: Box<FileOpsHandler> = Box::default();
-        self.register_handler(file_ops_handler, HandlerType::FileOps);
-
-        // Register ClipboardHandler
-        let clipboard_handler: Box<ClipboardHandler> = Box::default();
+        // 2. ClipboardHandler - Priority 1-5 (high for instant operations)
+        let clipboard_handler = Box::new(ClipboardHandler::new());
         self.register_handler(clipboard_handler, HandlerType::Clipboard);
 
-        // Register KeyboardHandler as fallback (simplified without EKey processor)
-        let keyboard_handler: Box<KeyboardHandler> = Box::default();
+        // 3. FileOpsHandler - Priority 3-50 (medium for file operations)
+        let file_ops_handler = Box::new(FileOpsHandler::new());
+        self.register_handler(file_ops_handler, HandlerType::FileOps);
+
+        // 4. SearchHandler - Priority 5-100 (medium for search operations)
+        let search_handler = Box::new(SearchHandler::new());
+        self.register_handler(search_handler, HandlerType::Search);
+
+        // 5. KeyboardHandler - Priority 1-255 (lowest, true fallback)
+        let keyboard_handler = Box::new(KeyboardHandler::new());
         self.register_handler(keyboard_handler, HandlerType::Keyboard);
 
-        debug!("Basic handlers registered");
+        debug!("All handlers registered in priority order");
     }
 
     /// Register a single handler
     pub fn register_handler(&mut self, handler: Box<dyn EventHandler>, handler_type: HandlerType) {
-        let metadata: HandlerRegistration = HandlerRegistration {
+        let metadata = HandlerRegistration {
             handler_type,
             is_enabled: true,
             event_count: std::sync::atomic::AtomicU64::new(0),
@@ -144,64 +123,94 @@ impl HandlerRegistry {
 
         self.handlers.push(HandlerEntry { handler, metadata });
 
-        info!("Registered {:?} handler", handler_type);
+        // Sort handlers by their current priority
+        self.handlers.sort_by_key(|entry| entry.handler.priority());
+
+        info!(
+            "Registered {:?} handler with priority {}",
+            handler_type,
+            self.handlers.last().unwrap().handler.priority()
+        );
     }
 
-    /// Process event through handler chain (priority order)
+    /// Process event through handler chain with proper priority ordering
     pub fn handle_event(
         &mut self,
         event: Event,
     ) -> Result<Vec<Action>, Box<dyn std::error::Error>> {
-        let mut actions: Vec<Action> = Vec::new();
-        let event_start: Instant = Instant::now();
+        let mut actions = Vec::new();
+        let event_start = Instant::now();
 
-        // Collect handlers that can handle the event with their current priorities
-        let mut candidates: Vec<(&mut Box<dyn EventHandler>, &mut HandlerRegistration, u8)> = self
-            .handlers
-            .iter_mut()
-            .filter(|entry: &&mut HandlerEntry| {
-                entry.metadata.is_enabled && entry.handler.can_handle(&event)
-            })
-            .map(|entry: &mut HandlerEntry| {
-                let priority: u8 = entry.handler.priority();
+        debug!("HandlerRegistry: processing event {:?}", event);
 
-                (&mut entry.handler, &mut entry.metadata, priority)
-            })
-            .collect();
+        // Re-sort by current priority in case handlers changed their priority dynamically
+        self.handlers.sort_by_key(|entry| entry.handler.priority());
 
-        // Sort by current priority (lowest number = highest priority)
-        candidates.sort_by_key(|(_, _, priority)| *priority);
+        // Try each handler in priority order until one handles the event
+        for entry in &mut self.handlers {
+            if !entry.metadata.is_enabled {
+                continue;
+            }
 
-        // Process handlers in priority order
-        for (handler, metadata, _) in candidates {
-            let process_start: Instant = Instant::now();
+            let process_start = Instant::now();
 
-            match handler.handle(event.clone()) {
-                Ok(mut handler_actions) => {
-                    let elapsed: u64 = process_start.elapsed().as_nanos() as u64;
+            // Check if handler can handle this event
+            if entry.handler.can_handle(&event) {
+                debug!(
+                    "HandlerRegistry: {} (priority {}) attempting to handle event",
+                    entry.handler.name(),
+                    entry.handler.priority()
+                );
 
-                    // Update performance metadata
-                    metadata.event_count.fetch_add(1, Ordering::Relaxed);
-                    metadata
-                        .total_processing_time
-                        .fetch_add(elapsed, Ordering::Relaxed);
+                match entry.handler.handle(event.clone()) {
+                    Ok(mut handler_actions) => {
+                        let elapsed = process_start.elapsed().as_nanos() as u64;
 
-                    actions.append(&mut handler_actions);
+                        // Update performance metadata
+                        entry.metadata.event_count.fetch_add(1, Ordering::Relaxed);
+                        entry
+                            .metadata
+                            .total_processing_time
+                            .fetch_add(elapsed, Ordering::Relaxed);
 
-                    debug!("Handler processed event in {:?}", process_start.elapsed());
-                }
+                        if !handler_actions.is_empty() {
+                            debug!(
+                                "HandlerRegistry: {} generated {} actions in {:?}",
+                                entry.handler.name(),
+                                handler_actions.len(),
+                                process_start.elapsed()
+                            );
+                            actions.append(&mut handler_actions);
 
-                Err(e) => {
-                    warn!("Handler failed to process event: {}", e);
+                            // Event handled successfully, stop trying other handlers
+                            break;
+                        } else {
+                            debug!(
+                                "HandlerRegistry: {} returned no actions",
+                                entry.handler.name()
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        warn!(
+                            "HandlerRegistry: {} failed to process event: {}",
+                            entry.handler.name(),
+                            e
+                        );
+                    }
                 }
             }
         }
 
-        debug!(
-            "Event processed in {:?}, generated {} actions",
-            event_start.elapsed(),
-            actions.len()
-        );
+        if actions.is_empty() {
+            debug!("HandlerRegistry: no handler processed event {:?}", event);
+        } else {
+            debug!(
+                "HandlerRegistry: event processed in {:?}, generated {} total actions",
+                event_start.elapsed(),
+                actions.len()
+            );
+        }
 
         Ok(actions)
     }
@@ -211,14 +220,18 @@ impl HandlerRegistry {
         if let Some(entry) = self
             .handlers
             .iter_mut()
-            .find(|e: &&mut HandlerEntry| e.metadata.handler_type == handler_type)
+            .find(|e| e.metadata.handler_type == handler_type)
         {
             entry.metadata.is_enabled = enabled;
-
             info!(
                 "Handler {:?} {}",
                 handler_type,
                 if enabled { "enabled" } else { "disabled" }
+            );
+        } else {
+            warn!(
+                "Attempted to modify non-existent handler {:?}",
+                handler_type
             );
         }
     }
@@ -227,11 +240,11 @@ impl HandlerRegistry {
     pub fn get_performance_report(&self) -> Vec<HandlerStats> {
         self.handlers
             .iter()
-            .map(|entry: &HandlerEntry| {
-                let event_count: u64 = entry.metadata.event_count.load(Ordering::Relaxed);
-                let total_time: u64 = entry.metadata.total_processing_time.load(Ordering::Relaxed);
+            .map(|entry| {
+                let event_count = entry.metadata.event_count.load(Ordering::Relaxed);
+                let total_time = entry.metadata.total_processing_time.load(Ordering::Relaxed);
 
-                let avg_time: u64 = if event_count > 0 {
+                let avg_time = if event_count > 0 {
                     total_time / event_count
                 } else {
                     0
@@ -256,6 +269,59 @@ impl HandlerRegistry {
     pub fn has_handlers(&self) -> bool {
         !self.handlers.is_empty()
     }
+
+    /// Get list of handler priorities for debugging
+    pub fn get_handler_priorities(&self) -> Vec<(HandlerType, u8, &'static str)> {
+        self.handlers
+            .iter()
+            .map(|entry| {
+                (
+                    entry.metadata.handler_type,
+                    entry.handler.priority(),
+                    entry.handler.name(),
+                )
+            })
+            .collect()
+    }
+
+    /// Reset all handler statistics
+    pub fn reset_statistics(&mut self) {
+        for entry in &mut self.handlers {
+            entry.metadata.event_count.store(0, Ordering::Relaxed);
+            entry
+                .metadata
+                .total_processing_time
+                .store(0, Ordering::Relaxed);
+        }
+        info!("Handler statistics reset");
+    }
+
+    /// Get detailed handler info for debugging
+    pub fn debug_handler_status(&self) -> String {
+        let mut status = String::from("Handler Registry Status:\n");
+
+        for entry in &self.handlers {
+            let event_count = entry.metadata.event_count.load(Ordering::Relaxed);
+            let total_time = entry.metadata.total_processing_time.load(Ordering::Relaxed);
+            let avg_time = if event_count > 0 {
+                total_time / event_count
+            } else {
+                0
+            };
+
+            status.push_str(&format!(
+                "  {:?} ({}): priority={}, enabled={}, events={}, avg_time={}ns\n",
+                entry.metadata.handler_type,
+                entry.handler.name(),
+                entry.handler.priority(),
+                entry.metadata.is_enabled,
+                event_count,
+                avg_time
+            ));
+        }
+
+        status
+    }
 }
 
 impl Default for HandlerRegistry {
@@ -264,11 +330,77 @@ impl Default for HandlerRegistry {
     }
 }
 
-// Remove the KeyboardHandlerWrapper since we're simplifying
 impl std::fmt::Debug for HandlerRegistry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HandlerRegistry")
             .field("handler_count", &self.handlers.len())
+            .field("has_state_provider", &self.state_provider.is_some())
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::controller::event_processor::Priority;
+
+    #[test]
+    fn test_handler_registry_creation() {
+        let registry = HandlerRegistry::new();
+        assert_eq!(registry.handler_count(), 0);
+        assert!(!registry.has_handlers());
+    }
+
+    #[test]
+    fn test_handler_priority_ordering() {
+        let mut registry = HandlerRegistry::new();
+
+        // Register handlers
+        registry.register_handler(Box::new(NavigationHandler::new()), HandlerType::Navigation);
+        registry.register_handler(Box::new(KeyboardHandler::new()), HandlerType::Keyboard);
+
+        let priorities = registry.get_handler_priorities();
+
+        // Should be sorted by priority (lower number = higher priority)
+        assert!(priorities.len() >= 2);
+        assert!(priorities[0].1 <= priorities[1].1); // First handler should have lower or equal priority number
+    }
+
+    #[test]
+    fn test_handler_enable_disable() {
+        let mut registry = HandlerRegistry::new();
+        registry.register_handler(Box::new(NavigationHandler::new()), HandlerType::Navigation);
+
+        // Disable handler
+        registry.set_handler_enabled(HandlerType::Navigation, false);
+
+        let stats = registry.get_performance_report();
+        assert!(!stats[0].is_enabled);
+
+        // Re-enable handler
+        registry.set_handler_enabled(HandlerType::Navigation, true);
+
+        let stats = registry.get_performance_report();
+        assert!(stats[0].is_enabled);
+    }
+
+    #[test]
+    fn test_event_handling() {
+        let mut registry = HandlerRegistry::new();
+        registry.register_handler(Box::new(NavigationHandler::new()), HandlerType::Navigation);
+
+        let nav_event = Event::Key {
+            event: crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Up,
+                crossterm::event::KeyModifiers::NONE,
+            ),
+            priority: Priority::High,
+        };
+
+        let result = registry.handle_event(nav_event);
+        assert!(result.is_ok());
+
+        let actions = result.unwrap();
+        assert!(!actions.is_empty()); // Should generate navigation action
     }
 }

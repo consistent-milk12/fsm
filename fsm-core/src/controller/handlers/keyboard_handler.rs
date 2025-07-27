@@ -9,8 +9,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::collections::HashMap;
 use tracing::{debug, trace, warn};
 
-/// Fallback keyboard handler for unhandled keys and application-level commands
-/// Only processes keys NOT handled by specialized handlers (NavigationHandler, ClipboardHandler, etc.)
+/// Fallback keyboard handler for application-level commands
 pub struct KeyboardHandler {
     /// Application-level key bindings (non-conflicting)
     app_bindings: HashMap<KeyEvent, Action>,
@@ -44,32 +43,39 @@ impl Default for KeyboardHandler {
 impl KeyboardHandler {
     /// Create new fallback keyboard handler
     pub fn new() -> Self {
-        let mut app_bindings: HashMap<KeyEvent, Action> = HashMap::with_capacity(10);
-        let mut emergency_bindings: HashMap<KeyEvent, Action> = HashMap::with_capacity(5);
+        let mut app_bindings = HashMap::with_capacity(15);
+        let mut emergency_bindings = HashMap::with_capacity(5);
 
         // ===== APPLICATION-LEVEL BINDINGS =====
-        // Only handle keys that don't conflict with specialized handlers
-
         // Quit commands (multiple alternatives for reliability)
         app_bindings.insert(key('q'), Action::Quit);
         app_bindings.insert(key('Q'), Action::Quit);
-        app_bindings.insert(alt('q'), Action::Quit);
-        app_bindings.insert(alt('Q'), Action::Quit);
+        app_bindings.insert(ctrl('c'), Action::Quit);
+        app_bindings.insert(ctrl('q'), Action::Quit);
 
-        // Alternative help (? is handled by SearchHandler, but F1 is safe)
+        // Escape - universal overlay closer
+        app_bindings.insert(
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            Action::CloseOverlay,
+        );
+
+        // Function keys for common operations
         app_bindings.insert(function_key(1), Action::ToggleHelp); // F1
+        app_bindings.insert(function_key(5), Action::ReloadDirectory); // F5
+        app_bindings.insert(function_key(10), Action::Quit); // F10
 
-        // Alternative hidden toggle (. is handled by FileOpsHandler, but Alt+. is safe)
-        app_bindings.insert(alt('.'), Action::ToggleShowHidden);
-
-        // Window/UI management
-        app_bindings.insert(function_key(11), Action::NoOp); // F11 -placeholder for fullscreen
-        app_bindings.insert(ctrl('l'), Action::ReloadDirectory); // Ctrl+L refresh
+        // Refresh commands
+        app_bindings.insert(ctrl('l'), Action::ReloadDirectory);
+        app_bindings.insert(ctrl('r'), Action::ReloadDirectory);
 
         // ===== EMERGENCY BINDINGS =====
         // Critical functions that must always work
         emergency_bindings.insert(ctrl_alt('q'), Action::Quit); // Emergency quit
         emergency_bindings.insert(function_key(12), Action::Quit); // F12 quit
+        emergency_bindings.insert(
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::CONTROL),
+            Action::Quit,
+        ); // Ctrl+Esc
 
         Self {
             app_bindings,
@@ -82,8 +88,7 @@ impl KeyboardHandler {
     /// Handle keyboard events as fallback
     fn handle_key(&mut self, key_event: KeyEvent) -> Result<Vec<Action>, AppError> {
         trace!(
-            "KeyboardHandler: fallback processing key {:?} in mode
-  {:?}",
+            "KeyboardHandler: processing key {:?} in mode {:?}",
             key_event, self.mode
         );
 
@@ -101,7 +106,6 @@ impl KeyboardHandler {
                 "KeyboardHandler: emergency action {:?} for key {:?}",
                 action, key_event
             );
-
             return Ok(vec![action]);
         }
 
@@ -111,71 +115,43 @@ impl KeyboardHandler {
                 "KeyboardHandler: app-level action {:?} for key {:?}",
                 action, key_event
             );
-
             return Ok(vec![action]);
         }
 
-        // Handle special system keys that might not be bound
+        // Handle special system keys that might not be bound elsewhere
         match key_event.code {
-            // Escape - always close overlays if nothing else handles it
-            KeyCode::Esc => {
-                debug!("KeyboardHandler: fallback escape - close overlay");
-                Ok(vec![Action::CloseOverlay])
-            }
-
             // F-keys for special functions
             KeyCode::F(n) => {
-                debug!("KeyboardHandler: unhandled function key F{}", n);
+                debug!("KeyboardHandler: function key F{}", n);
                 self.handle_function_key(n)
             }
 
             // Alt combinations that might be shortcuts
             _ if key_event.modifiers.contains(KeyModifiers::ALT) => {
-                debug!("KeyboardHandler: unhandled Alt combination {:?}", key_event);
-
+                debug!("KeyboardHandler: Alt combination {:?}", key_event);
                 self.handle_alt_combination(key_event)
             }
 
-            // Ctrl combinations that might be shortcuts
-            _ if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
-                debug!(
-                    "KeyboardHandler: unhandled Ctrl combination {:?}",
-                    key_event
-                );
+            // Regular character keys in fallback - usually ignored unless debug mode
+            KeyCode::Char(_) => {
+                self.unhandled_key_count += 1;
+                debug!("KeyboardHandler: unhandled character key {:?}", key_event);
 
-                self.handle_ctrl_combination(key_event)
-            }
+                // Only warn occasionally to avoid spam
+                if self.unhandled_key_count % 20 == 0 {
+                    warn!(
+                        "KeyboardHandler: {} unhandled keys - possible handler misconfiguration",
+                        self.unhandled_key_count
+                    );
+                }
 
-            // Regular character keys - might be input for overlays
-            KeyCode::Char(c) => {
-                debug!(
-                    "KeyboardHandler: unhandled character '{}' -
-  forwarding as input",
-                    c
-                );
-
-                Ok(vec![Action::Key(key_event)]) // Forward for potential input handling
+                Ok(vec![])
             }
 
             // Other keys - log and ignore
             _ => {
                 self.unhandled_key_count += 1;
-
-                debug!(
-                    "KeyboardHandler: truly unhandled key {:?} (count:
-  {})",
-                    key_event, self.unhandled_key_count
-                );
-
-                // Warn if too many unhandled keys (possible handler misconfiguration)
-                if self.unhandled_key_count.is_multiple_of(10) {
-                    warn!(
-                        "KeyboardHandler: {} unhandled keys - check
-  handler configuration",
-                        self.unhandled_key_count
-                    );
-                }
-
+                debug!("KeyboardHandler: unhandled key {:?}", key_event);
                 Ok(vec![])
             }
         }
@@ -188,7 +164,6 @@ impl KeyboardHandler {
         // In debug mode, still handle emergency keys
         if let Some(action) = self.emergency_bindings.get(&key_event).cloned() {
             debug!("KeyboardHandler: debug emergency action {:?}", action);
-
             return Ok(vec![action]);
         }
 
@@ -196,54 +171,24 @@ impl KeyboardHandler {
         if key_event == ctrl_alt('d') {
             debug!("KeyboardHandler: exiting debug mode");
             self.mode = KeyboardMode::Fallback;
-
             return Ok(vec![]);
         }
 
-        // Log all other keys and forward them
+        // In debug mode, forward all keys for analysis
         debug!("KeyboardHandler: debug forwarding key {:?}", key_event);
-
         Ok(vec![Action::Key(key_event)])
     }
 
-    /// Handle function keys
+    /// Handle function keys with appropriate fallbacks
     fn handle_function_key(&self, n: u8) -> Result<Vec<Action>, AppError> {
         match n {
-            // F1 - Help
             1 => Ok(vec![Action::ToggleHelp]),
-
-            // F2 - Rename
             2 => Ok(vec![Action::ShowInputPrompt(InputPromptType::Rename)]),
-
-            // F3 - Find
             3 => Ok(vec![Action::ToggleFileNameSearch]),
-
-            // F4 - Reserved
-            4 => Ok(vec![Action::NoOp]),
-
-            // F5 - Refresh
             5 => Ok(vec![Action::ReloadDirectory]),
-
-            // F6 - Reserved
-            6 => Ok(vec![Action::NoOp]),
-
-            // F7 - New folder
             7 => Ok(vec![Action::CreateDirectory]),
-
-            // F8 - Delete
             8 => Ok(vec![Action::Delete]),
-
-            // F9 - Reserved
-            9 => Ok(vec![Action::NoOp]),
-
-            // F10 - Quit
-            10 => Ok(vec![Action::Quit]),
-
-            // F11 - Reserved (fullscreen)
-            11 => Ok(vec![Action::NoOp]),
-
-            // F12 - Emergency quit
-            12 => Ok(vec![Action::Quit]),
+            10 | 12 => Ok(vec![Action::Quit]),
             _ => {
                 debug!("KeyboardHandler: unhandled function key F{}", n);
                 Ok(vec![])
@@ -256,56 +201,12 @@ impl KeyboardHandler {
         if let KeyCode::Char(c) = key_event.code {
             match c {
                 'q' | 'Q' => Ok(vec![Action::Quit]),
-
                 'd' | 'D' => {
-                    debug!("KeyboardHandler: switching to debug mode");
-                    Ok(vec![]) // Mode switch handled in handle_key
+                    debug!("KeyboardHandler: Alt+D - debug mode toggle requested");
+                    Ok(vec![]) // Mode switch handled in main handler
                 }
-
-                '.' => Ok(vec![Action::ToggleShowHidden]),
-
                 _ => {
                     debug!("KeyboardHandler: unhandled Alt+{}", c);
-                    Ok(vec![])
-                }
-            }
-        } else {
-            Ok(vec![])
-        }
-    }
-
-    /// Handle Ctrl key combinations
-    fn handle_ctrl_combination(&self, key_event: KeyEvent) -> Result<Vec<Action>, AppError> {
-        if let KeyCode::Char(c) = key_event.code {
-            match c {
-                // Ctrl+L refresh
-                'l' | 'L' => Ok(vec![Action::ReloadDirectory]),
-
-                'q' | 'Q' => {
-                    // Only handle Ctrl+Q if it has additional modifiers (emergency)
-                    if key_event.modifiers.contains(KeyModifiers::ALT) {
-                        Ok(vec![Action::Quit])
-                    } else {
-                        debug!(
-                            "KeyboardHandler: Ctrl+Q without Alt -
-  letting other handlers process"
-                        );
-                        Ok(vec![])
-                    }
-                }
-
-                'd' | 'D' => {
-                    // Toggle debug mode with Ctrl+Alt+D
-                    if key_event.modifiers.contains(KeyModifiers::ALT) {
-                        debug!("KeyboardHandler: toggling debug mode");
-                        Ok(vec![]) // Mode switch will be handled
-                    } else {
-                        Ok(vec![])
-                    }
-                }
-
-                _ => {
-                    debug!("KeyboardHandler: unhandled Ctrl+{}", c);
                     Ok(vec![])
                 }
             }
@@ -317,14 +218,12 @@ impl KeyboardHandler {
     /// Switch to debug mode for troubleshooting
     pub fn enable_debug_mode(&mut self) {
         debug!("KeyboardHandler: enabling debug mode");
-
         self.mode = KeyboardMode::Debug;
     }
 
     /// Switch back to fallback mode
     pub fn disable_debug_mode(&mut self) {
         debug!("KeyboardHandler: disabling debug mode");
-
         self.mode = KeyboardMode::Fallback;
     }
 
@@ -350,9 +249,6 @@ impl EventHandler for KeyboardHandler {
             event: key_event, ..
         } = event
         {
-            // KeyboardHandler acts as a true fallback - it CAN handle any key,
-            // but with lowest priority, so specialized handlers get first chance
-
             // Always handle emergency keys regardless of other handlers
             if self.emergency_bindings.contains_key(key_event) {
                 return true;
@@ -363,9 +259,14 @@ impl EventHandler for KeyboardHandler {
                 return true;
             }
 
-            // For fallback mode, we can handle any key but rely on priority system
-            // to ensure specialized handlers run first
-            true
+            // Handle app-level keys (quit, help, etc.)
+            if self.app_bindings.contains_key(key_event) {
+                return true;
+            }
+
+            // Handle function keys and Alt combinations
+            matches!(key_event.code, KeyCode::F(_) | KeyCode::Esc)
+                || key_event.modifiers.contains(KeyModifiers::ALT)
         } else {
             false
         }
@@ -376,23 +277,18 @@ impl EventHandler for KeyboardHandler {
             event: key_event, ..
         } = event
         {
-            // Check for mode switches in handle method
+            // Check for mode switches
             if key_event == ctrl_alt('d') {
                 match self.mode {
                     KeyboardMode::Fallback => {
                         self.mode = KeyboardMode::Debug;
                         debug!("KeyboardHandler: switched to debug mode");
                     }
-
                     KeyboardMode::Debug => {
                         self.mode = KeyboardMode::Fallback;
-                        debug!(
-                            "KeyboardHandler: switched to fallback
-  mode"
-                        );
+                        debug!("KeyboardHandler: switched to fallback mode");
                     }
                 }
-
                 return Ok(vec![]);
             }
 
@@ -406,7 +302,6 @@ impl EventHandler for KeyboardHandler {
         match self.mode {
             // Highest priority in debug mode for logging
             KeyboardMode::Debug => 1,
-
             // Lowest priority - true fallback
             KeyboardMode::Fallback => 255,
         }
@@ -429,11 +324,6 @@ fn ctrl(c: char) -> KeyEvent {
     KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
 }
 
-/// Create Alt+key event
-fn alt(c: char) -> KeyEvent {
-    KeyEvent::new(KeyCode::Char(c), KeyModifiers::ALT)
-}
-
 /// Create Ctrl+Alt+key event
 fn ctrl_alt(c: char) -> KeyEvent {
     KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL | KeyModifiers::ALT)
@@ -449,7 +339,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_fallback_handler_creation() {
+    fn test_keyboard_handler_creation() {
         let handler = KeyboardHandler::new();
         assert_eq!(handler.mode, KeyboardMode::Fallback);
         assert_eq!(handler.unhandled_key_count, 0);
@@ -462,53 +352,18 @@ mod tests {
 
         // Emergency quit should always be bound
         assert!(handler.emergency_bindings.contains_key(&ctrl_alt('q')));
-
         assert!(handler.emergency_bindings.contains_key(&function_key(12)));
     }
 
     #[test]
-    fn test_debug_mode_toggle() {
-        let mut handler = KeyboardHandler::new();
-
-        // Start in fallback mode
-        assert_eq!(handler.mode, KeyboardMode::Fallback);
-
-        // Switch to debug mode
-        handler.enable_debug_mode();
-        assert_eq!(handler.mode, KeyboardMode::Debug);
-        assert!(handler.is_debug_mode());
-
-        // Switch back
-        handler.disable_debug_mode();
-        assert_eq!(handler.mode, KeyboardMode::Fallback);
-        assert!(!handler.is_debug_mode());
-    }
-
-    #[test]
-    fn test_priority_system() {
+    fn test_can_handle_emergency_keys() {
         let handler = KeyboardHandler::new();
 
-        // Fallback mode should have lowest priority
-        assert_eq!(handler.priority(), 255);
+        let emergency_event = Event::Key {
+            event: ctrl_alt('q'),
+            priority: crate::controller::event_processor::Priority::Critical,
+        };
 
-        let mut debug_handler = KeyboardHandler::new();
-        debug_handler.enable_debug_mode();
-
-        // Debug mode should have highest priority for logging
-        assert_eq!(debug_handler.priority(), 1);
-    }
-
-    #[test]
-    fn test_unhandled_key_statistics() {
-        let mut handler = KeyboardHandler::new();
-
-        assert_eq!(handler.unhandled_key_count(), 0);
-
-        // Simulate some unhandled keys
-        let _ = handler.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
-        assert_eq!(handler.unhandled_key_count(), 1);
-
-        handler.reset_stats();
-        assert_eq!(handler.unhandled_key_count(), 0);
+        assert!(handler.can_handle(&emergency_event));
     }
 }

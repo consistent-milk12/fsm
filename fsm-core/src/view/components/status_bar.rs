@@ -38,10 +38,7 @@ impl OptimizedStatusBar {
             UIMode::Browse => "Browse",
             UIMode::Visual => "Visual",
             UIMode::Search => "Search",
-            UIMode::Prompt => "Prompt",
             UIMode::Command => "Command",
-            UIMode::Scripting => "Scripting",
-            UIMode::BatchOp => "BatchOp",
         };
 
         // Acquire current path from the active pane in FSState

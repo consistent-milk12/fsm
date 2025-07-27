@@ -39,7 +39,7 @@ use fsm_core::{
     config::Config,
     controller::{
         action_batcher::ActionSource,
-        action_dispatcher::ModularActionDispatcher,
+        action_dispatcher::EnhancedActionDispatcher,
         actions::Action,
         event_loop::{EventLoop, TaskResult},
         event_processor::Event,
@@ -77,7 +77,7 @@ struct App {
     terminal: AppTerminal,
     controller: EventLoop,
     state_coordinator: Arc<StateCoordinator>,
-    action_dispatcher: ModularActionDispatcher,
+    action_dispatcher: EnhancedActionDispatcher,
     handler_registry: HandlerRegistry,
     ui_renderer: UIRenderer,
     shutdown: Arc<Notify>,
@@ -145,8 +145,8 @@ impl App {
         );
 
         // Create ActionDispatcher for modularized action handling
-        let action_dispatcher: ModularActionDispatcher =
-            ModularActionDispatcher::new(state_coordinator.clone(), task_tx.clone());
+        let action_dispatcher: EnhancedActionDispatcher =
+            EnhancedActionDispatcher::new(state_coordinator.clone(), task_tx.clone());
 
         let ui_renderer: UIRenderer = UIRenderer::new();
         let shutdown: Arc<Notify> = Arc::new(Notify::new());
@@ -176,7 +176,7 @@ impl App {
 
                 let light_parent: LightObjectInfo = LightObjectInfo {
                     path: parent.to_path_buf(),
-                    name: "..".to_string(),
+                    name: "..".to_string().into(),
                     extension: None,
                     object_type: ObjectType::Dir,
                     is_dir: true,

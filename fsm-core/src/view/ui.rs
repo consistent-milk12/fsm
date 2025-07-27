@@ -252,7 +252,7 @@ impl UIRenderer {
         }
     }
 
-    fn render_clipboard_overlay_optimized(
+    async fn render_clipboard_overlay_optimized(
         &mut self,
         frame: &mut Frame<'_>,
         ui_state: &UIState,
@@ -261,6 +261,7 @@ impl UIRenderer {
         if let Err(e) = self
             .clipboard_overlay
             .render_from_ui_state(frame, area, ui_state)
+            .await
         {
             warn!("Clipboard render error: {}", e);
             let error_area = Rect {

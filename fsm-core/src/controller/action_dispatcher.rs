@@ -8,8 +8,8 @@
 //! - Comprehensive error handling and resource management
 
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -99,6 +99,7 @@ pub enum ActionHandler {
     UIControl(UIControlDispatcher),
     Search(SearchDispatcher),
     Command(CommandDispatcher),
+    ClipBoard(ClipboardDispatcher),
 }
 
 impl ActionHandler {
@@ -110,6 +111,7 @@ impl ActionHandler {
             ActionHandler::UIControl(h) => h.handle(action).await,
             ActionHandler::Search(h) => h.handle(action).await,
             ActionHandler::Command(h) => h.handle(action).await,
+            ActionHandler::ClipBoard(h) => h.handle(action).await,
         }
     }
 }
@@ -122,6 +124,7 @@ impl ActionMatcher for ActionHandler {
             ActionHandler::UIControl(h) => h.can_handle(action),
             ActionHandler::Search(h) => h.can_handle(action),
             ActionHandler::Command(h) => h.can_handle(action),
+            ActionHandler::ClipBoard(h) => h.can_handle(action),
         }
     }
 
@@ -132,6 +135,7 @@ impl ActionMatcher for ActionHandler {
             ActionHandler::UIControl(h) => h.priority(),
             ActionHandler::Search(h) => h.priority(),
             ActionHandler::Command(h) => h.priority(),
+            ActionHandler::ClipBoard(h) => h.priority(),
         }
     }
 
@@ -142,6 +146,7 @@ impl ActionMatcher for ActionHandler {
             ActionHandler::UIControl(h) => h.name(),
             ActionHandler::Search(h) => h.name(),
             ActionHandler::Command(h) => h.name(),
+            ActionHandler::ClipBoard(h) => h.name(),
         }
     }
 }
@@ -466,10 +471,11 @@ impl EnhancedActionDispatcher {
     }
 
     /// Process single action with known priority
+    #[allow(unused)]
     async fn process_single_action_with_priority(
         &mut self,
         action: Action,
-        _priority: ActionPriority,
+        priority: ActionPriority,
     ) -> bool {
         match self.dispatch_single_action(action).await {
             Ok(DispatchResult::Terminate) => false,
@@ -495,10 +501,10 @@ impl EnhancedActionDispatcher {
                 continue;
             }
 
-            let process_start = Instant::now();
+            let process_start: Instant = Instant::now();
 
             // Get mutable access to handlers for processing
-            let mut handlers_mut = self.handlers.load_full();
+            let handlers_mut: Arc<Vec<HandlerEntry>> = self.handlers.load_full();
             let mut new_handlers =
                 Arc::try_unwrap(handlers_mut).unwrap_or_else(|arc| (*arc).clone());
 
@@ -510,8 +516,8 @@ impl EnhancedActionDispatcher {
                 )
                 .await;
 
-                let processing_time = process_start.elapsed();
-                let had_error = result.is_err();
+                let processing_time: Duration = process_start.elapsed();
+                let had_error: bool = result.is_err();
 
                 // Update handler metrics
                 entry_mut
@@ -579,9 +585,10 @@ impl EnhancedActionDispatcher {
         ];
 
         for priority in priorities {
-            let actions = {
+            let actions: Vec<Action> = {
                 if let Ok(mut queue) = self.priority_queues[priority].lock() {
-                    let mut actions = Vec::new();
+                    let mut actions: Vec<Action> = Vec::new();
+
                     for _ in 0..self.config.batch_size {
                         if let Some((action, _source)) = queue.pop_front() {
                             actions.push(action);
@@ -589,6 +596,7 @@ impl EnhancedActionDispatcher {
                             break;
                         }
                     }
+
                     actions
                 } else {
                     continue;
@@ -611,7 +619,8 @@ impl EnhancedActionDispatcher {
     /// Force flush all pending actions
     pub async fn flush(&mut self) -> bool {
         // First flush the batcher
-        let batched_actions = self.batcher.flush_all_batches();
+        let batched_actions: Vec<Action> = self.batcher.flush_all_batches();
+
         for action in batched_actions {
             if !self
                 .process_single_action_with_priority(action, ActionPriority::Normal)

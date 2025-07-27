@@ -138,7 +138,7 @@ impl OptimizedClipboardOverlay {
             ));
 
             list_items.push(
-                ListItem::new(display_text.as_str()).style(Style::default().fg(operation_color)),
+                ListItem::new(display_text.to_string()).style(Style::default().fg(operation_color)),
             );
         }
 
