@@ -111,23 +111,23 @@ impl HandlerRegistry {
     /// Register basic handlers that don't require StateProvider
     fn register_basic_handlers(&mut self) {
         // Register NavigationHandler
-        let nav_handler: Box<NavigationHandler> = Box::new(NavigationHandler::new());
+        let nav_handler: Box<NavigationHandler> = Box::default();
         self.register_handler(nav_handler, HandlerType::Navigation);
 
         // Register SearchHandler
-        let search_handler: Box<SearchHandler> = Box::new(SearchHandler::new());
+        let search_handler: Box<SearchHandler> = Box::default();
         self.register_handler(search_handler, HandlerType::Search);
 
         // Register FileOpsHandler
-        let file_ops_handler: Box<FileOpsHandler> = Box::new(FileOpsHandler::new());
+        let file_ops_handler: Box<FileOpsHandler> = Box::default();
         self.register_handler(file_ops_handler, HandlerType::FileOps);
 
         // Register ClipboardHandler
-        let clipboard_handler: Box<ClipboardHandler> = Box::new(ClipboardHandler::new());
+        let clipboard_handler: Box<ClipboardHandler> = Box::default();
         self.register_handler(clipboard_handler, HandlerType::Clipboard);
 
         // Register KeyboardHandler as fallback (simplified without EKey processor)
-        let keyboard_handler: Box<KeyboardHandler> = Box::new(KeyboardHandler::new());
+        let keyboard_handler: Box<KeyboardHandler> = Box::default();
         self.register_handler(keyboard_handler, HandlerType::Keyboard);
 
         debug!("Basic handlers registered");

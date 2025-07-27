@@ -10,11 +10,12 @@
 //! - Performance monitoring
 
 use std::{
+    ffi::OsStr,
     io::{self, Stdout},
     panic::PanicHookInfo,
     path::PathBuf,
-    sync::{Arc, Mutex},
-    time::Instant,
+    sync::{Arc, Mutex, MutexGuard, atomic::Ordering},
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result};
@@ -47,6 +48,7 @@ use fsm_core::{
     },
     fs::object_info::ObjectInfo,
     model::{
+        PaneState,
         app_state::AppState,
         fs_state::FSState,
         ui_state::{RedrawFlag, UIState},
@@ -131,7 +133,8 @@ impl App {
         ));
 
         // Create HandlerRegistry with StateProvider (breaks circular dependency)
-        let handler_registry = HandlerRegistry::with_state_provider(state_coordinator.clone());
+        let handler_registry: HandlerRegistry =
+            HandlerRegistry::with_state_provider(state_coordinator.clone());
 
         // Create EventLoop with StateCoordinator
         let controller: EventLoop = EventLoop::new(
@@ -142,7 +145,8 @@ impl App {
         );
 
         // Create ActionDispatcher for modularized action handling
-        let action_dispatcher = ActionDispatcher::new(state_coordinator.clone(), task_tx.clone());
+        let action_dispatcher: ActionDispatcher =
+            ActionDispatcher::new(state_coordinator.clone(), task_tx.clone());
 
         let ui_renderer: UIRenderer = UIRenderer::new();
         let shutdown: Arc<Notify> = Arc::new(Notify::new());
@@ -152,23 +156,26 @@ impl App {
             .await?
             .context("Failed to get current directory")?;
 
-        // Load initial directory into FSState
+        // Set initial directory and loading state (short lock)
         {
-            let mut fs_state_guard = state_coordinator.fs_state();
-            let pane = fs_state_guard.active_pane_mut();
-            pane.cwd = current_dir.clone();
+            let mut fs_state_guard: MutexGuard<'_, FSState> = state_coordinator.fs_state();
+            let pane: &mut PaneState = fs_state_guard.active_pane_mut();
 
-            // Load actual directory contents
+            pane.cwd = current_dir.clone();
             pane.is_loading
                 .store(true, std::sync::atomic::Ordering::Relaxed);
+            // Lock automatically dropped here
+        }
 
-            // Load directory entries asynchronously
-            let mut entries = Vec::new();
+        // Load directory contents WITHOUT holding the lock
+        let loaded_entries: Vec<ObjectInfo> = {
+            let mut entries: Vec<ObjectInfo> = Vec::new();
 
             // Add parent directory entry if not at root
             if let Some(parent) = current_dir.parent() {
                 use fsm_core::fs::object_info::{LightObjectInfo, ObjectType};
-                let light_parent = LightObjectInfo {
+
+                let light_parent: LightObjectInfo = LightObjectInfo {
                     path: parent.to_path_buf(),
                     name: "..".to_string(),
                     extension: None,
@@ -176,18 +183,24 @@ impl App {
                     is_dir: true,
                     is_symlink: false,
                 };
+
                 entries.push(ObjectInfo::with_placeholder_metadata(light_parent));
             }
 
             // Load directory contents
             match tokio::fs::read_dir(&current_dir).await {
                 Ok(mut dir_entries) => {
-                    while let Ok(Some(entry)) = dir_entries.next_entry().await {
-                        let entry_path = entry.path();
+                    let mut load_errors: i32 = 0;
 
-                        // Skip hidden files for now (can be made configurable later)
-                        if let Some(filename) = entry_path.file_name()
-                            && filename.to_string_lossy().starts_with('.')
+                    while let Some(dir_entry) = dir_entries.next_entry().await.unwrap_or(None) {
+                        let entry_path: PathBuf = dir_entry.path();
+
+                        // Skip hidden files
+                        if entry_path
+                            .file_name()
+                            .and_then(|name: &OsStr| name.to_str())
+                            .map(|name: &str| name.starts_with('.'))
+                            .unwrap_or(false)
                         {
                             continue;
                         }
@@ -197,26 +210,46 @@ impl App {
                             Ok(light_info) => {
                                 entries.push(ObjectInfo::with_placeholder_metadata(light_info));
                             }
+
                             Err(e) => {
-                                info!("Failed to read entry {:?}: {}", entry_path, e);
+                                load_errors += 1;
+                                if load_errors <= 5 {
+                                    info!("Failed to read entry {:?}: {}", entry_path, e);
+                                }
                             }
                         }
                     }
 
-                    info!(
-                        "Loaded {} entries from {}",
-                        entries.len(),
-                        current_dir.display()
-                    );
+                    if load_errors > 0 {
+                        info!(
+                            "Loaded {} entries from {} ({} errors)",
+                            entries.len(),
+                            current_dir.display(),
+                            load_errors
+                        );
+                    } else {
+                        info!(
+                            "Loaded {} entries from {}",
+                            entries.len(),
+                            current_dir.display()
+                        );
+                    }
                 }
                 Err(e) => {
                     warn!("Failed to read directory {:?}: {}", current_dir, e);
                 }
             }
 
-            pane.entries = entries;
-            pane.is_loading
-                .store(false, std::sync::atomic::Ordering::Relaxed);
+            entries
+        };
+
+        // Update state with loaded entries (short lock)
+        {
+            let mut fs_state_guard: MutexGuard<'_, FSState> = state_coordinator.fs_state();
+            let pane: &mut PaneState = fs_state_guard.active_pane_mut();
+            pane.entries = loaded_entries;
+            pane.is_loading.store(false, Ordering::Relaxed);
+            // Lock automatically dropped here
         }
 
         // Request initial UI redraw
@@ -262,8 +295,8 @@ impl App {
 
                 // Handle terminal input events through HandlerRegistry
                 maybe_event = event_stream.next() => {
-                    if let Some(Ok(terminal_event)) = maybe_event {
-                        if let Some(actions) = self.process_terminal_event_via_registry(terminal_event).await? {
+                    if let Some(Ok(terminal_event)) = maybe_event
+                        && let Some(actions) = self.process_terminal_event_via_registry(terminal_event).await? {
                             for action in actions {
                                 if matches!(action, Action::Quit) {
                                     info!("Quit action received from input");
@@ -275,7 +308,6 @@ impl App {
                                 }
                             }
                         }
-                    }
                 }
 
                 // Handle actions from EventLoop (background tasks, etc.)
@@ -304,11 +336,12 @@ impl App {
         use fsm_core::controller::event_processor::Priority;
 
         // Convert TerminalEvent to Event for HandlerRegistry
-        let handler_event = match event {
+        let handler_event: Event = match event {
             TerminalEvent::Key(key_event) => Event::Key {
                 event: key_event,
                 priority: Priority::High,
             },
+
             TerminalEvent::Resize(width, height) => Event::Resize { width, height },
             _ => return Ok(None), // Ignore other events
         };
@@ -322,6 +355,7 @@ impl App {
                     Ok(Some(actions))
                 }
             }
+
             Err(e) => {
                 tracing::warn!("Handler registry error: {}", e);
                 Ok(None)
@@ -336,7 +370,7 @@ impl App {
         tracing::debug!("Dispatching action: {:?}", action);
 
         // Use ActionDispatcher for batched and optimized action handling
-        let should_continue = self
+        let should_continue: bool = self
             .action_dispatcher
             .handle(action, ActionSource::UserInput)
             .await;
@@ -359,7 +393,7 @@ impl App {
             self.state_coordinator.clear_redraw();
 
             // Monitor render performance
-            let duration = start.elapsed();
+            let duration: Duration = start.elapsed();
             if duration.as_millis() > 16 {
                 info!(
                     "Slow render detected: {}ms (target: <16ms for 60fps)",
@@ -418,11 +452,11 @@ impl App {
         tokio::spawn(async move {
             #[cfg(unix)]
             {
-                use tokio::signal::unix::{SignalKind, signal};
+                use tokio::signal::unix::{Signal, SignalKind, signal};
 
-                let mut sigterm =
+                let mut sigterm: Signal =
                     signal(SignalKind::terminate()).expect("Failed to create SIGTERM handler");
-                let mut sigint =
+                let mut sigint: Signal =
                     signal(SignalKind::interrupt()).expect("Failed to create SIGINT handler");
 
                 tokio::select! {

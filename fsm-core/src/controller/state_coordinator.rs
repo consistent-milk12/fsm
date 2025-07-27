@@ -26,10 +26,6 @@ pub struct StateCoordinator {
 
     /// Filesystem state
     pub fs_state: Arc<Mutex<FSState>>,
-
-    /// Optional handler registry (removed to break circular dependencies)
-    /// Handlers now access state through StateProvider trait
-    _handler_registry_removed: (),
 }
 
 impl StateCoordinator {
@@ -44,7 +40,6 @@ impl StateCoordinator {
             app_state,
             ui_state: ArcSwap::from_pointee(initial_ui),
             fs_state,
-            _handler_registry_removed: (),
         }
     }
 

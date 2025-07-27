@@ -13,6 +13,7 @@ use crate::controller::event_loop::TaskResult;
 use crate::model::fs_state::FSState;
 
 use compact_str::CompactString;
+use dashmap::DashMap;
 use parking_lot::RwLock;
 use smallvec::SmallVec;
 use std::collections::{HashMap, HashSet};
@@ -57,7 +58,7 @@ impl TaskInfo {
         self.total.store(total, Ordering::Relaxed);
 
         if total > 0 {
-            let progress = completed as f64 / total as f64;
+            let progress: f64 = completed as f64 / total as f64;
             self.progress.store(progress as u64, Ordering::Relaxed);
         }
 
@@ -126,7 +127,7 @@ pub struct AppState {
     pub plugins: HashMap<CompactString, PluginInfo>,
 
     // Atomic task tracking
-    pub tasks: dashmap::DashMap<u64, Arc<TaskInfo>>,
+    pub tasks: DashMap<u64, Arc<TaskInfo>>,
     pub task_counter: AtomicU64,
 
     // Performance counters
@@ -172,8 +173,8 @@ impl AppState {
 
     /// Add task with atomic operations
     pub fn add_task(&self, description: impl Into<CompactString>) -> u64 {
-        let task_id = self.next_task_id();
-        let task = Arc::new(TaskInfo::new(task_id, description));
+        let task_id: u64 = self.next_task_id();
+        let task: Arc<TaskInfo> = Arc::new(TaskInfo::new(task_id, description));
         self.tasks.insert(task_id, task);
         self.operations_count.fetch_add(1, Ordering::Relaxed);
         task_id
