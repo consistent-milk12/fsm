@@ -4,7 +4,7 @@
 //! - Simple handler registration and lookup
 //! - Priority-based event dispatching
 //! - Performance monitoring per handler type
-//! - No circular dependencies with StateCoordinator
+//! - Uses StateProvider trait to avoid circular dependencies
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -20,6 +20,7 @@ use super::{
         keyboard_handler::KeyboardHandler, navigation_handler::NavigationHandler,
         search_handler::SearchHandler,
     },
+    state_provider::StateProvider,
 };
 
 use crate::controller::actions::Action;
@@ -60,6 +61,9 @@ pub struct HandlerRegistry {
 
     // EKey processor for legacy compatibility
     ekey_processor: Option<Arc<EKeyProcessor>>,
+
+    // State provider for handlers to access application state
+    state_provider: Option<Arc<dyn StateProvider>>,
 }
 
 /// Entry for each registered handler
@@ -74,6 +78,7 @@ impl HandlerRegistry {
         Self {
             handlers: Vec::new(),
             ekey_processor: None,
+            state_provider: None,
         }
     }
 
@@ -82,9 +87,10 @@ impl HandlerRegistry {
         let mut registry = Self {
             handlers: Vec::new(),
             ekey_processor: Some(ekey_processor),
+            state_provider: None,
         };
 
-        // Register basic handlers that don't need StateCoordinator
+        // Register basic handlers that don't need StateProvider
         registry.register_basic_handlers();
 
         info!(
@@ -94,15 +100,39 @@ impl HandlerRegistry {
         registry
     }
 
+    /// Create handler registry with StateProvider for state access
+    pub fn with_state_provider(state_provider: Arc<dyn StateProvider>) -> Self {
+        let mut registry = Self {
+            handlers: Vec::new(),
+            ekey_processor: None,
+            state_provider: Some(state_provider),
+        };
+
+        registry.register_basic_handlers();
+
+        info!(
+            "HandlerRegistry initialized with {} handlers and StateProvider",
+            registry.handlers.len()
+        );
+        registry
+    }
+
+    /// Add StateProvider to existing registry
+    pub fn set_state_provider(mut self, state_provider: Arc<dyn StateProvider>) -> Self {
+        self.state_provider = Some(state_provider);
+        self
+    }
+
     /// Create completely empty registry for breaking circular dependencies
     pub fn empty() -> Self {
         Self {
             handlers: Vec::new(),
             ekey_processor: None,
+            state_provider: None,
         }
     }
 
-    /// Register basic handlers that don't require StateCoordinator
+    /// Register basic handlers that don't require StateProvider
     fn register_basic_handlers(&mut self) {
         // Register NavigationHandler
         let nav_handler = Box::new(NavigationHandler::new());

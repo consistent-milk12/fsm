@@ -1,10 +1,11 @@
 # FSM - AI Context (Sonnet 4)
-**FSM**: Rust TUI file manager - ✅ **Phase 4.0 COMPLETE**
+**FSM**: Rust TUI file manager - ✅ **Phase 4.1 COMPLETE + CIRCULAR DEPENDENCY FIX**
 
-## Architecture
+## Architecture ✅ FIXED
 ```rust
-StateCoordinator { current_directory, fs_cache: DashMap, ui_state: ArcSwap }
-EventLoop -> StateCoordinator -> UIRenderer -> ratatui
+StateProvider trait -> StateCoordinator (impl StateProvider)
+HandlerRegistry { Arc<dyn StateProvider> } -> Event processing
+main.rs: StateCoordinator -> HandlerRegistry (dependency inversion)
 ```
 **Performance**: 60fps throttling, sub-ms events, lock-free navigation
 
@@ -13,23 +14,23 @@ EventLoop -> StateCoordinator -> UIRenderer -> ratatui
 2. **SUDO Override**: "SUDO: Update {filename}"  
 3. **Quality Gates**: cargo build → test navigation  
 
-## Status ✅ COMPLETE + OVERLAY SYSTEM
-- **StateCoordinator**: Lock-free directory loading, navigation (up/down/page)
+## Status ✅ COMPLETE + CIRCULAR DEPENDENCY RESOLVED
+- **StateProvider trait**: Clean abstraction for handler state access
+- **HandlerRegistry**: Uses StateProvider trait, no circular dependencies
+- **StateCoordinator**: Implements StateProvider, removed HandlerRegistry coupling
+- **Event Processing**: Terminal events -> HandlerRegistry -> Actions
 - **ActionDispatcher**: Modular action handling with batching optimization
-- **EventLoop**: 60fps throttling, performance monitoring with dispatcher integration
-- **UIRenderer**: StateCoordinator integration, **real file display**, UI persistence fixed
-- **Navigation**: **Enter directories, parent navigation**, arrow keys, real directory contents
+- **UIRenderer**: Real file display, lock-free UI state updates
+- **Navigation**: Enter directories, parent navigation, arrow keys
 - **FileSystem**: Async directory scanning, ObjectInfo integration
-- **Overlay System**: Command mode (:), filename search (/), help (h/?) overlays with input handling
 
-## Latest Updates
-**Overlay Implementation**: Complete command mode, search, and help overlay system  
-**Input Handling**: Overlay-aware input processing with escape sequences  
-**Command Mode**: : key opens command prompt overlay with input field  
-**Search Mode**: / key opens filename search overlay with live input  
-**Help System**: h/? keys toggle comprehensive help overlay  
-**Status**: Full overlay system working with proper input handling and UI state management
+## Latest Updates ✅ ARCHITECTURAL FIX
+**Circular Dependency Resolution**: StateProvider trait breaks StateCoordinator<->HandlerRegistry cycles  
+**Clean Architecture**: Dependency inversion pattern, testable components  
+**Event Processing**: Terminal input now flows through HandlerRegistry properly  
+**Input Handling**: Removed inline event processing, delegated to handlers  
+**Build Status**: Clean compilation, no circular references  
 
 ## Next Development  
-**Current**: Feature-complete file manager with overlays and navigation  
-**Future**: Command parsing and execution, file operations (copy/move/delete), advanced search functionality
+**Current**: Clean architecture with proper event handling through HandlerRegistry  
+**Future**: Handler implementations for overlays, command parsing, file operations

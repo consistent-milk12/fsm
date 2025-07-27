@@ -24,6 +24,8 @@ pub mod controller {
 
     pub mod action_batcher;
 
+    pub mod state_provider;
+
     pub mod handler_registry;
     pub mod handlers {
         pub mod clipboard_handler;

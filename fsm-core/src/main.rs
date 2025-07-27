@@ -20,7 +20,7 @@ use std::{
 use anyhow::{Context, Result};
 use clipr::{ClipBoard, config::ClipBoardConfig};
 use crossterm::{
-    event::{Event as TerminalEvent, EventStream, KeyCode, KeyEvent},
+    event::{Event as TerminalEvent, EventStream},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -40,8 +40,8 @@ use fsm_core::{
         action_batcher::ActionSource,
         action_dispatcher::ActionDispatcher,
         actions::Action,
-        ekey_processor::EKeyProcessor,
         event_loop::{EventLoop, TaskResult},
+        event_processor::Event,
         handler_registry::HandlerRegistry,
         state_coordinator::StateCoordinator,
     },
@@ -76,6 +76,7 @@ struct App {
     controller: EventLoop,
     state_coordinator: Arc<StateCoordinator>,
     action_dispatcher: ActionDispatcher,
+    handler_registry: HandlerRegistry,
     ui_renderer: UIRenderer,
     shutdown: Arc<Notify>,
     last_memory_check: Instant,
@@ -101,7 +102,7 @@ impl App {
         // Initialize core components
         let cache: Arc<ObjectInfoCache> =
             Arc::new(ObjectInfoCache::with_config(config.cache.clone()));
-        let clipboard: Arc<ClipBoard> = Arc::new(ClipBoard::new(ClipBoardConfig::default()));
+        let _clipboard: Arc<ClipBoard> = Arc::new(ClipBoard::new(ClipBoardConfig::default()));
 
         // Create state components
         let fs_state: FSState = FSState::default();
@@ -122,17 +123,15 @@ impl App {
         // Create fs_state wrapper for StateCoordinator
         let fs_state_arc: Arc<Mutex<FSState>> = Arc::new(Mutex::new(fs_state));
 
-        // Initialize EKey processor
-        let ekey_processor: Arc<EKeyProcessor> = Arc::new(EKeyProcessor::new(clipboard));
+        // Create StateCoordinator first (no circular dependency)
+        let state_coordinator: Arc<StateCoordinator> = Arc::new(StateCoordinator::new_simple(
+            app_state.clone(),
+            ui_state,
+            fs_state_arc,
+        ));
 
-        // Create HandlerRegistry independently (no circular dependency)
-        let handler_registry = HandlerRegistry::with_ekey_processor(ekey_processor);
-
-        // Create StateCoordinator with HandlerRegistry
-        let state_coordinator: Arc<StateCoordinator> = Arc::new(
-            StateCoordinator::new_simple(app_state.clone(), ui_state, fs_state_arc)
-                .with_handler_registry(handler_registry),
-        );
+        // Create HandlerRegistry with StateProvider (breaks circular dependency)
+        let handler_registry = HandlerRegistry::with_state_provider(state_coordinator.clone());
 
         // Create EventLoop with StateCoordinator
         let controller: EventLoop = EventLoop::new(
@@ -224,8 +223,7 @@ impl App {
         state_coordinator.request_redraw(RedrawFlag::All);
 
         info!(
-            "Phase 4.0 clean application initialization complete (handlers: {})",
-            state_coordinator.handler_count()
+            "Phase 4.0 clean application initialization complete (circular dependencies resolved)"
         );
 
         Ok(Self {
@@ -233,6 +231,7 @@ impl App {
             controller,
             state_coordinator,
             action_dispatcher,
+            handler_registry,
             ui_renderer,
             shutdown,
             last_memory_check: Instant::now(),
@@ -245,7 +244,7 @@ impl App {
         info!("Starting Phase 4.0 clean main event loop with input handling");
 
         // Setup terminal event stream for input handling
-        let mut event_stream = EventStream::new();
+        let mut event_stream: EventStream = EventStream::new();
 
         loop {
             // Render UI if needed
@@ -261,19 +260,22 @@ impl App {
                     break;
                 }
 
-                // Handle terminal input events
+                // Handle terminal input events through HandlerRegistry
                 maybe_event = event_stream.next() => {
-                    if let Some(Ok(terminal_event)) = maybe_event
-                        && let Some(action) = self.process_terminal_event(terminal_event).await? {
-                            if matches!(action, Action::Quit) {
-                                info!("Quit action received from input");
-                                break;
-                            }
-                            if !self.dispatch_action(action).await? {
-                                info!("Termination requested by action dispatcher");
-                                break;
+                    if let Some(Ok(terminal_event)) = maybe_event {
+                        if let Some(actions) = self.process_terminal_event_via_registry(terminal_event).await? {
+                            for action in actions {
+                                if matches!(action, Action::Quit) {
+                                    info!("Quit action received from input");
+                                    break;
+                                }
+                                if !self.dispatch_action(action).await? {
+                                    info!("Termination requested by action dispatcher");
+                                    break;
+                                }
                             }
                         }
+                    }
                 }
 
                 // Handle actions from EventLoop (background tasks, etc.)
@@ -294,136 +296,40 @@ impl App {
         Ok(())
     }
 
-    /// Process terminal events and convert to actions
-    async fn process_terminal_event(&self, event: TerminalEvent) -> Result<Option<Action>> {
-        match event {
-            TerminalEvent::Key(key_event) => {
-                tracing::debug!("Key event: {:?}", key_event);
+    /// Process terminal events through HandlerRegistry
+    async fn process_terminal_event_via_registry(
+        &mut self,
+        event: TerminalEvent,
+    ) -> Result<Option<Vec<Action>>> {
+        use fsm_core::controller::event_processor::Priority;
 
-                // Check if an overlay is active and handle overlay-specific input
-                let ui_state = self.state_coordinator.ui_state();
-                if ui_state.overlay != fsm_core::model::ui_state::UIOverlay::None {
-                    return self.handle_overlay_input(key_event, &ui_state).await;
-                }
+        // Convert TerminalEvent to Event for HandlerRegistry
+        let handler_event = match event {
+            TerminalEvent::Key(key_event) => Event::Key {
+                event: key_event,
+                priority: Priority::High,
+            },
+            TerminalEvent::Resize(width, height) => Event::Resize { width, height },
+            _ => return Ok(None), // Ignore other events
+        };
 
-                // Handle basic keys
-                match key_event.code {
-                    KeyCode::Char('q') | KeyCode::Char('Q') => {
-                        return Ok(Some(Action::Quit));
-                    }
-                    KeyCode::Esc => return Ok(Some(Action::CloseOverlay)), // Handle Esc globally
-                    KeyCode::Up => return Ok(Some(Action::MoveSelectionUp)),
-                    KeyCode::Down => return Ok(Some(Action::MoveSelectionDown)),
-                    KeyCode::Left => return Ok(Some(Action::GoToParent)), // Left arrow = parent dir
-                    KeyCode::PageUp => return Ok(Some(Action::PageUp)),
-                    KeyCode::PageDown => return Ok(Some(Action::PageDown)),
-                    KeyCode::Home => return Ok(Some(Action::SelectFirst)),
-                    KeyCode::End => return Ok(Some(Action::SelectLast)),
-                    KeyCode::Enter => return Ok(Some(Action::EnterSelected)),
-                    KeyCode::Backspace => return Ok(Some(Action::GoToParent)),
-                    KeyCode::Char(':') => return Ok(Some(Action::EnterCommandMode)),
-                    KeyCode::Char('/') => return Ok(Some(Action::ToggleFileNameSearch)),
-                    KeyCode::Char('h') | KeyCode::Char('?') => return Ok(Some(Action::ToggleHelp)),
-                    KeyCode::Char(c) if c.is_ascii_digit() => {
-                        // Number keys for quick file selection (1-9)
-                        if let Some(digit) = c.to_digit(10) {
-                            let index = if digit == 0 { 9 } else { digit - 1 } as usize; // 1-9 maps to 0-8, 0 maps to 9
-                            return Ok(Some(Action::SelectIndex(index)));
-                        }
-                        tracing::debug!("Unhandled key: {:?}", key_event);
-                    }
-                    _ => {
-                        // TODO: Process through HandlerRegistry for more complex key handling
-                        tracing::debug!("Unhandled key: {:?}", key_event);
-                    }
+        // Process through HandlerRegistry
+        match self.handler_registry.handle_event(handler_event) {
+            Ok(actions) => {
+                if actions.is_empty() {
+                    Ok(None)
+                } else {
+                    Ok(Some(actions))
                 }
             }
-            TerminalEvent::Resize(width, height) => {
-                return Ok(Some(Action::Resize(width, height)));
+            Err(e) => {
+                tracing::warn!("Handler registry error: {}", e);
+                Ok(None)
             }
-            _ => {}
         }
-        Ok(None)
     }
 
-    /// Handle input when overlays are active
-    async fn handle_overlay_input(
-        &self,
-        key_event: KeyEvent,
-        ui_state: &fsm_core::model::ui_state::UIState,
-    ) -> Result<Option<Action>> {
-        use fsm_core::model::ui_state::UIOverlay;
-
-        if key_event.code == KeyCode::Esc {
-            // Always close overlay on Esc
-            return Ok(Some(Action::CloseOverlay));
-        }
-
-        match ui_state.overlay {
-            UIOverlay::Help => {
-                // Help overlay - close on most keys
-                match key_event.code {
-                    KeyCode::Char('h') | KeyCode::Char('?') => {
-                        return Ok(Some(Action::ToggleHelp));
-                    }
-                    _ => return Ok(Some(Action::CloseOverlay)),
-                }
-            }
-            UIOverlay::FileNameSearch => {
-                // Filename search overlay - handle input
-                match key_event.code {
-                    KeyCode::Char(c) => {
-                        // Add character to search input
-                        let mut new_input = ui_state.input.to_string();
-                        new_input.push(c);
-                        return Ok(Some(Action::FileNameSearch(new_input)));
-                    }
-                    KeyCode::Backspace => {
-                        // Remove last character from search input
-                        let mut new_input = ui_state.input.to_string();
-                        new_input.pop();
-                        return Ok(Some(Action::FileNameSearch(new_input)));
-                    }
-                    KeyCode::Enter => {
-                        // Execute search and close overlay
-                        let search_query = ui_state.input.to_string();
-                        if !search_query.is_empty() {
-                            // TODO: Implement actual filename search
-                            tracing::info!("Executing filename search: {}", search_query);
-                        }
-                        return Ok(Some(Action::CloseOverlay));
-                    }
-                    _ => {}
-                }
-            }
-            UIOverlay::Prompt => {
-                // Command mode overlay - handle input
-                match key_event.code {
-                    KeyCode::Char(c) => {
-                        // Add character to command input via action dispatcher
-                        let mut new_input = ui_state.input.to_string();
-                        new_input.push(c);
-                        return Ok(Some(Action::UpdateInput(new_input)));
-                    }
-                    KeyCode::Backspace => {
-                        // Remove last character from command input via action dispatcher
-                        let mut new_input = ui_state.input.to_string();
-                        new_input.pop();
-                        return Ok(Some(Action::UpdateInput(new_input)));
-                    }
-                    KeyCode::Enter => {
-                        // Submit command via action dispatcher
-                        let command = ui_state.input.to_string();
-                        return Ok(Some(Action::SubmitInputPrompt(command)));
-                    }
-                    _ => {}
-                }
-            }
-            _ => {}
-        }
-
-        Ok(None)
-    }
+    // Overlay input handling removed - now handled by HandlerRegistry
 
     /// Dispatch action through ActionDispatcher
     async fn dispatch_action(&mut self, action: Action) -> Result<bool> {

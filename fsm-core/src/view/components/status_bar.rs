@@ -60,31 +60,14 @@ impl OptimizedStatusBar {
         );
 
         // Compute simple performance metrics
-        let (active_tasks, handler_count, enabled_count, avg_time_us) = {
+        let active_tasks = {
             // Count active tasks in AppState
             let app_state = state_coordinator.app_state();
-            let active_tasks = app_state.tasks.len();
-            drop(app_state);
-
-            // Handler performance report
-            let perf_report = state_coordinator.handler_performance_report();
-            let handler_count = perf_report.len();
-            let enabled_count = perf_report.iter().filter(|h| h.is_enabled).count();
-            let avg_time_us = if handler_count > 0 {
-                perf_report
-                    .iter()
-                    .map(|h| h.average_processing_time_ns as f64 / 1000.0)
-                    .sum::<f64>()
-                    / handler_count as f64
-            } else {
-                0.0
-            };
-            (active_tasks, handler_count, enabled_count, avg_time_us)
+            app_state.tasks.len()
         };
 
-        let right_text = format!(
-            "Tasks: {active_tasks} | Handlers: {enabled_count}/{handler_count} | Avg: {avg_time_us:.1}μs"
-        );
+        // Handler performance metrics removed due to circular dependency fix
+        let right_text = format!("Tasks: {active_tasks} | Handlers: N/A | Performance: N/A");
 
         // Split area into left and right halves
         let layout = Layout::default()
