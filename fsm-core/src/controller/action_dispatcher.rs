@@ -8,6 +8,7 @@
 //! - Comprehensive error handling and resource management
 
 use std::collections::VecDeque;
+use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -22,7 +23,7 @@ use crate::controller::event_loop::TaskResult;
 use crate::controller::state_provider::StateProvider;
 use crate::controller::{
     Action,
-    action_batcher::{ActionBatcher, ActionSource},
+    action_batcher::{ActionBatcher, ActionSource, BatcherStats},
 };
 use crate::model::ui_state::RedrawFlag;
 
@@ -181,20 +182,15 @@ struct HandlerMetrics {
 
 impl Clone for HandlerMetrics {
     fn clone(&self) -> Self {
-        // Take relaxed snapshots of the atomics. We only need a best-effort
-        // value copy; we are not establishing synchronization here.
         let actions = self.actions_processed.load(Ordering::Relaxed);
         let total_time = self.total_processing_time.load(Ordering::Relaxed);
         let errors = self.errors_count.load(Ordering::Relaxed);
 
-        // Copy the Option<Instant> out of the mutex (Instant is Copy/Clone).
         let last = {
             let guard = self.last_processed.lock().unwrap();
             *guard
         };
 
-        // Rebuild a fresh struct with new atomics initialized to the
-        // loaded values, and a brand-new Mutex wrapping the copied Instant.
         HandlerMetrics {
             actions_processed: AtomicU64::new(actions),
             total_processing_time: AtomicU64::new(total_time),
@@ -230,7 +226,7 @@ impl HandlerMetrics {
 }
 
 /// Enhanced action dispatcher with priority routing and performance monitoring
-pub struct EnhancedActionDispatcher {
+pub struct ModularActionDispatcher {
     /// Action batching for performance optimization
     batcher: ActionBatcher,
 
@@ -304,7 +300,7 @@ impl Default for DispatcherConfig {
     }
 }
 
-impl EnhancedActionDispatcher {
+impl ModularActionDispatcher {
     /// Create new enhanced dispatcher
     pub fn new(
         state_provider: Arc<dyn StateProvider>,
@@ -471,11 +467,10 @@ impl EnhancedActionDispatcher {
     }
 
     /// Process single action with known priority
-    #[allow(unused)]
     async fn process_single_action_with_priority(
         &mut self,
         action: Action,
-        priority: ActionPriority,
+        _priority: ActionPriority,
     ) -> bool {
         match self.dispatch_single_action(action).await {
             Ok(DispatchResult::Terminate) => false,
@@ -548,16 +543,6 @@ impl EnhancedActionDispatcher {
             }
         }
 
-        Ok(DispatchResult::NotHandled)
-    }
-
-    /// Process action with specific handler (simplified without unsafe)
-    async fn _process_with_handler(
-        &self,
-        _handler_idx: usize,
-        _action: Action,
-    ) -> Result<DispatchResult> {
-        // This method is no longer needed with the enum approach
         Ok(DispatchResult::NotHandled)
     }
 
@@ -655,7 +640,7 @@ impl EnhancedActionDispatcher {
     }
 
     /// Get comprehensive performance statistics
-    pub fn get_performance_stats(&self) -> DispatcherPerformanceStats {
+    pub fn get_stats(&self) -> DispatcherStats {
         let handlers = self.handlers.load_full();
         let handler_stats = handlers
             .iter()
@@ -684,7 +669,8 @@ impl EnhancedActionDispatcher {
             })
             .collect();
 
-        DispatcherPerformanceStats {
+        DispatcherStats {
+            total_handlers: handlers.len(),
             total_actions: self.metrics.total_actions.load(Ordering::Relaxed),
             priority_counts: enum_map! {
                 ActionPriority::Critical => self.metrics.priority_counts[ActionPriority::Critical].load(Ordering::Relaxed),
@@ -696,6 +682,7 @@ impl EnhancedActionDispatcher {
             queue_overflows: self.metrics.queue_overflows.load(Ordering::Relaxed),
             avg_latency_ns: self.metrics.avg_latency_ns.load(Ordering::Relaxed),
             handler_stats,
+            batcher_stats: self.batcher.get_performance_stats(),
         }
     }
 
@@ -722,13 +709,15 @@ impl EnhancedActionDispatcher {
 
 /// Performance statistics for the entire dispatcher
 #[derive(Debug, Clone)]
-pub struct DispatcherPerformanceStats {
+pub struct DispatcherStats {
+    pub total_handlers: usize,
     pub total_actions: u64,
     pub priority_counts: EnumMap<ActionPriority, u64>,
     pub batch_count: u64,
     pub queue_overflows: u64,
     pub avg_latency_ns: u64,
     pub handler_stats: Vec<HandlerPerformanceStats>,
+    pub batcher_stats: BatcherStats,
 }
 
 /// Performance statistics per handler
@@ -747,13 +736,11 @@ pub struct HandlerPerformanceStats {
 pub trait DispatcherInterface {
     fn handle(&mut self, action: Action, source: ActionSource)
     -> impl Future<Output = bool> + Send;
-
     fn flush(&mut self) -> impl Future<Output = bool> + Send;
-
     fn process_queues(&mut self) -> impl Future<Output = bool> + Send;
 }
 
-impl DispatcherInterface for EnhancedActionDispatcher {
+impl DispatcherInterface for ModularActionDispatcher {
     async fn handle(&mut self, action: Action, source: ActionSource) -> bool {
         self.handle(action, source).await
     }
@@ -770,6 +757,7 @@ impl DispatcherInterface for EnhancedActionDispatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::controller::state_provider::StateProvider;
     use crate::model::{app_state::AppState, fs_state::FSState, ui_state::UIState};
     use std::sync::{Mutex, RwLock};
     use tokio::sync::mpsc;
@@ -800,6 +788,15 @@ mod tests {
             self.app_state.lock().unwrap()
         }
 
+        fn update_task_progress(
+            &self,
+            _task_id: String,
+            _current: u64,
+            _total: u64,
+            _message: Option<String>,
+        ) {
+        }
+
         fn request_redraw(&self, _flag: RedrawFlag) {}
         fn needs_redraw(&self) -> bool {
             false
@@ -808,7 +805,7 @@ mod tests {
     }
 
     fn create_test_dispatcher() -> (
-        EnhancedActionDispatcher,
+        ModularActionDispatcher,
         tokio::sync::mpsc::UnboundedReceiver<TaskResult>,
     ) {
         let (task_tx, task_rx) = mpsc::unbounded_channel();
@@ -819,7 +816,7 @@ mod tests {
             app_state: Arc::new(Mutex::new(AppState::default())),
         });
 
-        let dispatcher = EnhancedActionDispatcher::new(state_provider, task_tx);
+        let dispatcher = ModularActionDispatcher::new(state_provider, task_tx);
 
         (dispatcher, task_rx)
     }
@@ -857,7 +854,7 @@ mod tests {
             .handle(Action::ReloadDirectory, ActionSource::UserInput)
             .await;
 
-        let stats = dispatcher.get_performance_stats();
+        let stats = dispatcher.get_stats();
         assert!(stats.total_actions > 0);
         assert!(stats.priority_counts[ActionPriority::High] > 0);
     }
@@ -891,7 +888,7 @@ mod tests {
         let should_continue = dispatcher.process_queues().await;
         assert!(should_continue);
 
-        let stats = dispatcher.get_performance_stats();
+        let stats = dispatcher.get_stats();
         assert!(stats.total_actions >= 5);
     }
 }

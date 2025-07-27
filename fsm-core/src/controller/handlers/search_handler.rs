@@ -1,4 +1,5 @@
 // fsm-core/src/controller/handlers/search_handler.rs
+// Fixed to work with UIState overlay system and input management
 
 use crate::controller::{
     actions::Action,
@@ -9,7 +10,6 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::collections::HashMap;
 use tracing::{debug, trace};
 
-/// Search handler matching your Action enum
 pub struct SearchHandler {
     bindings: HashMap<KeyEvent, Action>,
     mode: SearchMode,
@@ -32,21 +32,17 @@ impl Default for SearchHandler {
 
 impl SearchHandler {
     pub fn new() -> Self {
-        let mut bindings = HashMap::with_capacity(15);
+        let mut bindings = HashMap::with_capacity(12);
 
-        // Search triggers
+        // Search triggers - compatible with UIState overlay modes
         bindings.insert(key('/'), Action::ToggleFileNameSearch);
         bindings.insert(ctrl('f'), Action::ToggleContentSearch);
         bindings.insert(key(':'), Action::EnterCommandMode);
         bindings.insert(key('?'), Action::ToggleHelp);
 
         // Search navigation
-        bindings.insert(key('n'), Action::SelectSearchResult(0)); // Will be updated with actual index
-        bindings.insert(key('N'), Action::SelectSearchResult(0)); // Previous result
-
-        // Quick search
-        bindings.insert(key('*'), Action::DirectContentSearch("".to_string()));
-        bindings.insert(key('#'), Action::DirectContentSearch("".to_string()));
+        bindings.insert(key('n'), Action::NextSearchResult);
+        bindings.insert(key('N'), Action::PreviousSearchResult);
 
         Self {
             bindings,
@@ -71,8 +67,9 @@ impl SearchHandler {
 
     fn handle_normal_mode(&mut self, key_event: KeyEvent) -> Result<Vec<Action>, AppError> {
         if let Some(action) = self.bindings.get(&key_event).cloned() {
-            debug!("SearchHandler: matched key to action {:?}", action);
+            debug!("SearchHandler: action {:?}", action);
 
+            // Update mode based on action
             match &action {
                 Action::ToggleFileNameSearch => {
                     self.mode = SearchMode::FileNameSearch;
@@ -194,14 +191,6 @@ impl SearchHandler {
             _ => Ok(vec![Action::NoOp]),
         }
     }
-
-    pub fn current_mode(&self) -> SearchMode {
-        self.mode
-    }
-
-    pub fn input_buffer(&self) -> &str {
-        &self.input_buffer
-    }
 }
 
 impl EventHandler for SearchHandler {
@@ -212,11 +201,9 @@ impl EventHandler for SearchHandler {
         {
             match self.mode {
                 SearchMode::Normal => {
-                    matches!(
-                        key_event.code,
-                        KeyCode::Char('/' | ':' | '?' | '*' | '#' | 'n' | 'N')
-                    ) || (key_event.modifiers.contains(KeyModifiers::CONTROL)
-                        && matches!(key_event.code, KeyCode::Char('f')))
+                    matches!(key_event.code, KeyCode::Char('/' | ':' | '?' | 'n' | 'N'))
+                        || (key_event.modifiers.contains(KeyModifiers::CONTROL)
+                            && matches!(key_event.code, KeyCode::Char('f')))
                 }
                 _ => true, // Handle all keys in input modes
             }

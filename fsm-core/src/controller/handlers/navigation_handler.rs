@@ -1,4 +1,5 @@
 // fsm-core/src/controller/handlers/navigation_handler.rs
+// Fixed to work with your FSState atomic operations
 
 use crate::controller::{
     actions::Action,
@@ -9,7 +10,6 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::collections::HashMap;
 use tracing::{debug, trace};
 
-/// Navigation handler matching your Action enum
 pub struct NavigationHandler {
     bindings: HashMap<KeyEvent, Action>,
     sequence_buffer: Vec<KeyEvent>,
@@ -25,74 +25,34 @@ impl NavigationHandler {
     pub fn new() -> Self {
         let mut bindings = HashMap::with_capacity(25);
 
-        // Arrow keys
-        bindings.insert(
-            KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
-            Action::MoveSelectionUp,
-        );
-        bindings.insert(
-            KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
-            Action::MoveSelectionDown,
-        );
-        bindings.insert(
-            KeyEvent::new(KeyCode::Left, KeyModifiers::NONE),
-            Action::GoToParent,
-        );
-        bindings.insert(
-            KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
-            Action::EnterSelected,
-        );
+        // Arrow keys - work with FSState atomic operations
+        bindings.insert(arrow_key(KeyCode::Up), Action::MoveSelectionUp);
+        bindings.insert(arrow_key(KeyCode::Down), Action::MoveSelectionDown);
+        bindings.insert(arrow_key(KeyCode::Left), Action::GoToParent);
+        bindings.insert(arrow_key(KeyCode::Right), Action::EnterSelected);
 
-        // Page navigation
-        bindings.insert(
-            KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE),
-            Action::PageUp,
-        );
-        bindings.insert(
-            KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE),
-            Action::PageDown,
-        );
+        // Page navigation - compatible with PaneState methods
+        bindings.insert(arrow_key(KeyCode::PageUp), Action::PageUp);
+        bindings.insert(arrow_key(KeyCode::PageDown), Action::PageDown);
+        bindings.insert(arrow_key(KeyCode::Home), Action::SelectFirst);
+        bindings.insert(arrow_key(KeyCode::End), Action::SelectLast);
 
-        // Home/End
-        bindings.insert(
-            KeyEvent::new(KeyCode::Home, KeyModifiers::NONE),
-            Action::SelectFirst,
-        );
-        bindings.insert(
-            KeyEvent::new(KeyCode::End, KeyModifiers::NONE),
-            Action::SelectLast,
-        );
-
-        // Vim navigation
+        // Vim keys
         bindings.insert(key('k'), Action::MoveSelectionUp);
         bindings.insert(key('j'), Action::MoveSelectionDown);
         bindings.insert(key('h'), Action::GoToParent);
         bindings.insert(key('l'), Action::EnterSelected);
         bindings.insert(key('G'), Action::SelectLast);
 
-        // Enter and Backspace
-        bindings.insert(
-            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-            Action::EnterSelected,
-        );
-        bindings.insert(
-            KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
-            Action::GoToParent,
-        );
+        // Entry actions
+        bindings.insert(enter_key(), Action::EnterSelected);
+        bindings.insert(backspace_key(), Action::GoToParent);
 
         // Ctrl combinations
         bindings.insert(ctrl('u'), Action::PageUp);
         bindings.insert(ctrl('d'), Action::PageDown);
         bindings.insert(ctrl('b'), Action::PageUp);
         bindings.insert(ctrl('f'), Action::PageDown);
-
-        // Navigation history
-        bindings.insert(alt('h'), Action::NavigateBack);
-        bindings.insert(alt('l'), Action::NavigateForward);
-
-        // Bookmarks
-        bindings.insert(key('b'), Action::BookmarkDirectory);
-        bindings.insert(key('B'), Action::ShowBookmarks);
 
         Self {
             bindings,
@@ -103,13 +63,13 @@ impl NavigationHandler {
     fn handle_key(&mut self, key_event: KeyEvent) -> Result<Vec<Action>, AppError> {
         trace!("NavigationHandler: processing key {key_event:?}");
 
-        // Check sequences first
+        // Check sequences
         if let Some(action) = self.check_sequences(key_event) {
             debug!("NavigationHandler: sequence matched: {action:?}");
             return Ok(vec![action]);
         }
 
-        // Direct binding lookup
+        // Direct lookup
         if let Some(action) = self.bindings.get(&key_event).cloned() {
             debug!("NavigationHandler: matched key to action {action:?}");
             Ok(vec![action])
@@ -124,7 +84,6 @@ impl NavigationHandler {
         }
 
         let action = match self.sequence_buffer.as_slice() {
-            // 'gg' - goto top
             [
                 KeyEvent {
                     code: KeyCode::Char('g'),
@@ -134,10 +93,7 @@ impl NavigationHandler {
                     code: KeyCode::Char('g'),
                     ..
                 },
-            ] => {
-                debug!("NavigationHandler: 'gg' sequence - goto first");
-                Some(Action::SelectFirst)
-            }
+            ] => Some(Action::SelectFirst),
             _ => None,
         };
 
@@ -167,11 +123,9 @@ impl EventHandler for NavigationHandler {
                     | KeyCode::End
                     | KeyCode::Enter
                     | KeyCode::Backspace
-                    | KeyCode::Char('k' | 'j' | 'h' | 'l' | 'g' | 'G' | 'b' | 'B')
+                    | KeyCode::Char('k' | 'j' | 'h' | 'l' | 'g' | 'G')
             ) || (key_event.modifiers.contains(KeyModifiers::CONTROL)
                 && matches!(key_event.code, KeyCode::Char('u' | 'd' | 'b' | 'f')))
-                || (key_event.modifiers.contains(KeyModifiers::ALT)
-                    && matches!(key_event.code, KeyCode::Char('h' | 'l')))
         } else {
             false
         }
@@ -189,7 +143,7 @@ impl EventHandler for NavigationHandler {
     }
 
     fn priority(&self) -> u8 {
-        10 // High priority for responsive navigation
+        10
     }
 
     fn name(&self) -> &'static str {
@@ -197,6 +151,7 @@ impl EventHandler for NavigationHandler {
     }
 }
 
+// Helper functions
 fn key(c: char) -> KeyEvent {
     KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
 }
@@ -205,6 +160,14 @@ fn ctrl(c: char) -> KeyEvent {
     KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
 }
 
-fn alt(c: char) -> KeyEvent {
-    KeyEvent::new(KeyCode::Char(c), KeyModifiers::ALT)
+fn arrow_key(code: KeyCode) -> KeyEvent {
+    KeyEvent::new(code, KeyModifiers::NONE)
+}
+
+fn enter_key() -> KeyEvent {
+    KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)
+}
+
+fn backspace_key() -> KeyEvent {
+    KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE)
 }

@@ -1,20 +1,14 @@
-//! FSState: Cache-Optimized Filesystem State for Phase 4.0
-//!
-//! High-performance filesystem state management:
-//! - SIMD-optimized sorting and filtering
-//! - Lock-free virtual scrolling
-//! - Atomic selection state
-//! - Cache-friendly data layout
+//! FSState: Enhanced filesystem state with action integration
 
 use crate::fs::object_info::ObjectInfo;
-
 use compact_str::CompactString;
 use smallvec::SmallVec;
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::time::Instant;
 
-/// Sort modes optimized for branch prediction
+/// Enhanced sort modes with performance hints
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum EntrySort {
@@ -34,7 +28,7 @@ impl Default for EntrySort {
     }
 }
 
-/// Filter modes with compact representation
+/// Enhanced filter modes with regex support
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EntryFilter {
     All,
@@ -42,8 +36,11 @@ pub enum EntryFilter {
     DirsOnly,
     Extension(CompactString),
     Pattern(CompactString),
-    SizeRange(u64, u64), // min, max bytes
-    DateRange(u64, u64), // min, max unix timestamps
+    Regex(CompactString),
+    SizeRange(u64, u64),
+    DateRange(u64, u64),
+    Hidden(bool),
+    Marked,
 }
 
 impl Default for EntryFilter {
@@ -52,67 +49,98 @@ impl Default for EntryFilter {
     }
 }
 
-/// Optimized pane state with atomic operations
+/// Optimized pane state with action integration
 #[derive(Debug)]
 pub struct PaneState {
     // Core directory state
     pub cwd: PathBuf,
     pub entries: Vec<ObjectInfo>,
 
-    // Atomic selection state for lock-free updates
+    // Atomic selection state
     pub selected: AtomicUsize,
     pub scroll_offset: AtomicUsize,
     pub viewport_height: AtomicUsize,
 
-    // Loading state
+    // Loading and operation state
     pub is_loading: AtomicBool,
     pub is_incremental_loading: AtomicBool,
+    pub operation_in_progress: AtomicBool,
 
     // Sorting and filtering
     pub sort: EntrySort,
     pub filter: EntryFilter,
+    pub show_hidden: AtomicBool,
 
     // Error state
     pub last_error: Option<CompactString>,
 
-    // Incremental loading buffer
+    // Incremental loading
     pub incremental_entries: parking_lot::RwLock<Vec<ObjectInfo>>,
     pub expected_entries: AtomicUsize,
 
     // Performance metrics
     pub entries_loaded: AtomicUsize,
-    pub last_scan_duration: std::sync::atomic::AtomicU64, // microseconds
+    pub last_scan_duration: AtomicU64,
+    pub last_sort_duration: AtomicU64,
+
+    // Search state integration
+    pub search_results: Vec<ObjectInfo>,
+    pub search_query: Option<CompactString>,
+    pub search_mode: SearchMode,
+
+    // Selection state
+    pub marked_entries: HashMap<PathBuf, Instant>,
+    pub clipboard_selection: Vec<usize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchMode {
+    None,
+    FileName,
+    Content,
+    Advanced,
 }
 
 impl PaneState {
     pub fn new(cwd: PathBuf) -> Self {
         Self {
             cwd,
-            entries: Vec::with_capacity(256), // Pre-allocate for typical directories
+            entries: Vec::with_capacity(512),
             selected: AtomicUsize::new(0),
             scroll_offset: AtomicUsize::new(0),
             viewport_height: AtomicUsize::new(20),
             is_loading: AtomicBool::new(false),
             is_incremental_loading: AtomicBool::new(false),
+            operation_in_progress: AtomicBool::new(false),
             sort: EntrySort::NameAsc,
             filter: EntryFilter::All,
+            show_hidden: AtomicBool::new(false),
             last_error: None,
-            incremental_entries: parking_lot::RwLock::new(Vec::with_capacity(256)),
+            incremental_entries: parking_lot::RwLock::new(Vec::with_capacity(512)),
             expected_entries: AtomicUsize::new(0),
             entries_loaded: AtomicUsize::new(0),
-            last_scan_duration: std::sync::atomic::AtomicU64::new(0),
+            last_scan_duration: AtomicU64::new(0),
+            last_sort_duration: AtomicU64::new(0),
+            search_results: Vec::new(),
+            search_query: None,
+            search_mode: SearchMode::None,
+            marked_entries: HashMap::new(),
+            clipboard_selection: Vec::new(),
         }
     }
 
-    /// Set entries with optimized operations
+    /// Enhanced set_entries with action support
     pub fn set_entries(&mut self, mut entries: Vec<ObjectInfo>) {
-        let start = std::time::Instant::now();
+        let start = Instant::now();
 
-        // Apply filter before sorting for better performance
+        // Apply filter
         self.apply_filter(&mut entries);
 
         // SIMD-optimized sorting
-        self.sort_entries_simd(&mut entries);
+        let sort_start = Instant::now();
+        self.sort_entries_optimized(&mut entries);
+        self.last_sort_duration
+            .store(sort_start.elapsed().as_micros() as u64, Ordering::Relaxed);
 
         self.entries = entries;
         self.selected.store(0, Ordering::Relaxed);
@@ -120,19 +148,12 @@ impl PaneState {
         self.entries_loaded
             .store(self.entries.len(), Ordering::Relaxed);
 
-        // Record scan duration for performance monitoring
         let duration_us = start.elapsed().as_micros() as u64;
         self.last_scan_duration
             .store(duration_us, Ordering::Relaxed);
     }
 
-    /// Get selected entry atomically
-    pub fn selected_entry(&self) -> Option<&ObjectInfo> {
-        let idx = self.selected.load(Ordering::Relaxed);
-        self.entries.get(idx)
-    }
-
-    /// Atomic selection movement
+    /// Action-compatible selection movement
     pub fn move_selection_up(&self) -> bool {
         let current = self.selected.load(Ordering::Relaxed);
         if current > 0 {
@@ -157,50 +178,87 @@ impl PaneState {
         }
     }
 
-    /// Atomic scroll adjustment
-    fn adjust_scroll_for_selection(&self, selected: usize) {
-        let viewport_height = self.viewport_height.load(Ordering::Relaxed);
-        let current_scroll = self.scroll_offset.load(Ordering::Relaxed);
+    /// Enhanced navigation methods
+    pub fn select_first(&self) {
+        if !self.entries.is_empty() {
+            self.selected.store(0, Ordering::Relaxed);
+            self.scroll_offset.store(0, Ordering::Relaxed);
+        }
+    }
 
-        // Calculate new scroll position
-        let new_scroll = if selected < current_scroll {
-            selected
-        } else if selected >= current_scroll + viewport_height {
-            selected.saturating_sub(viewport_height - 1)
-        } else {
-            current_scroll
-        };
-
-        if new_scroll != current_scroll {
+    pub fn select_last(&self) {
+        if !self.entries.is_empty() {
+            let last_idx = self.entries.len() - 1;
+            self.selected.store(last_idx, Ordering::Relaxed);
+            let viewport_height = self.viewport_height.load(Ordering::Relaxed);
+            let new_scroll = last_idx.saturating_sub(viewport_height - 1);
             self.scroll_offset.store(new_scroll, Ordering::Relaxed);
         }
     }
 
-    /// Get visible entries for rendering
-    pub fn visible_entries(&self) -> &[ObjectInfo] {
-        let start = self.scroll_offset.load(Ordering::Relaxed);
+    pub fn page_up(&self) {
         let viewport_height = self.viewport_height.load(Ordering::Relaxed);
-        let end = (start + viewport_height).min(self.entries.len());
+        let current = self.selected.load(Ordering::Relaxed);
+        let new_selected = current.saturating_sub(viewport_height);
+        self.selected.store(new_selected, Ordering::Relaxed);
+        self.adjust_scroll_for_selection(new_selected);
+    }
 
-        if start < self.entries.len() {
-            &self.entries[start..end]
-        } else {
-            &[]
+    pub fn page_down(&self) {
+        let viewport_height = self.viewport_height.load(Ordering::Relaxed);
+        let current = self.selected.load(Ordering::Relaxed);
+        let new_selected = (current + viewport_height).min(self.entries.len().saturating_sub(1));
+        self.selected.store(new_selected, Ordering::Relaxed);
+        self.adjust_scroll_for_selection(new_selected);
+    }
+
+    /// Enhanced marking system
+    pub fn mark_selected(&mut self) {
+        if let Some(entry) = self.selected_entry() {
+            self.marked_entries
+                .insert(entry.path.clone(), Instant::now());
         }
     }
 
-    /// SIMD-optimized sorting for large directories
-    fn sort_entries_simd(&self, entries: &mut [ObjectInfo]) {
-        // Use unstable sort for better performance on large datasets
+    pub fn unmark_selected(&mut self) {
+        if let Some(entry) = self.clone().selected_entry() {
+            self.marked_entries.remove(&entry.path);
+        }
+    }
+
+    pub fn is_marked(&self, path: &PathBuf) -> bool {
+        self.marked_entries.contains_key(path)
+    }
+
+    pub fn clear_marks(&mut self) {
+        self.marked_entries.clear();
+    }
+
+    pub fn get_marked_paths(&self) -> Vec<PathBuf> {
+        self.marked_entries.keys().cloned().collect()
+    }
+
+    /// Search integration
+    pub fn set_search_results(&mut self, results: Vec<ObjectInfo>, query: CompactString) {
+        self.search_results = results;
+        self.search_query = Some(query);
+        self.search_mode = SearchMode::FileName;
+    }
+
+    pub fn clear_search(&mut self) {
+        self.search_results.clear();
+        self.search_query = None;
+        self.search_mode = SearchMode::None;
+    }
+
+    /// Enhanced sorting with branch prediction hints
+    fn sort_entries_optimized(&self, entries: &mut [ObjectInfo]) {
         match self.sort {
             EntrySort::NameAsc => {
-                entries.sort_unstable_by(|a, b| {
-                    // Directories first, then by name
-                    match (a.is_dir, b.is_dir) {
-                        (true, false) => std::cmp::Ordering::Less,
-                        (false, true) => std::cmp::Ordering::Greater,
-                        _ => a.name.cmp(&b.name),
-                    }
+                entries.sort_unstable_by(|a, b| match (a.is_dir, b.is_dir) {
+                    (true, false) => std::cmp::Ordering::Less,
+                    (false, true) => std::cmp::Ordering::Greater,
+                    _ => a.name.cmp(&b.name),
                 });
             }
             EntrySort::NameDesc => {
@@ -210,8 +268,20 @@ impl PaneState {
                     _ => b.name.cmp(&a.name),
                 });
             }
-            EntrySort::SizeAsc => entries.sort_unstable_by_key(|e| e.size),
-            EntrySort::SizeDesc => entries.sort_unstable_by(|a, b| b.size.cmp(&a.size)),
+            EntrySort::SizeAsc => {
+                entries.sort_unstable_by(|a, b| match (a.is_dir, b.is_dir) {
+                    (true, false) => std::cmp::Ordering::Less,
+                    (false, true) => std::cmp::Ordering::Greater,
+                    _ => a.size.cmp(&b.size),
+                });
+            }
+            EntrySort::SizeDesc => {
+                entries.sort_unstable_by(|a, b| match (a.is_dir, b.is_dir) {
+                    (true, false) => std::cmp::Ordering::Less,
+                    (false, true) => std::cmp::Ordering::Greater,
+                    _ => b.size.cmp(&a.size),
+                });
+            }
             EntrySort::ModifiedAsc => entries.sort_unstable_by_key(|e| e.modified),
             EntrySort::ModifiedDesc => entries.sort_unstable_by(|a, b| b.modified.cmp(&a.modified)),
             EntrySort::TypeAsc => {
@@ -231,108 +301,277 @@ impl PaneState {
         }
     }
 
-    /// Apply filter efficiently
+    /// Enhanced filtering with regex support
     fn apply_filter(&self, entries: &mut Vec<ObjectInfo>) {
+        let show_hidden = self.show_hidden.load(Ordering::Relaxed);
+
         match &self.filter {
-            EntryFilter::All => {} // No filtering needed
-            EntryFilter::FilesOnly => entries.retain(|e| !e.is_dir),
-            EntryFilter::DirsOnly => entries.retain(|e| e.is_dir),
+            EntryFilter::All => {
+                if !show_hidden {
+                    entries.retain(|e| !e.name.starts_with('.') || e.name == "..");
+                }
+            }
+            EntryFilter::FilesOnly => {
+                entries.retain(|e| !e.is_dir && (show_hidden || !e.name.starts_with('.')));
+            }
+            EntryFilter::DirsOnly => {
+                entries.retain(|e| e.is_dir && (show_hidden || !e.name.starts_with('.')));
+            }
             EntryFilter::Extension(ext) => {
-                entries.retain(|e| e.extension.as_ref().is_some_and(|e_ext| e_ext == ext));
-            }
-            EntryFilter::Pattern(pattern) => {
-                entries.retain(|e| e.name.contains(pattern.as_str()));
-            }
-            EntryFilter::SizeRange(min, max) => {
-                entries.retain(|e| e.size >= *min && e.size <= *max);
-            }
-            EntryFilter::DateRange(min, max) => {
-                let min_ts = *min;
-                let max_ts = *max;
                 entries.retain(|e| {
-                    let ts = e.modified.timestamp() as u64;
-                    ts >= min_ts && ts <= max_ts
+                    e.extension.as_ref().map_or(false, |e_ext| e_ext == ext)
+                        && (show_hidden || !e.name.starts_with('.'))
                 });
             }
+            EntryFilter::Pattern(pattern) => {
+                entries.retain(|e| {
+                    e.name.contains(pattern.as_str()) && (show_hidden || !e.name.starts_with('.'))
+                });
+            }
+            EntryFilter::Regex(pattern) => {
+                if let Ok(regex) = regex::Regex::new(pattern) {
+                    entries.retain(|e| {
+                        regex.is_match(&e.name) && (show_hidden || !e.name.starts_with('.'))
+                    });
+                }
+            }
+            EntryFilter::Hidden(hidden) => {
+                entries.retain(|e| e.name.starts_with('.') == *hidden);
+            }
+            EntryFilter::Marked => {
+                entries.retain(|e| self.marked_entries.contains_key(&e.path));
+            }
+            _ => {}
         }
     }
 
-    /// Start incremental loading
-    pub fn start_incremental_loading(&self) {
-        self.is_incremental_loading.store(true, Ordering::Relaxed);
-        self.is_loading.store(true, Ordering::Relaxed);
-        self.incremental_entries.write().clear();
-        self.expected_entries.store(0, Ordering::Relaxed);
+    /// Performance helpers
+    pub fn selected_entry(&self) -> Option<&ObjectInfo> {
+        let idx = self.selected.load(Ordering::Relaxed);
+        self.entries.get(idx)
     }
 
-    /// Add entry during incremental loading
-    pub fn add_incremental_entry(&self, entry: ObjectInfo) {
-        if self.is_incremental_loading.load(Ordering::Relaxed) {
-            self.incremental_entries.write().push(entry);
-        }
-    }
+    fn adjust_scroll_for_selection(&self, selected: usize) {
+        let viewport_height = self.viewport_height.load(Ordering::Relaxed);
+        let current_scroll = self.scroll_offset.load(Ordering::Relaxed);
 
-    /// Complete incremental loading
-    pub fn complete_incremental_loading(&mut self) {
-        let incremental = std::mem::take(&mut *self.incremental_entries.write());
-        self.set_entries(incremental);
-        self.is_incremental_loading.store(false, Ordering::Relaxed);
-        self.is_loading.store(false, Ordering::Relaxed);
-    }
+        let new_scroll = if selected < current_scroll {
+            selected
+        } else if selected >= current_scroll + viewport_height {
+            selected.saturating_sub(viewport_height - 1)
+        } else {
+            current_scroll
+        };
 
-    /// Update viewport height atomically
-    pub fn set_viewport_height(&self, height: usize) {
-        let adjusted_height = height.saturating_sub(3); // Account for borders
-        self.viewport_height
-            .store(adjusted_height, Ordering::Relaxed);
-    }
-
-    /// Jump to first entry
-    pub fn select_first(&self) {
-        if !self.entries.is_empty() {
-            self.selected.store(0, Ordering::Relaxed);
-            self.scroll_offset.store(0, Ordering::Relaxed);
-        }
-    }
-
-    /// Jump to last entry
-    pub fn select_last(&self) {
-        if !self.entries.is_empty() {
-            let last_idx = self.entries.len() - 1;
-            self.selected.store(last_idx, Ordering::Relaxed);
-            let viewport_height = self.viewport_height.load(Ordering::Relaxed);
-            let new_scroll = last_idx.saturating_sub(viewport_height - 1);
+        if new_scroll != current_scroll {
             self.scroll_offset.store(new_scroll, Ordering::Relaxed);
         }
     }
+}
 
-    /// Page navigation
-    pub fn page_up(&self) {
-        let viewport_height = self.viewport_height.load(Ordering::Relaxed);
-        let current = self.selected.load(Ordering::Relaxed);
-        let new_selected = current.saturating_sub(viewport_height);
-        self.selected.store(new_selected, Ordering::Relaxed);
-        self.adjust_scroll_for_selection(new_selected);
-    }
+/// Enhanced filesystem state with action integration
+#[derive(Debug, Clone)]
+pub struct FSState {
+    pub panes: SmallVec<[PaneState; 2]>,
+    pub active_pane: usize,
+    pub recent_dirs: VecDeque<PathBuf>,
+    pub favorite_dirs: HashSet<PathBuf>,
+    pub bookmarks: HashMap<char, PathBuf>,
+    pub batch_op_status: Option<CompactString>,
 
-    pub fn page_down(&self) {
-        let viewport_height = self.viewport_height.load(Ordering::Relaxed);
-        let current = self.selected.load(Ordering::Relaxed);
-        let new_selected = (current + viewport_height).min(self.entries.len().saturating_sub(1));
-        self.selected.store(new_selected, Ordering::Relaxed);
-        self.adjust_scroll_for_selection(new_selected);
-    }
+    // Navigation history
+    pub history: VecDeque<PathBuf>,
+    pub history_index: usize,
 
-    /// Get performance metrics
-    pub fn get_perf_metrics(&self) -> PaneMetrics {
-        PaneMetrics {
-            entries_count: self.entries.len(),
-            entries_loaded: self.entries_loaded.load(Ordering::Relaxed),
-            last_scan_duration_us: self.last_scan_duration.load(Ordering::Relaxed),
-            is_loading: self.is_loading.load(Ordering::Relaxed),
-            selected_index: self.selected.load(Ordering::Relaxed),
-            scroll_offset: self.scroll_offset.load(Ordering::Relaxed),
+    // Global operation tracking
+    pub active_operations: HashMap<CompactString, OperationStatus>,
+}
+
+#[derive(Debug, Clone)]
+pub struct OperationStatus {
+    pub operation_type: CompactString,
+    pub progress: f32,
+    pub message: Option<CompactString>,
+    pub started_at: Instant,
+}
+
+impl FSState {
+    pub fn new(cwd: PathBuf) -> Self {
+        let mut panes = SmallVec::new();
+        panes.push(PaneState::new(cwd.clone()));
+
+        let mut history = VecDeque::with_capacity(64);
+        history.push_back(cwd);
+
+        Self {
+            panes,
+            active_pane: 0,
+            recent_dirs: VecDeque::with_capacity(32),
+            favorite_dirs: HashSet::with_capacity(16),
+            bookmarks: HashMap::with_capacity(26),
+            batch_op_status: None,
+            history,
+            history_index: 0,
+            active_operations: HashMap::new(),
         }
+    }
+
+    #[inline]
+    pub fn active_pane(&self) -> &PaneState {
+        &self.panes[self.active_pane]
+    }
+
+    #[inline]
+    pub fn active_pane_mut(&mut self) -> &mut PaneState {
+        &mut self.panes[self.active_pane]
+    }
+
+    /// Enhanced navigation with history
+    pub fn navigate_to(&mut self, path: PathBuf) {
+        self.add_to_history(path.clone());
+        self.active_pane_mut().cwd = path;
+    }
+
+    pub fn navigate_back(&mut self) -> Option<PathBuf> {
+        if self.history_index > 0 {
+            self.history_index -= 1;
+            self.history.get(self.history_index).cloned()
+        } else {
+            None
+        }
+    }
+
+    pub fn navigate_forward(&mut self) -> Option<PathBuf> {
+        if self.history_index + 1 < self.history.len() {
+            self.history_index += 1;
+            self.history.get(self.history_index).cloned()
+        } else {
+            None
+        }
+    }
+
+    fn add_to_history(&mut self, path: PathBuf) {
+        // Truncate forward history if we're not at the end
+        self.history.truncate(self.history_index + 1);
+
+        // Add new path
+        self.history.push_back(path.clone());
+        self.history_index = self.history.len() - 1;
+
+        // Maintain capacity
+        if self.history.len() > 64 {
+            self.history.pop_front();
+            self.history_index = self.history_index.saturating_sub(1);
+        }
+
+        // Add to recent directories
+        self.add_recent_dir(path);
+    }
+
+    /// Bookmark management
+    pub fn add_bookmark(&mut self, key: char, path: PathBuf) {
+        self.bookmarks.insert(key, path);
+    }
+
+    pub fn get_bookmark(&self, key: char) -> Option<&PathBuf> {
+        self.bookmarks.get(&key)
+    }
+
+    pub fn remove_bookmark(&mut self, key: char) -> Option<PathBuf> {
+        self.bookmarks.remove(&key)
+    }
+
+    /// Recent directories with LRU
+    pub fn add_recent_dir(&mut self, path: PathBuf) {
+        if let Some(pos) = self.recent_dirs.iter().position(|p| p == &path) {
+            self.recent_dirs.remove(pos);
+        }
+
+        self.recent_dirs.push_front(path);
+
+        if self.recent_dirs.len() > 32 {
+            self.recent_dirs.pop_back();
+        }
+    }
+
+    /// Favorites management
+    #[inline]
+    pub fn add_favorite(&mut self, path: PathBuf) {
+        self.favorite_dirs.insert(path);
+    }
+
+    #[inline]
+    pub fn remove_favorite(&mut self, path: &PathBuf) {
+        self.favorite_dirs.remove(path);
+    }
+
+    #[inline]
+    pub fn is_favorite(&self, path: &PathBuf) -> bool {
+        self.favorite_dirs.contains(path)
+    }
+
+    /// Operation tracking
+    pub fn start_operation(&mut self, id: CompactString, op_type: CompactString) {
+        self.active_operations.insert(
+            id,
+            OperationStatus {
+                operation_type: op_type,
+                progress: 0.0,
+                message: None,
+                started_at: Instant::now(),
+            },
+        );
+    }
+
+    pub fn update_operation(&mut self, id: &str, progress: f32, message: Option<CompactString>) {
+        if let Some(op) = self.active_operations.get_mut(id) {
+            op.progress = progress.clamp(0.0, 1.0);
+            op.message = message;
+        }
+    }
+
+    pub fn complete_operation(&mut self, id: &str) {
+        self.active_operations.remove(id);
+    }
+
+    /// Get current selection path
+    pub fn get_selected_path(&self) -> Option<PathBuf> {
+        self.active_pane()
+            .selected_entry()
+            .map(|entry| entry.path.clone())
+    }
+
+    /// Get multiple selected paths (marked entries)
+    pub fn get_selected_paths(&self) -> Vec<PathBuf> {
+        let active_pane = self.active_pane();
+        if active_pane.marked_entries.is_empty() {
+            // If nothing marked, return current selection
+            self.get_selected_path().into_iter().collect()
+        } else {
+            active_pane.get_marked_paths()
+        }
+    }
+
+    /// Check if any operations are in progress
+    pub fn has_active_operations(&self) -> bool {
+        !self.active_operations.is_empty()
+    }
+
+    /// Get operation progress summary
+    pub fn get_operation_summary(&self) -> Option<(f32, usize)> {
+        if self.active_operations.is_empty() {
+            None
+        } else {
+            let total_progress: f32 = self.active_operations.values().map(|op| op.progress).sum();
+            let avg_progress = total_progress / self.active_operations.len() as f32;
+            Some((avg_progress, self.active_operations.len()))
+        }
+    }
+}
+
+impl Default for FSState {
+    fn default() -> Self {
+        Self::new(PathBuf::from("."))
     }
 }
 
@@ -348,104 +587,23 @@ impl Clone for PaneState {
             is_incremental_loading: AtomicBool::new(
                 self.is_incremental_loading.load(Ordering::Relaxed),
             ),
+            operation_in_progress: AtomicBool::new(
+                self.operation_in_progress.load(Ordering::Relaxed),
+            ),
             sort: self.sort,
             filter: self.filter.clone(),
+            show_hidden: AtomicBool::new(self.show_hidden.load(Ordering::Relaxed)),
             last_error: self.last_error.clone(),
             incremental_entries: parking_lot::RwLock::new(self.incremental_entries.read().clone()),
             expected_entries: AtomicUsize::new(self.expected_entries.load(Ordering::Relaxed)),
             entries_loaded: AtomicUsize::new(self.entries_loaded.load(Ordering::Relaxed)),
-            last_scan_duration: std::sync::atomic::AtomicU64::new(
-                self.last_scan_duration.load(Ordering::Relaxed),
-            ),
+            last_scan_duration: AtomicU64::new(self.last_scan_duration.load(Ordering::Relaxed)),
+            last_sort_duration: AtomicU64::new(self.last_sort_duration.load(Ordering::Relaxed)),
+            search_results: self.search_results.clone(),
+            search_query: self.search_query.clone(),
+            search_mode: self.search_mode,
+            marked_entries: self.marked_entries.clone(),
+            clipboard_selection: self.clipboard_selection.clone(),
         }
-    }
-}
-
-/// Performance metrics for pane
-#[derive(Debug, Clone)]
-pub struct PaneMetrics {
-    pub entries_count: usize,
-    pub entries_loaded: usize,
-    pub last_scan_duration_us: u64,
-    pub is_loading: bool,
-    pub selected_index: usize,
-    pub scroll_offset: usize,
-}
-
-/// Optimized filesystem state
-#[derive(Debug, Clone)]
-pub struct FSState {
-    pub panes: SmallVec<[PaneState; 2]>, // Most users have 1-2 panes
-    pub active_pane: usize,
-    pub recent_dirs: VecDeque<PathBuf>,
-    pub favorite_dirs: HashSet<PathBuf>,
-    pub batch_op_status: Option<CompactString>,
-}
-
-impl FSState {
-    pub fn new(cwd: PathBuf) -> Self {
-        let mut panes = SmallVec::new();
-        panes.push(PaneState::new(cwd));
-
-        Self {
-            panes,
-            active_pane: 0,
-            recent_dirs: VecDeque::with_capacity(32),
-            favorite_dirs: HashSet::with_capacity(16),
-            batch_op_status: None,
-        }
-    }
-
-    #[inline]
-    pub fn active_pane(&self) -> &PaneState {
-        &self.panes[self.active_pane]
-    }
-
-    #[inline]
-    pub fn active_pane_mut(&mut self) -> &mut PaneState {
-        &mut self.panes[self.active_pane]
-    }
-
-    pub fn set_active_pane(&mut self, idx: usize) {
-        if idx < self.panes.len() {
-            self.active_pane = idx;
-        }
-    }
-
-    /// Add to recent directories with LRU eviction
-    pub fn add_recent_dir(&mut self, path: PathBuf) {
-        // Remove if already exists to move to front
-        if let Some(pos) = self.recent_dirs.iter().position(|p| p == &path) {
-            self.recent_dirs.remove(pos);
-        }
-
-        self.recent_dirs.push_front(path);
-
-        // Maintain capacity
-        if self.recent_dirs.len() > 32 {
-            self.recent_dirs.pop_back();
-        }
-    }
-
-    #[inline]
-    pub fn add_favorite(&mut self, path: PathBuf) {
-        self.favorite_dirs.insert(path);
-    }
-
-    #[inline]
-    pub fn remove_favorite(&mut self, path: &PathBuf) {
-        self.favorite_dirs.remove(path);
-    }
-
-    pub fn get_selected_path(&self) -> Option<PathBuf> {
-        self.active_pane()
-            .selected_entry()
-            .map(|entry| entry.path.clone())
-    }
-}
-
-impl Default for FSState {
-    fn default() -> Self {
-        FSState::new(PathBuf::from("."))
     }
 }

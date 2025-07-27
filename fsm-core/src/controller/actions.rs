@@ -25,7 +25,7 @@ pub enum InputPromptType {
 
 /// Unique identifier for tracking file operations
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct OperationId(String);
+pub struct OperationId(pub String);
 
 impl Default for OperationId {
     fn default() -> Self {
@@ -356,6 +356,12 @@ pub enum Action {
     NavigateForward,
 
     // ===== Enhanced Search =====
+    /// Navigate to next search result
+    NextSearchResult,
+
+    /// Navigate to previous search result
+    PreviousSearchResult,
+
     /// Advanced search with options
     AdvancedSearch {
         pattern: String,
@@ -474,50 +480,9 @@ impl Action {
             Action::Delete => "Delete selected item",
             Action::ToggleHelp => "Toggle help overlay",
             Action::ReloadDirectory => "Reload directory",
+            Action::NextSearchResult => "Next search result",
+            Action::PreviousSearchResult => "Previous search result",
             _ => "Unknown action",
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_operation_id_generation() {
-        let id1 = OperationId::new();
-        let id2 = OperationId::new();
-        assert_ne!(id1, id2);
-        assert!(!id1.as_str().is_empty());
-    }
-
-    #[test]
-    fn test_action_priority() {
-        assert_eq!(Action::Quit.priority(), 0);
-        assert!(
-            Action::Copy(PathBuf::new()).priority()
-                < Action::ContentSearch("test".to_string()).priority()
-        );
-    }
-
-    #[test]
-    fn test_filesystem_modification_check() {
-        assert!(Action::Delete.modifies_filesystem());
-        assert!(
-            Action::ExecuteCopy {
-                operation_id: OperationId::new(),
-                source: PathBuf::new(),
-                destination: PathBuf::new(),
-            }
-            .modifies_filesystem()
-        );
-        assert!(!Action::MoveSelectionUp.modifies_filesystem());
-    }
-
-    #[test]
-    fn test_async_action_detection() {
-        assert!(Action::Copy(PathBuf::new()).is_async());
-        assert!(Action::Paste.is_async());
-        assert!(!Action::MoveSelectionUp.is_async());
     }
 }

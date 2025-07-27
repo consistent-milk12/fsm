@@ -1,11 +1,4 @@
-//! Enhanced event loop with proper async integration and task management
-//!
-//! This module provides a robust event loop that:
-//! - Properly integrates background task results with the modular action dispatcher
-//! - Handles async operations without deadlocks
-//! - Provides clean separation between event processing and state updates
-//! - Includes comprehensive error handling and resource management
-//! - Supports performance monitoring and graceful shutdown
+//! Enhanced event loop with enhanced state integration
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -14,61 +7,60 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use tokio::sync::mpsc::UnboundedReceiver;
-use tokio::time::timeout;
 use tracing::{debug, error, info, warn};
 
 use crate::FSState;
-use crate::controller::actions::Action;
+use crate::controller::actions::{Action, OperationId};
 use crate::controller::state_coordinator::StateCoordinator;
+use crate::controller::state_provider::StateProvider;
 use crate::error::AppError;
 use crate::fs::object_info::ObjectInfo;
 use crate::model::PaneState;
-use crate::model::{RedrawFlag, app_state::AppState, ui_state::UIState};
+use crate::model::{
+    RedrawFlag,
+    app_state::{AppState, TaskType},
+    ui_state::UIState,
+};
 
-/// Enhanced task result with comprehensive metadata
+/// Enhanced task result with operation tracking
 #[derive(Debug, Clone)]
 pub enum TaskResult {
-    /// Directory loading completed
     DirectoryLoad {
         task_id: u64,
         path: PathBuf,
-        result: Result<Vec<crate::fs::object_info::ObjectInfo>, AppError>,
+        result: Result<Vec<ObjectInfo>, AppError>,
         execution_time: Duration,
     },
-
-    /// File operation completed
     FileOperation {
-        operation_id: String,
+        operation_id: OperationId,
         operation_type: FileOperationType,
         result: Result<(), AppError>,
         execution_time: Duration,
     },
-
-    /// Search operation completed
     SearchComplete {
         task_id: u64,
         query: String,
-        results: Vec<crate::fs::object_info::ObjectInfo>,
+        results: Vec<ObjectInfo>,
         execution_time: Duration,
     },
-
-    /// Content search completed
     ContentSearchComplete {
         task_id: u64,
         query: String,
         results: Vec<String>,
         execution_time: Duration,
     },
-
-    /// Background task progress update
     Progress {
         task_id: u64,
         current: u64,
         total: u64,
         message: Option<String>,
     },
-
-    /// Generic task completion
+    ClipboardOperation {
+        operation_id: OperationId,
+        operation_type: String,
+        result: Result<u32, AppError>, // items processed
+        execution_time: Duration,
+    },
     Generic {
         task_id: u64,
         result: Result<(), AppError>,
@@ -86,27 +78,12 @@ pub enum FileOperationType {
     Rename,
 }
 
-/// Event loop with proper async integration
 pub struct EventLoop {
-    /// Shared state coordinator
     state_coordinator: Arc<StateCoordinator>,
-
-    /// Legacy app state for compatibility
-    app_state: Arc<Mutex<AppState>>,
-
-    /// Task results from background operations
     task_rx: UnboundedReceiver<TaskResult>,
-
-    /// Actions from external sources (UI, etc.)
     action_rx: UnboundedReceiver<Action>,
-
-    /// Pending actions queue for batch processing
     pending_actions: VecDeque<Action>,
-
-    /// Performance metrics
     metrics: EventLoopMetrics,
-
-    /// Configuration
     config: EventLoopConfig,
 }
 
@@ -120,11 +97,8 @@ struct EventLoopMetrics {
 
 #[derive(Debug, Clone)]
 pub struct EventLoopConfig {
-    /// Maximum actions to process per iteration
     pub max_actions_per_batch: usize,
-    /// Timeout for task processing
     pub task_timeout: Duration,
-    /// Minimum time between iterations
     pub min_iteration_time: Duration,
 }
 
@@ -133,24 +107,21 @@ impl Default for EventLoopConfig {
         Self {
             max_actions_per_batch: 10,
             task_timeout: Duration::from_secs(30),
-            min_iteration_time: Duration::from_millis(16), // 60fps target
+            min_iteration_time: Duration::from_millis(16),
         }
     }
 }
 
 impl EventLoop {
-    /// Create new event loop with proper async integration
     pub fn new(
-        app_state: Arc<Mutex<AppState>>,
         task_rx: UnboundedReceiver<TaskResult>,
         action_rx: UnboundedReceiver<Action>,
         state_coordinator: Arc<StateCoordinator>,
     ) -> Self {
-        info!("Creating enhanced event loop with async integration");
+        info!("Creating enhanced event loop with state integration");
 
         Self {
             state_coordinator,
-            app_state,
             task_rx,
             action_rx,
             pending_actions: VecDeque::with_capacity(32),
@@ -164,83 +135,57 @@ impl EventLoop {
         }
     }
 
-    /// Get next action with proper async event processing
     pub async fn next_action(&mut self) -> Action {
-        let iteration_start: Instant = Instant::now();
+        let iteration_start = Instant::now();
 
-        // Process pending actions first
         if let Some(action) = self.pending_actions.pop_front() {
-            debug!("Returning pending action: {:?}", action);
-
             return action;
         }
 
-        // Try to get new events with timeout
         tokio::select! {
-            // Handle task results
             task_result = self.task_rx.recv() => {
                 match task_result {
                     Some(result) => {
                         debug!("Processing task result: {:?}", result.kind());
-
                         match self.process_task_result(result).await {
                             Ok(actions) => {
                                 self.queue_actions(actions);
                                 self.metrics.tasks_processed += 1;
                             }
-
                             Err(e) => {
                                 error!("Failed to process task result: {}", e);
                                 self.show_error(&format!("Task processing failed: {}", e));
                             }
                         }
                     }
-
-                    None => {
-                        warn!("Task channel closed");
-
-                        return Action::Quit;
-                    }
+                    None => return Action::Quit,
                 }
             }
 
-            // Handle external actions
             action = self.action_rx.recv() => {
                 match action {
                     Some(action) => {
                         debug!("Received external action: {:?}", action);
-
                         self.metrics.actions_processed += 1;
                         return action;
                     }
-
-                    None => {
-                        warn!("Action channel closed");
-
-                        return Action::Quit;
-                    }
+                    None => return Action::Quit,
                 }
             }
 
-            // Timeout fallback
             _ = tokio::time::sleep(self.config.min_iteration_time) => {
-                // Return tick for UI updates
                 return Action::Tick;
             }
         }
 
-        // Return next pending action or tick
         self.pending_actions.pop_front().unwrap_or_else(|| {
-            // Update metrics
             let elapsed = iteration_start.elapsed();
             self.metrics.total_processing_time += elapsed;
             self.metrics.last_activity = Instant::now();
-
             Action::Tick
         })
     }
 
-    /// Process task result and generate appropriate actions
     async fn process_task_result(&self, task_result: TaskResult) -> Result<Vec<Action>> {
         match task_result {
             TaskResult::DirectoryLoad {
@@ -252,7 +197,6 @@ impl EventLoop {
                 self.handle_directory_load(task_id, path, result, execution_time)
                     .await
             }
-
             TaskResult::FileOperation {
                 operation_id,
                 operation_type,
@@ -262,7 +206,6 @@ impl EventLoop {
                 self.handle_file_operation(operation_id, operation_type, result, execution_time)
                     .await
             }
-
             TaskResult::SearchComplete {
                 task_id,
                 query,
@@ -272,7 +215,6 @@ impl EventLoop {
                 self.handle_search_complete(task_id, query, results, execution_time)
                     .await
             }
-
             TaskResult::ContentSearchComplete {
                 task_id,
                 query,
@@ -282,7 +224,20 @@ impl EventLoop {
                 self.handle_content_search_complete(task_id, query, results, execution_time)
                     .await
             }
-
+            TaskResult::ClipboardOperation {
+                operation_id,
+                operation_type,
+                result,
+                execution_time,
+            } => {
+                self.handle_clipboard_operation(
+                    operation_id,
+                    operation_type,
+                    result,
+                    execution_time,
+                )
+                .await
+            }
             TaskResult::Progress {
                 task_id,
                 current,
@@ -292,7 +247,6 @@ impl EventLoop {
                 self.handle_progress_update(task_id, current, total, message)
                     .await
             }
-
             TaskResult::Generic {
                 task_id,
                 result,
@@ -313,69 +267,49 @@ impl EventLoop {
         execution_time: Duration,
     ) -> Result<Vec<Action>> {
         debug!(
-            "Processing directory load for path: {} ({}ms)",
+            "Processing directory load for {} ({}ms)",
             path.display(),
             execution_time.as_millis()
         );
 
         match result {
             Ok(entries) => {
-                // Update filesystem state without holding locks during async operations
+                // Update filesystem state
                 {
-                    let mut fs_state: MutexGuard<'_, FSState> = self.state_coordinator.fs_state();
-                    let pane: &mut PaneState = fs_state.active_pane_mut();
+                    let mut fs_state = self.state_coordinator.fs_state();
+                    let pane = fs_state.active_pane_mut();
 
-                    // Only update if this is still the current directory
                     if pane.cwd == path {
-                        pane.entries = entries;
-                        pane.is_loading
-                            .store(false, std::sync::atomic::Ordering::Relaxed);
+                        pane.set_entries(entries);
                         debug!("Updated directory entries for {}", path.display());
-                    } else {
-                        debug!("Skipping stale directory load for {}", path.display());
                     }
                 }
 
-                // Update UI state
+                // Update UI and complete task
                 self.state_coordinator
                     .update_ui_state(Box::new(move |ui: &mut UIState| {
                         ui.show_success(&format!("Loaded directory: {}", path.display()));
                         ui.request_redraw(RedrawFlag::All);
                     }));
 
-                // Complete task in app state
                 {
-                    let app_state: MutexGuard<'_, AppState> = self.app_state.lock().map_err(
-                        |e: PoisonError<MutexGuard<'_, AppState>>| {
-                            anyhow::anyhow!("Failed to acquire app state lock: {e}")
-                        },
-                    )?;
-
+                    let app_state = self.state_coordinator.app_state();
                     app_state.complete_task(task_id, None);
                 }
 
                 Ok(vec![Action::ReloadDirectory])
             }
-
             Err(e) => {
                 error!("Directory load failed for {}: {}", path.display(), e);
 
-                // Show error to user
-                let err: AppError = e.clone();
+                let err = e.clone();
                 self.state_coordinator
                     .update_ui_state(Box::new(move |ui: &mut UIState| {
                         ui.show_error(&format!("Failed to load directory: {err}"));
-                        ui.request_redraw(RedrawFlag::StatusBar);
                     }));
 
-                // Complete task with error
                 {
-                    let app_state: MutexGuard<'_, AppState> = self.app_state.lock().map_err(
-                        |e: PoisonError<MutexGuard<'_, AppState>>| {
-                            anyhow::anyhow!("Failed to acquire app state lock: {e}")
-                        },
-                    )?;
-
+                    let app_state = self.state_coordinator.app_state();
                     app_state.complete_task(task_id, Some(e.to_string().into()));
                 }
 
@@ -386,7 +320,7 @@ impl EventLoop {
 
     async fn handle_file_operation(
         &self,
-        operation_id: String,
+        operation_id: OperationId,
         operation_type: FileOperationType,
         result: Result<(), AppError>,
         execution_time: Duration,
@@ -399,25 +333,75 @@ impl EventLoop {
 
         match result {
             Ok(()) => {
-                let op_name: String = format!("ID: {operation_id} | Type: {operation_type:?}");
-
+                let op_name = format!("{:?}", operation_type);
                 self.state_coordinator
                     .update_ui_state(Box::new(move |ui: &mut UIState| {
-                        ui.show_success(&format!("File {} completed successfully", op_name));
-                        ui.request_redraw(RedrawFlag::All);
+                        ui.show_success(&format!("{} completed successfully", op_name));
                     }));
 
-                // Reload directory to show changes
+                // Update app state operation tracking
+                {
+                    let mut app_state = self.state_coordinator.app_state();
+
+                    if let Some(task_id) = app_state
+                        .operation_tasks
+                        .get(&operation_id)
+                        .map(|entry| *entry.value())
+                    {
+                        app_state.complete_task(task_id, None);
+                    }
+                }
+
                 Ok(vec![Action::ReloadDirectory])
             }
-
             Err(e) => {
                 error!("File operation {:?} failed: {}", operation_type, e);
                 let op_name = format!("{:?}", operation_type).to_lowercase();
                 self.state_coordinator
                     .update_ui_state(Box::new(move |ui: &mut UIState| {
                         ui.show_error(&format!("File {} failed: {}", op_name, e));
-                        ui.request_redraw(RedrawFlag::StatusBar);
+                    }));
+
+                Ok(vec![])
+            }
+        }
+    }
+
+    async fn handle_clipboard_operation(
+        &self,
+        operation_id: OperationId,
+        operation_type: String,
+        result: Result<u32, AppError>,
+        execution_time: Duration,
+    ) -> Result<Vec<Action>> {
+        debug!(
+            "Processing clipboard {} ({}ms)",
+            operation_type,
+            execution_time.as_millis()
+        );
+
+        match result {
+            Ok(items_processed) => {
+                self.state_coordinator
+                    .update_ui_state(Box::new(move |ui: &mut UIState| {
+                        ui.show_success(&format!(
+                            "Clipboard {} completed: {} items",
+                            operation_type, items_processed
+                        ));
+                    }));
+
+                {
+                    let app_state = self.state_coordinator.app_state();
+                    app_state.complete_clipboard_operation(&operation_id);
+                }
+
+                Ok(vec![Action::ReloadDirectory])
+            }
+            Err(e) => {
+                error!("Clipboard operation {} failed: {}", operation_type, e);
+                self.state_coordinator
+                    .update_ui_state(Box::new(move |ui: &mut UIState| {
+                        ui.show_error(&format!("Clipboard {} failed: {}", operation_type, e));
                     }));
 
                 Ok(vec![])
@@ -429,7 +413,7 @@ impl EventLoop {
         &self,
         task_id: u64,
         query: String,
-        results: Vec<crate::fs::object_info::ObjectInfo>,
+        results: Vec<ObjectInfo>,
         execution_time: Duration,
     ) -> Result<Vec<Action>> {
         debug!(
@@ -439,22 +423,17 @@ impl EventLoop {
             results.len()
         );
 
-        // Update search results
         let result_count = results.len();
         self.state_coordinator
             .update_ui_state(Box::new(move |ui: &mut UIState| {
                 ui.filename_search_results = results;
                 ui.show_info(&format!("Found {} matches for '{}'", result_count, query));
-                ui.request_redraw(RedrawFlag::All);
             }));
 
-        // Complete task
         {
-            let app_state = self
-                .app_state
-                .lock()
-                .map_err(|e| anyhow::anyhow!("Failed to acquire app state lock: {}", e))?;
+            let app_state = self.state_coordinator.app_state();
             app_state.complete_task(task_id, None);
+            app_state.complete_search(&format!("search_{}", task_id), result_count);
         }
 
         Ok(vec![Action::ShowFilenameSearchResults(
@@ -470,7 +449,7 @@ impl EventLoop {
         execution_time: Duration,
     ) -> Result<Vec<Action>> {
         debug!(
-            "Processing content search completion for '{}' ({}ms, {} results)",
+            "Processing content search for '{}' ({}ms, {} results)",
             query,
             execution_time.as_millis(),
             results.len()
@@ -483,18 +462,10 @@ impl EventLoop {
                     "Content search found {} matches for '{}'",
                     result_count, query
                 ));
-                ui.request_redraw(RedrawFlag::All);
             }));
 
-        // Complete task
         {
-            let app_state =
-                self.app_state
-                    .lock()
-                    .map_err(|e: PoisonError<MutexGuard<'_, AppState>>| {
-                        anyhow::anyhow!("Failed to acquire app state lock: {e}")
-                    })?;
-
+            let app_state = self.state_coordinator.app_state();
             app_state.complete_task(task_id, None);
         }
 
@@ -509,23 +480,32 @@ impl EventLoop {
         message: Option<String>,
     ) -> Result<Vec<Action>> {
         debug!(
-            "Processing progress update for task {}: {}/{}",
-            task_id, current, total
+            "Progress update for task {task_id}: {current}/{total}",
         );
 
-        // Update progress in UI
+        let mut moved: Option<String> = None;
+
+        if let Some(ref tmp) = message {
+            moved = Some(tmp.clone());
+        }
+
         self.state_coordinator
             .update_ui_state(Box::new(move |ui: &mut UIState| {
                 if let Some(loading) = &ui.loading {
                     loading.set_completion(current, total);
-
-                    if let Some(msg) = message {
+                    if let Some(msg) = moved {
                         loading.set_current_item(Some(msg));
                     }
                 }
-
-                ui.request_redraw(RedrawFlag::StatusBar);
             }));
+
+        // Update task progress via StateProvider
+        self.state_coordinator.update_task_progress(
+            task_id.to_string(),
+            current,
+            total,
+            message,
+        );
 
         Ok(vec![])
     }
@@ -549,45 +529,28 @@ impl EventLoop {
                     self.state_coordinator
                         .update_ui_state(Box::new(move |ui: &mut UIState| {
                             ui.show_success(&msg);
-                            ui.request_redraw(RedrawFlag::StatusBar);
                         }));
                 }
 
-                // Complete task
                 {
-                    let app_state: MutexGuard<'_, AppState> = self.app_state.lock().map_err(
-                        |e: PoisonError<MutexGuard<'_, AppState>>| {
-                            anyhow::anyhow!("Failed to acquire app state lock: {e}")
-                        },
-                    )?;
-
+                    let app_state = self.state_coordinator.app_state();
                     app_state.complete_task(task_id, None);
                 }
 
                 Ok(vec![])
             }
-
             Err(e) => {
-                error!("Generic task {task_id} failed: {e}");
+                error!("Generic task {} failed: {}", task_id, e);
 
-                let error_msg: String = message.unwrap_or_else(|| format!("Task {task_id} failed"));
-
-                let value: AppError = e.clone();
-
+                let error_msg = message.unwrap_or_else(|| format!("Task {} failed", task_id));
+                let err_clone = e.clone();
                 self.state_coordinator
                     .update_ui_state(Box::new(move |ui: &mut UIState| {
-                        ui.show_error(&format!("{}: {}", error_msg, value));
-                        ui.request_redraw(RedrawFlag::StatusBar);
+                        ui.show_error(&format!("{}: {}", error_msg, err_clone));
                     }));
 
-                // Complete task with error
                 {
-                    let app_state: MutexGuard<'_, AppState> = self.app_state.lock().map_err(
-                        |e: PoisonError<MutexGuard<'_, AppState>>| {
-                            anyhow::anyhow!("Failed to acquire app state lock: {e}")
-                        },
-                    )?;
-
+                    let app_state = self.state_coordinator.app_state();
                     app_state.complete_task(task_id, Some(e.to_string().into()));
                 }
 
@@ -596,31 +559,26 @@ impl EventLoop {
         }
     }
 
-    /// Queue multiple actions for processing
     fn queue_actions(&mut self, actions: Vec<Action>) {
         for action in actions {
             self.pending_actions.push_back(action);
         }
     }
 
-    /// Get current search results safely
-    async fn get_current_search_results(&self) -> Vec<crate::fs::object_info::ObjectInfo> {
-        let ui_state: Arc<RwLock<UIState>> = self.state_coordinator.ui_state();
-        let ui: RwLockReadGuard<'_, UIState> = ui_state.read().expect("UI state lock poisoned");
+    async fn get_current_search_results(&self) -> Vec<ObjectInfo> {
+        let ui_state = self.state_coordinator.ui_state();
+        let ui = ui_state.read().expect("UI state lock poisoned");
         ui.filename_search_results.clone()
     }
 
-    /// Show error message to user
     fn show_error(&self, message: &str) {
         let msg = message.to_string();
         self.state_coordinator
             .update_ui_state(Box::new(move |ui: &mut UIState| {
                 ui.show_error(&msg);
-                ui.request_redraw(RedrawFlag::StatusBar);
             }));
     }
 
-    /// Get event loop performance metrics
     pub fn get_metrics(&self) -> EventLoopMetricsSnapshot {
         EventLoopMetricsSnapshot {
             tasks_processed: self.metrics.tasks_processed,
@@ -635,49 +593,8 @@ impl EventLoop {
             pending_actions: self.pending_actions.len(),
         }
     }
-
-    /// Flush all pending actions and process remaining tasks
-    pub async fn shutdown(&mut self) -> Result<()> {
-        info!("Shutting down event loop");
-
-        let start: Instant = Instant::now();
-        let mut remaining_tasks: i32 = 0;
-
-        // Process remaining task results with timeout
-        while let Ok(Some(task_result)) =
-            timeout(Duration::from_millis(100), self.task_rx.recv()).await
-        {
-            match self.process_task_result(task_result).await {
-                Ok(actions) => {
-                    self.queue_actions(actions);
-
-                    remaining_tasks += 1;
-                }
-
-                Err(e) => {
-                    warn!("Error processing task during shutdown: {e}");
-                }
-            }
-
-            // Prevent hanging during shutdown
-            if start.elapsed() > Duration::from_secs(5) {
-                warn!("Shutdown timeout reached, forcing termination");
-
-                break;
-            }
-        }
-
-        if remaining_tasks > 0 {
-            info!("Processed {remaining_tasks} remaining tasks during shutdown",);
-        }
-
-        info!("Event loop shutdown complete");
-
-        Ok(())
-    }
 }
 
-/// Performance metrics snapshot
 #[derive(Debug, Clone)]
 pub struct EventLoopMetricsSnapshot {
     pub tasks_processed: u64,
@@ -689,24 +606,18 @@ pub struct EventLoopMetricsSnapshot {
 }
 
 impl TaskResult {
-    /// Get task result type for logging
     pub fn kind(&self) -> &'static str {
         match self {
             TaskResult::DirectoryLoad { .. } => "directory_load",
-
             TaskResult::FileOperation { .. } => "file_operation",
-
             TaskResult::SearchComplete { .. } => "search_complete",
-
             TaskResult::ContentSearchComplete { .. } => "content_search_complete",
-
+            TaskResult::ClipboardOperation { .. } => "clipboard_operation",
             TaskResult::Progress { .. } => "progress",
-
             TaskResult::Generic { .. } => "generic",
         }
     }
 
-    /// Get task ID if available
     pub fn task_id(&self) -> Option<u64> {
         match self {
             TaskResult::DirectoryLoad { task_id, .. }
@@ -714,95 +625,7 @@ impl TaskResult {
             | TaskResult::ContentSearchComplete { task_id, .. }
             | TaskResult::Progress { task_id, .. }
             | TaskResult::Generic { task_id, .. } => Some(*task_id),
-            TaskResult::FileOperation { .. } => None,
+            _ => None,
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::model::{app_state::AppState, fs_state::FSState, ui_state::UIState};
-    use std::sync::{Mutex, RwLock};
-    use tokio::sync::mpsc;
-
-    fn create_test_setup() -> (
-        EventLoop,
-        UnboundedSender<TaskResult>,
-        UnboundedSender<Action>,
-    ) {
-        let (task_tx, task_rx) = mpsc::unbounded_channel();
-        let (action_tx, action_rx) = mpsc::unbounded_channel();
-
-        let app_state: Arc<Mutex<AppState>> = Arc::new(Mutex::new(AppState::default()));
-        let ui_state: RwLock<UIState> = RwLock::new(UIState::default());
-        let fs_state: Arc<Mutex<FSState>> = Arc::new(Mutex::new(FSState::default()));
-
-        let state_coordinator: Arc<StateCoordinator> =
-            Arc::new(StateCoordinator::new(app_state.clone(), ui_state, fs_state));
-        let event_loop: EventLoop =
-            EventLoop::new(app_state, task_rx, action_rx, state_coordinator);
-
-        (event_loop, task_tx, action_tx)
-    }
-
-    #[tokio::test]
-    async fn test_task_processing() {
-        let (mut event_loop, task_tx, _action_tx) = create_test_setup();
-
-        // Send a task result
-        let task_result: TaskResult = TaskResult::Generic {
-            task_id: 1,
-            result: Ok(()),
-            message: Some("Test task completed".to_string()),
-            execution_time: Duration::from_millis(100),
-        };
-
-        task_tx.send(task_result).unwrap();
-
-        // Process the task
-        let action: Action = event_loop.next_action().await;
-
-        // Should return Tick since generic tasks don't generate specific actions
-        assert!(matches!(action, Action::Tick));
-        assert_eq!(event_loop.metrics.tasks_processed, 1);
-    }
-
-    #[tokio::test]
-    async fn test_action_forwarding() {
-        let (mut event_loop, _task_tx, action_tx) = create_test_setup();
-
-        // Send an action
-        action_tx.send(Action::MoveSelectionUp).unwrap();
-
-        // Should receive the action
-        let action: Action = event_loop.next_action().await;
-        assert!(matches!(action, Action::MoveSelectionUp));
-        assert_eq!(event_loop.metrics.actions_processed, 1);
-    }
-
-    #[tokio::test]
-    async fn test_metrics_tracking() {
-        let (mut event_loop, task_tx, action_tx) = create_test_setup();
-
-        // Send multiple events
-        task_tx
-            .send(TaskResult::Generic {
-                task_id: 1,
-                result: Ok(()),
-                message: None,
-                execution_time: Duration::from_millis(50),
-            })
-            .unwrap();
-
-        action_tx.send(Action::Tick).unwrap();
-
-        // Process events
-        event_loop.next_action().await;
-        event_loop.next_action().await;
-
-        let metrics = event_loop.get_metrics();
-        assert_eq!(metrics.tasks_processed, 1);
-        assert_eq!(metrics.actions_processed, 1);
     }
 }

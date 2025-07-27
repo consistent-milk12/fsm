@@ -213,6 +213,19 @@ impl StateCoordinator {
 
         Ok(accessor(&app_guard, &fs_guard, &ui_guard))
     }
+
+    /// Update task progress
+    pub fn update_task_progress(
+        &self,
+        task_id: String,
+        current: u64,
+        total: u64,
+        message: Option<String>,
+    ) {
+        if let Ok(mut app_state) = self.app_state.lock() {
+            app_state.set_task_progress(task_id, current, total, message);
+        }
+    }
 }
 
 /// StateProvider implementation
@@ -233,6 +246,16 @@ impl StateProvider for StateCoordinator {
 
     fn app_state(&self) -> std::sync::MutexGuard<'_, AppState> {
         self.app_state()
+    }
+
+    fn update_task_progress(
+        &self,
+        task_id: String,
+        current: u64,
+        total: u64,
+        message: Option<String>,
+    ) {
+        self.update_task_progress(task_id, current, total, message)
     }
 
     fn request_redraw(&self, flag: crate::model::ui_state::RedrawFlag) {
@@ -292,7 +315,7 @@ mod tests {
         let result = coordinator
             .update_ui_state_clipboard(|_ui| async {
                 // This would normally be a clipboard operation
-                Ok::<String, clipboard::ClipError>("test".to_string())
+                Ok::<String, ClipError>("test".to_string())
             })
             .await;
 
@@ -333,7 +356,7 @@ mod tests {
 
         // Should timeout
         assert!(result.is_err());
-        if let Err(AppError::Timeout { .. }) = result {
+        if let Err(AppError::TaskTimeout { .. }) = result {
             // Expected timeout error
         } else {
             panic!("Expected timeout error");

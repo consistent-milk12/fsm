@@ -110,6 +110,7 @@ enum-map = "2.7.3"
 kanal = "0.1.1"
 nanoid = "0.4.0"
 async-trait = "0.1.88"
+regex = "1.11.1"
 
 [[bin]]
 name = "fs"

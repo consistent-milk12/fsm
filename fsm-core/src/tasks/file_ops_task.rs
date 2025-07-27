@@ -16,6 +16,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
+use crate::controller;
 use crate::controller::event_loop::{FileOperationType, TaskResult};
 use crate::error::AppError;
 
@@ -79,7 +80,7 @@ impl FileOperationTask {
 
         // Send completion result
         let completion = TaskResult::FileOperation {
-            operation_id: self.operation_id.clone(),
+            operation_id: controller::actions::OperationId(self.operation_id.clone()),
             operation_type,
             result: result.map_err(|e| {
                 AppError::Io(std::io::Error::new(
