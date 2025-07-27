@@ -23,6 +23,7 @@ use crate::controller::state_coordinator::StateCoordinator;
 
 /// Dispatches actions by batching them and applying them to the
 /// `StateCoordinator` when flush conditions are met.
+#[allow(unused)]
 pub struct ActionDispatcher {
     batcher: ActionBatcher,
     state: Arc<StateCoordinator>,
@@ -173,7 +174,7 @@ impl ActionDispatcher {
                     });
                 }
             }
-            Action::Resize(width, height) => {
+            Action::Resize(_width, height) => {
                 let fs = self.state.fs_state();
                 let new_height = height.saturating_sub(2) as usize;
                 fs.active_pane()

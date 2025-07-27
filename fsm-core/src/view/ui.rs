@@ -122,7 +122,7 @@ impl UIRenderer {
                 // Determine if the pane is still loading entries.
                 let is_loading = pane.is_loading.load(Ordering::Relaxed);
                 if !is_loading {
-                    let fs_st = fs_state.clone();
+                    let _fs_st = fs_state.clone();
 
                     let file_table = OptimizedFileTable::new();
                     // Render the file table using the pane state and current path.

@@ -23,7 +23,7 @@ pub struct SearchHandler {
 
 /// Search operation modes
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SearchMode {
+pub enum SearchMode {
     Normal,
     FileNameSearch, // After '/' pressed
     ContentSearch,  // After Ctrl+F pressed

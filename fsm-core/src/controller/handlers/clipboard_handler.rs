@@ -27,7 +27,7 @@ pub struct ClipboardHandler {
 
 /// Clipboard operation modes
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ClipboardMode {
+pub enum ClipboardMode {
     /// Normal file browsing mode
     Normal,
     /// Clipboard overlay is active and focused

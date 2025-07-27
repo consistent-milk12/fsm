@@ -34,7 +34,7 @@ impl OptimizedFileTable {
     pub fn render_optimized(
         &self,
         frame: &mut Frame<'_>,
-        ui_state: &UIState,
+        _ui_state: &UIState,
         pane_state: &PaneState,
         path: &Path,
         area: Rect,
@@ -97,7 +97,7 @@ impl OptimizedFileTable {
                     .border_style(Style::default().fg(theme::COMMENT))
                     .style(Style::default().bg(theme::BACKGROUND)),
             )
-            .highlight_style(
+            .row_highlight_style(
                 Style::default()
                     .bg(theme::CURRENT_LINE)
                     .add_modifier(Modifier::BOLD),
