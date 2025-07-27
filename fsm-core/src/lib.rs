@@ -12,7 +12,6 @@ pub mod controller {
     pub use actions::Action;
 
     pub mod action_dispatcher;
-    pub use action_dispatcher::ActionDispatcher;
 
     pub mod event_loop;
     pub use event_loop::{EventLoop, TaskResult};
@@ -34,8 +33,6 @@ pub mod controller {
         pub mod navigation_handler;
         pub mod search_handler;
     }
-
-    pub mod metrics;
 }
 
 pub mod model {

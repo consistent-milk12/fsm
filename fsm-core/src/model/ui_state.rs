@@ -685,7 +685,7 @@ impl UIState {
     pub fn mark_index(&mut self, idx: usize) {
         if !self.marked_indices.contains(&idx) {
             self.marked_indices.push(idx);
-            self.request_redraw(RedrawFlag::Main);
+            self.request_redraw(RedrawFlag::All);
         }
     }
 
@@ -693,7 +693,7 @@ impl UIState {
     pub fn unmark_index(&mut self, idx: usize) {
         if let Some(pos) = self.marked_indices.iter().position(|&x| x == idx) {
             self.marked_indices.remove(pos);
-            self.request_redraw(RedrawFlag::Main);
+            self.request_redraw(RedrawFlag::All);
         }
     }
 
@@ -701,7 +701,7 @@ impl UIState {
     pub fn clear_marks(&mut self) {
         self.marked_indices.clear();
         self.visual_range = None;
-        self.request_redraw(RedrawFlag::Main);
+        self.request_redraw(RedrawFlag::All);
     }
 
     /// Show notification with optimized string handling
