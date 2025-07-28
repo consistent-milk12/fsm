@@ -1,596 +1,421 @@
-//! Enhanced high-performance UI renderer with atomic operations and compatibility
+//! src/model/ui_state.rs
+//! ============================================================
+//! *Slimmed-down* UIState that matches the new lock-free render
+//! pipeline.
+//!
+//! ‣ No `active_file_operations` – that now lives in `FSState`.  
+//! ‣ Keeps only data actually consumed by `UIRenderer` or the
+//!   widgets after they receive their immutable snapshots.  
+//! ‣ All write-heavy fields use atomics; read-heavy fields are
+//!   plain values.  Nothing here requires a mutex.
 
-use crate::controller::state_coordinator::StateCoordinator;
-use crate::model::fs_state::PaneState;
-use crate::model::ui_state::{NotificationLevel, RedrawFlag, UIOverlay, UIState};
-use crate::view::components::{
-    clipboard_overlay::OptimizedClipboardOverlay, error_overlay::ErrorOverlay,
-    file_operations_overlay::OptimizedFileOperationsOverlay, help_overlay::OptimizedHelpOverlay,
-    input_prompt_overlay::OptimizedPromptOverlay, loading_overlay::OptimizedLoadingOverlay,
-    notification_overlay::OptimizedNotificationOverlay, object_table::OptimizedFileTable,
-    search_overlay::OptimizedSearchOverlay, search_results_overlay::OptimizedSearchResultsOverlay,
-    status_bar::OptimizedStatusBar,
-};
-
-use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, Paragraph};
-use std::path::PathBuf;
-use std::sync::atomic::Ordering;
-use std::sync::{Arc, RwLock, RwLockReadGuard};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::Instant;
-use tracing::{debug, instrument, warn};
 
-/// High-performance UI renderer with atomic optimization and smart caching
-pub struct UIRenderer {
-    last_render: Instant,
-    frame_count: u64,
-    layout_cache: LayoutCache,
-    component_dirty_flags: u32,
-    clipboard_overlay: OptimizedClipboardOverlay,
-    render_stats: RenderStats,
+use compact_str::CompactString;
+use smallvec::SmallVec;
+
+use clipr::{ClipBoardConfig, ClipBoardItem, clipboard::ClipBoard};
+
+use crate::AppError;
+use crate::controller::actions::InputPromptType;
+use crate::fs::object_info::ObjectInfo; // only for tests
+use crate::model::UIMode;
+use crate::model::fs_state::SearchMode;
+
+// ------------------------------------------------------------
+// Redraw bit-flags (atomic)
+// ------------------------------------------------------------
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum RedrawFlag {
+    Main = 1,
+    StatusBar = 1 << 1,
+    Overlay = 1 << 2,
+    Notification = 1 << 3,
+    All = 0x0F,
 }
 
-#[derive(Debug, Clone, Default)]
-struct LayoutCache {
-    main_layout: Option<(Rect, [Rect; 2])>,
-    overlay_layout: Option<(Rect, Rect)>,
-    last_screen_size: Rect,
-    cache_hits: u64,
-    cache_misses: u64,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct RenderStats {
-    pub frames_rendered: u64,
-    pub frames_skipped: u64,
-    pub slow_renders: u64,
-    pub total_render_time: std::time::Duration,
-}
-
-mod component_flags {
-    pub const MAIN_TABLE: u32 = 1;
-    pub const STATUS_BAR: u32 = 1 << 1;
-    pub const OVERLAY: u32 = 1 << 2;
-    pub const NOTIFICATION: u32 = 1 << 3;
-}
-
-impl UIRenderer {
-    pub fn new() -> Self {
-        Self {
-            last_render: Instant::now(),
-            frame_count: 0,
-            layout_cache: LayoutCache::default(),
-            component_dirty_flags: u32::MAX,
-            clipboard_overlay: OptimizedClipboardOverlay::new(),
-            render_stats: RenderStats::default(),
-        }
-    }
-
-    #[instrument(level = "trace", skip(self, frame, state_coordinator))]
-    pub fn render(&mut self, frame: &mut Frame<'_>, state_coordinator: &StateCoordinator) {
-        let render_start = Instant::now();
-        let ui_state = state_coordinator.ui_state();
-
-        // Early return optimization with atomic check
-        if self.should_skip_render(&ui_state) {
-            self.render_stats.frames_skipped += 1;
-            debug!("Skipping render - no redraw needed");
-            return;
-        }
-
-        self.update_layout_cache(frame.area());
-        let main_layout = self.get_main_layout(frame.area());
-
-        // Render components based on what needs updating
-        self.render_main_components(frame, &ui_state, state_coordinator, &main_layout);
-        self.render_overlays_optimized(frame, &ui_state);
-        self.render_notifications_optimized(frame, &ui_state);
-
-        self.update_performance_metrics(render_start);
-        self.component_dirty_flags = 0;
-        self.frame_count += 1;
-        self.render_stats.frames_rendered += 1;
-
-        // Clear redraw flags atomically
-        state_coordinator.clear_redraw();
-    }
-
+impl RedrawFlag {
     #[inline]
-    fn should_skip_render(&self, ui_state: &Arc<RwLock<UIState>>) -> bool {
-        if self.frame_count == 0 {
-            return false; // Always render first frame
-        }
-
-        let ui_guard = ui_state.read().expect("UIState RwLock poisoned");
-        !ui_guard.needs_redraw() && self.component_dirty_flags == 0
-    }
-
-    fn render_main_components(
-        &mut self,
-        frame: &mut Frame<'_>,
-        ui_state: &Arc<RwLock<UIState>>,
-        state_coordinator: &StateCoordinator,
-        layout: &[Rect; 2],
-    ) {
-        let (needs_main_redraw, needs_status_redraw) = {
-            let ui_guard = ui_state.read().expect("UIState RwLock poisoned");
-            let redraw_flags = ui_guard.redraw_flags.load(Ordering::Relaxed);
-
-            let needs_main = (redraw_flags & RedrawFlag::Main.bits() as u32) != 0
-                || (self.component_dirty_flags & component_flags::MAIN_TABLE) != 0;
-            let needs_status = (redraw_flags & RedrawFlag::StatusBar.bits() as u32) != 0
-                || (self.component_dirty_flags & component_flags::STATUS_BAR) != 0;
-
-            (needs_main, needs_status)
-        };
-
-        debug!(
-            "Redraw flags: main={}, status={}",
-            needs_main_redraw, needs_status_redraw
-        );
-
-        // Render main content area
-        if needs_main_redraw {
-            self.render_main_content_optimized(frame, ui_state, state_coordinator, layout[0]);
-        }
-
-        // Render status bar
-        if needs_status_redraw {
-            self.render_status_bar_optimized(frame, ui_state, state_coordinator, layout[1]);
-        }
-
-        // Render file operation progress overlays
-        self.render_file_operations_if_needed(frame, ui_state, layout[0]);
-    }
-
-    fn render_main_content_optimized(
-        &mut self,
-        frame: &mut Frame<'_>,
-        ui_state: &Arc<RwLock<UIState>>,
-        state_coordinator: &StateCoordinator,
-        area: Rect,
-    ) {
-        debug!("Rendering main content (file table)");
-
-        let fs_state = state_coordinator.fs_state();
-        let pane = fs_state.active_pane();
-        let current_path = pane.cwd.clone();
-        let is_loading = pane.is_loading.load(Ordering::Relaxed);
-
-        if !is_loading {
-            // Render file table with optimized path
-            let file_table = OptimizedFileTable::new();
-            let ui_guard = ui_state.read().expect("UIState RwLock poisoned");
-            file_table.render_optimized(frame, &ui_guard, pane, &current_path, area);
-        } else {
-            // Render loading state
-            self.render_loading_block(frame, area);
-        }
-    }
-
-    #[inline]
-    fn render_loading_block(&self, frame: &mut Frame<'_>, area: Rect) {
-        let loading_block = Block::default()
-            .title(" Loading Directory... ")
-            .borders(Borders::ALL)
-            .style(Style::default().fg(Color::Yellow));
-        frame.render_widget(loading_block, area);
-    }
-
-    fn render_status_bar_optimized(
-        &mut self,
-        frame: &mut Frame<'_>,
-        ui_state: &Arc<RwLock<UIState>>,
-        state_coordinator: &StateCoordinator,
-        area: Rect,
-    ) {
-        debug!("Rendering status bar");
-        let status_bar = OptimizedStatusBar::new();
-        let ui_guard = ui_state.read().expect("UIState RwLock poisoned");
-        status_bar.render_with_metrics(frame, &ui_guard, state_coordinator, area);
-    }
-
-    fn render_file_operations_if_needed(
-        &mut self,
-        frame: &mut Frame<'_>,
-        ui_state: &Arc<RwLock<UIState>>,
-        content_area: Rect,
-    ) {
-        let ui_guard = ui_state.read().expect("UIState RwLock poisoned");
-        if !ui_guard.active_file_operations.is_empty() {
-            let area = self.calculate_progress_overlay_area(
-                content_area,
-                ui_guard.active_file_operations.len(),
-            );
-            let overlay = OptimizedFileOperationsOverlay::new();
-            overlay.render_operations(frame, &ui_guard.active_file_operations, area);
-        }
-    }
-
-    fn render_overlays_optimized(
-        &mut self,
-        frame: &mut Frame<'_>,
-        ui_state: &Arc<RwLock<UIState>>,
-    ) {
-        let ui_guard = ui_state.read().expect("UIState RwLock poisoned");
-        let screen_area = frame.area();
-
-        // Render modal overlays
-        if ui_guard.overlay != UIOverlay::None {
-            let overlay_area = self.get_cached_overlay_area(screen_area, ui_guard.overlay);
-            self.render_modal_overlay(frame, &ui_guard, overlay_area);
-        }
-
-        // Render clipboard overlay
-        if ui_guard.clipboard_overlay_active {
-            let clipboard_area = self.calculate_premium_clipboard_area(screen_area);
-            self.render_clipboard_overlay_optimized(frame, &ui_guard, clipboard_area);
-        }
-    }
-
-    fn render_modal_overlay(&mut self, frame: &mut Frame<'_>, ui_state: &UIState, area: Rect) {
-        match ui_state.overlay {
-            UIOverlay::Help => {
-                let help_overlay = OptimizedHelpOverlay::new();
-                help_overlay.render_fast(frame, area);
-            }
-            UIOverlay::Search | UIOverlay::FileNameSearch | UIOverlay::ContentSearch => {
-                let search_overlay = OptimizedSearchOverlay::new(ui_state.overlay);
-                search_overlay.render_with_input(frame, ui_state, area);
-            }
-            UIOverlay::SearchResults => {
-                let results_overlay = OptimizedSearchResultsOverlay::new();
-                results_overlay.render_results(frame, ui_state, area);
-            }
-            UIOverlay::Loading => {
-                if let Some(loading_state) = &ui_state.loading {
-                    let loading_overlay = OptimizedLoadingOverlay::new();
-                    loading_overlay.render_progress(frame, loading_state, area);
-                }
-            }
-            UIOverlay::Prompt => {
-                if let Some(prompt_type) = &ui_state.input_prompt_type {
-                    let prompt_overlay = OptimizedPromptOverlay::new();
-                    prompt_overlay.render_input(frame, ui_state, prompt_type, area);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    fn render_clipboard_overlay_optimized(
-        &mut self,
-        frame: &mut Frame<'_>,
-        ui_state: &UIState,
-        area: Rect,
-    ) {
-        // For now, render a simple fallback since async rendering in sync context is complex
-        if let Err(_e) = self
-            .clipboard_overlay
-            .render_sync_fallback(frame, area, ui_state)
-        {
-            let error_area = Rect {
-                y: area.y + area.height.saturating_sub(3),
-                height: 3,
-                ..area
-            };
-            self.render_error_fallback(frame, "Clipboard error", error_area);
-        }
-    }
-
-    fn render_error_fallback(&self, frame: &mut Frame<'_>, message: &str, area: Rect) {
-        let error_overlay = ErrorOverlay::new(message.to_string());
-        error_overlay.render(frame, area);
-    }
-
-    fn render_notifications_optimized(
-        &mut self,
-        frame: &mut Frame<'_>,
-        ui_state: &Arc<RwLock<UIState>>,
-    ) {
-        let ui_guard: RwLockReadGuard<'_, UIState> = ui_state.read().expect("UIState RwLock poisoned");
-        if let Some(notification) = &ui_guard.notification {
-            let area = self.calculate_notification_area(frame.area(), notification);
-            let overlay = OptimizedNotificationOverlay::new();
-            overlay.render_notification(frame, notification, area);
-        }
-    }
-
-    fn update_layout_cache(&mut self, screen_size: Rect) {
-        if self.layout_cache.last_screen_size != screen_size {
-            self.layout_cache.main_layout =
-                Some((screen_size, self.calculate_main_layout(screen_size)));
-            self.layout_cache.overlay_layout = None;
-            self.layout_cache.last_screen_size = screen_size;
-            self.component_dirty_flags = u32::MAX;
-            self.layout_cache.cache_misses += 1;
-        } else {
-            self.layout_cache.cache_hits += 1;
-        }
-    }
-
-    #[inline]
-    fn get_main_layout(&self, area: Rect) -> [Rect; 2] {
-        self.layout_cache
-            .main_layout
-            .as_ref()
-            .map(|(_, layout)| *layout)
-            .unwrap_or_else(|| self.calculate_main_layout(area))
-    }
-
-    #[inline]
-    fn calculate_main_layout(&self, area: Rect) -> [Rect; 2] {
-        let layout = Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]);
-        let [content, status] = layout.areas(area);
-        [content, status]
-    }
-
-    fn get_cached_overlay_area(&mut self, screen_size: Rect, overlay_type: UIOverlay) -> Rect {
-        if let Some((cached_size, cached_area)) = self.layout_cache.overlay_layout
-            && cached_size == screen_size
-        {
-            self.layout_cache.cache_hits += 1;
-            return cached_area;
-        }
-
-        self.layout_cache.cache_misses += 1;
-        let area = match overlay_type {
-            UIOverlay::Help => self.calculate_centered_overlay(screen_size, 80, 80),
-            UIOverlay::Search | UIOverlay::FileNameSearch | UIOverlay::ContentSearch => {
-                self.calculate_search_overlay_area(screen_size)
-            }
-            UIOverlay::SearchResults => self.calculate_centered_overlay(screen_size, 90, 70),
-            UIOverlay::Loading => self.calculate_centered_overlay(screen_size, 50, 30),
-            UIOverlay::Prompt => self.calculate_prompt_overlay_area(screen_size),
-            _ => self.calculate_centered_overlay(screen_size, 70, 60),
-        };
-
-        self.layout_cache.overlay_layout = Some((screen_size, area));
-        area
-    }
-
-    #[inline]
-    fn calculate_premium_clipboard_area(&self, area: Rect) -> Rect {
-        self.calculate_centered_overlay(area, 85, 80)
-    }
-
-    #[inline]
-    fn calculate_progress_overlay_area(&self, screen_size: Rect, op_count: usize) -> Rect {
-        let height = (op_count * 3 + 2) as u16;
-        Rect {
-            x: 1,
-            y: screen_size.height.saturating_sub(height + 2),
-            width: screen_size.width.saturating_sub(2),
-            height: height.min(screen_size.height / 3),
-        }
-    }
-
-    fn calculate_notification_area(
-        &self,
-        screen_size: Rect,
-        notification: &crate::model::ui_state::Notification,
-    ) -> Rect {
-        let height = match notification.level {
-            NotificationLevel::Error => 5,
-            _ => 3,
-        };
-        let width = (screen_size.width * 60 / 100).max(40);
-        Rect {
-            x: (screen_size.width.saturating_sub(width)) / 2,
-            y: 2,
-            width,
-            height,
-        }
-    }
-
-    #[inline]
-    fn calculate_centered_overlay(
-        &self,
-        area: Rect,
-        width_percent: u16,
-        height_percent: u16,
-    ) -> Rect {
-        let width = (area.width * width_percent / 100).min(area.width);
-        let height = (area.height * height_percent / 100).min(area.height);
-        Rect {
-            x: (area.width.saturating_sub(width)) / 2,
-            y: (area.height.saturating_sub(height)) / 2,
-            width,
-            height,
-        }
-    }
-
-    #[inline]
-    fn calculate_search_overlay_area(&self, area: Rect) -> Rect {
-        let height = 5;
-        let width = (area.width * 70 / 100).max(40);
-        Rect {
-            x: (area.width.saturating_sub(width)) / 2,
-            y: area.height / 4,
-            width,
-            height,
-        }
-    }
-
-    #[inline]
-    fn calculate_prompt_overlay_area(&self, area: Rect) -> Rect {
-        let height = 7;
-        let width = (area.width * 60 / 100).max(50);
-        Rect {
-            x: (area.width.saturating_sub(width)) / 2,
-            y: (area.height.saturating_sub(height)) / 2,
-            width,
-            height,
-        }
-    }
-
-    fn update_performance_metrics(&mut self, render_start: Instant) {
-        let render_duration = render_start.elapsed();
-        self.render_stats.total_render_time += render_duration;
-
-        if render_duration.as_millis() > 16 {
-            self.render_stats.slow_renders += 1;
-            warn!("Slow render detected: {:?}", render_duration);
-        }
-
-        self.last_render = Instant::now();
-    }
-
-    /// Get performance statistics for monitoring
-    pub fn get_render_stats(&self) -> &RenderStats {
-        &self.render_stats
-    }
-
-    /// Get layout cache statistics
-    pub fn get_cache_stats(&self) -> (u64, u64, f64) {
-        let hits = self.layout_cache.cache_hits;
-        let misses = self.layout_cache.cache_misses;
-        let total = hits + misses;
-        let hit_rate = if total > 0 {
-            hits as f64 / total as f64
-        } else {
-            0.0
-        };
-        (hits, misses, hit_rate)
-    }
-
-    /// Reset performance counters
-    pub fn reset_stats(&mut self) {
-        self.render_stats = RenderStats::default();
-        self.layout_cache.cache_hits = 0;
-        self.layout_cache.cache_misses = 0;
-    }
-
-    /// Force invalidate all caches
-    pub fn invalidate_caches(&mut self) {
-        self.layout_cache.main_layout = None;
-        self.layout_cache.overlay_layout = None;
-        self.component_dirty_flags = u32::MAX;
-    }
-
-    /// Update clipboard overlay cache synchronously
-    pub fn update_clipboard_cache_sync(
-        &mut self,
-        ui_state: &UIState,
-    ) -> Result<(), crate::error::AppError> {
-        self.clipboard_overlay
-            .update_cache_sync(&ui_state.clipboard)
+    pub const fn bits(self) -> u8 {
+        self as u8
     }
 }
 
-impl Default for UIRenderer {
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(u8)]
+pub enum UIOverlay {
+    #[default]
+    None,
+    Help,
+    FileNameSearch,
+    ContentSearch,
+    SearchResults,
+    Prompt,
+    Loading,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum NotificationLevel {
+    Info,
+    Success,
+    Warning,
+    Error,
+}
+
+// ------------------------------------------------------------
+// Small data structs
+// ------------------------------------------------------------
+#[derive(Clone, Debug)]
+pub struct Notification {
+    pub message: CompactString,
+    pub level: NotificationLevel,
+    pub timestamp: Instant,
+    pub auto_dismiss_ms: Option<u32>,
+}
+
+#[derive(Clone, Debug)]
+pub struct LoadingState {
+    pub message: CompactString,
+    pub progress_pct: u32, // 0-10000 (two decimal places)
+    pub start_time: Instant,
+}
+
+impl LoadingState {
+    #[inline]
+    pub fn set_progress(&mut self, pct: f32) {
+        self.progress_pct = (pct.clamp(0.0, 100.0) * 100.0) as u32;
+    }
+    #[inline]
+    pub fn progress(&self) -> f32 {
+        self.progress_pct as f32 / 100.0
+    }
+}
+
+// ------------------------------------------------------------
+//                           UIState
+// ------------------------------------------------------------
+#[derive(Debug)]
+pub struct UIState {
+    /// Atomic “what to repaint” flags
+    pub redraw_flags: AtomicU32,
+
+    /// Frame counter (for FPS)
+    pub frame_count: AtomicU64,
+
+    /// Current high-level mode
+    pub mode: UIMode,
+
+    /// Current modal overlay
+    pub overlay: UIOverlay,
+
+    /// ***Prompt / command line*** ------------------------------
+    pub input_prompt_type: Option<InputPromptType>,
+    pub prompt_buffer: CompactString,
+    pub prompt_cursor: usize,
+    pub command_history: SmallVec<[CompactString; 32]>,
+    pub history_index: Option<usize>,
+
+    /// ***Search*** ---------------------------------------------
+    pub search_mode: SearchMode,
+    pub search_query: Option<CompactString>,
+
+    /// ***Notifications & loading*** ----------------------------
+    pub notification: Option<Notification>,
+    pub loading: Option<LoadingState>,
+    pub last_update: Instant,
+
+    /// ***Clipboard overlay*** ----------------------------------
+    pub clipboard: ClipBoard,
+    pub clipboard_overlay_active: bool,
+    pub selected_clipboard_item_idx: usize,
+}
+
+// ------------------------------------------------------------
+// ctor / defaults
+// ------------------------------------------------------------
+impl Default for UIState {
     fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl RenderStats {
-    /// Calculate average render time
-    pub fn average_render_time(&self) -> std::time::Duration {
-        if self.frames_rendered > 0 {
-            self.total_render_time / self.frames_rendered as u32
-        } else {
-            std::time::Duration::ZERO
-        }
-    }
-
-    /// Calculate frames per second based on total render time
-    pub fn estimated_fps(&self) -> f64 {
-        let avg_frame_time = self.average_render_time();
-        if avg_frame_time.as_secs_f64() > 0.0 {
-            1.0 / avg_frame_time.as_secs_f64()
-        } else {
-            0.0
-        }
-    }
-
-    /// Get percentage of slow renders
-    pub fn slow_render_percentage(&self) -> f64 {
-        if self.frames_rendered > 0 {
-            (self.slow_renders as f64 / self.frames_rendered as f64) * 100.0
-        } else {
-            0.0
-        }
-    }
-
-    /// Get frame skip ratio
-    pub fn skip_ratio(&self) -> f64 {
-        let total_attempts = self.frames_rendered + self.frames_skipped;
-        if total_attempts > 0 {
-            self.frames_skipped as f64 / total_attempts as f64
-        } else {
-            0.0
+        Self {
+            redraw_flags: AtomicU32::new(RedrawFlag::All.bits() as u32),
+            frame_count: AtomicU64::new(0),
+            mode: UIMode::Browse,
+            overlay: UIOverlay::None,
+            input_prompt_type: None,
+            prompt_buffer: CompactString::new(""),
+            prompt_cursor: 0,
+            command_history: SmallVec::new(),
+            history_index: None,
+            search_mode: SearchMode::None,
+            search_query: None,
+            notification: None,
+            loading: None,
+            last_update: Instant::now(),
+            clipboard: ClipBoard::new(ClipBoardConfig::default()),
+            clipboard_overlay_active: false,
+            selected_clipboard_item_idx: 0,
         }
     }
 }
 
-// Remove placeholder implementations as we're using actual components
+// ------------------------------------------------------------
+// Redraw helpers – all lock-free
+// ------------------------------------------------------------
+impl UIState {
+    #[inline]
+    pub fn request_redraw(&self, flag: RedrawFlag) {
+        self.redraw_flags
+            .fetch_or(flag.bits() as u32, Ordering::Relaxed);
+    }
 
+    #[inline]
+    pub fn needs_redraw(&self) -> bool {
+        self.redraw_flags.load(Ordering::Relaxed) != 0
+    }
+
+    #[inline]
+    pub fn clear_redraw(&self) {
+        self.redraw_flags.store(0, Ordering::Relaxed);
+    }
+
+    #[inline]
+    pub fn inc_frame(&self) {
+        self.frame_count.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+// ------------------------------------------------------------
+// Prompt / command input helpers
+// ------------------------------------------------------------
+impl UIState {
+    #[inline]
+    pub fn prompt_set(&mut self, txt: impl Into<CompactString>) {
+        self.prompt_buffer = txt.into();
+        self.prompt_cursor = self.prompt_buffer.len();
+    }
+
+    #[inline]
+    pub fn prompt_insert(&mut self, ch: char) {
+        let mut s = self.prompt_buffer.to_string();
+        s.insert(self.prompt_cursor, ch);
+        self.prompt_buffer = s.into();
+        self.prompt_cursor += ch.len_utf8();
+    }
+
+    #[inline]
+    pub fn prompt_backspace(&mut self) -> bool {
+        if self.prompt_cursor == 0 {
+            return false;
+        }
+        let mut s = self.prompt_buffer.to_string();
+        let idx = s
+            .char_indices()
+            .rev()
+            .find(|&(i, _)| i < self.prompt_cursor)
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+        s.remove(idx);
+        self.prompt_buffer = s.into();
+        self.prompt_cursor = idx;
+        true
+    }
+
+    #[inline]
+    pub fn history_push(&mut self, entry: impl Into<CompactString>) {
+        self.command_history.push(entry.into());
+        self.history_index = None;
+    }
+}
+
+// ------------------------------------------------------------
+// Notification helpers
+// ------------------------------------------------------------
+impl UIState {
+    pub fn notify(
+        &mut self,
+        msg: impl Into<CompactString>,
+        lvl: NotificationLevel,
+        ms: Option<u32>,
+    ) {
+        self.notification = Some(Notification {
+            message: msg.into(),
+            level: lvl,
+            timestamp: Instant::now(),
+            auto_dismiss_ms: ms,
+        });
+        self.request_redraw(RedrawFlag::Notification);
+    }
+
+    #[inline]
+    pub fn info(&mut self, msg: impl Into<CompactString>) {
+        self.notify(msg, NotificationLevel::Info, Some(3000));
+    }
+    #[inline]
+    pub fn success(&mut self, msg: impl Into<CompactString>) {
+        self.notify(msg, NotificationLevel::Success, Some(2000));
+    }
+    #[inline]
+    pub fn warn(&mut self, msg: impl Into<CompactString>) {
+        self.notify(msg, NotificationLevel::Warning, Some(5000));
+    }
+    #[inline]
+    pub fn error(&mut self, msg: impl Into<CompactString>) {
+        self.notify(msg, NotificationLevel::Error, None);
+    }
+
+    /// Returns `true` if a notification was auto-cleared
+    pub fn poll_notification(&mut self) -> bool {
+        match &self.notification {
+            Some(n)
+                if n.auto_dismiss_ms.is_some()
+                    && n.timestamp.elapsed().as_millis() > n.auto_dismiss_ms.unwrap() as u128 =>
+            {
+                self.notification = None;
+                self.request_redraw(RedrawFlag::Notification);
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
+// ------------------------------------------------------------
+// Clipboard overlay helpers
+// ------------------------------------------------------------
+impl UIState {
+    #[inline]
+    pub fn toggle_clipboard_overlay(&mut self) {
+        self.clipboard_overlay_active = !self.clipboard_overlay_active;
+        self.selected_clipboard_item_idx = 0;
+        self.request_redraw(RedrawFlag::Overlay);
+    }
+
+    #[inline]
+    pub fn clipboard_down(&mut self) {
+        self.selected_clipboard_item_idx = self.selected_clipboard_item_idx.saturating_add(1);
+        self.request_redraw(RedrawFlag::Overlay);
+    }
+
+    #[inline]
+    pub fn clipboard_up(&mut self) {
+        if self.selected_clipboard_item_idx > 0 {
+            self.selected_clipboard_item_idx -= 1;
+            self.request_redraw(RedrawFlag::Overlay);
+        }
+    }
+
+    pub async fn copy_path(&mut self, path: std::path::PathBuf) -> Result<u64, AppError> {
+        self.clipboard
+            .add_copy(path.clone())
+            .await
+            .map_err(|e| AppError::file_operation_failed("copy_to_clipboard", path, e.to_string()))
+    }
+
+    pub async fn cut_path(&mut self, path: std::path::PathBuf) -> Result<u64, AppError> {
+        self.clipboard
+            .add_move(path.clone())
+            .await
+            .map_err(|e| AppError::file_operation_failed("cut_to_clipboard", path, e.to_string()))
+    }
+
+    pub async fn items(&self) -> Vec<ClipBoardItem> {
+        self.clipboard.get_all_items().await
+    }
+
+    pub async fn clear_clipboard(&mut self) {
+        self.clipboard.clear().await;
+        self.clipboard_overlay_active = false;
+        self.selected_clipboard_item_idx = 0;
+        self.request_redraw(RedrawFlag::All);
+    }
+}
+
+// ------------------------------------------------------------
+// Simple FPS metric (UI only – not thread-safe)
+// ------------------------------------------------------------
+impl UIState {
+    pub fn fps(&self) -> f64 {
+        let secs = self.last_update.elapsed().as_secs_f64();
+        if secs > 0.0 {
+            self.frame_count.load(Ordering::Relaxed) as f64 / secs
+        } else {
+            0.0
+        }
+    }
+}
+
+// ------------------------------------------------------------
+// Cheap Clone – atomics copied by value
+// ------------------------------------------------------------
+impl Clone for UIState {
+    fn clone(&self) -> Self {
+        Self {
+            redraw_flags: AtomicU32::new(self.redraw_flags.load(Ordering::Relaxed)),
+            frame_count: AtomicU64::new(self.frame_count.load(Ordering::Relaxed)),
+            mode: self.mode,
+            overlay: self.overlay,
+            input_prompt_type: self.input_prompt_type.clone(),
+            prompt_buffer: self.prompt_buffer.clone(),
+            prompt_cursor: self.prompt_cursor,
+            command_history: self.command_history.clone(),
+            history_index: self.history_index,
+            search_mode: self.search_mode,
+            search_query: self.search_query.clone(),
+            notification: self.notification.clone(),
+            loading: self.loading.clone(),
+            last_update: self.last_update,
+            clipboard: ClipBoard::new(ClipBoardConfig::default()),
+            clipboard_overlay_active: self.clipboard_overlay_active,
+            selected_clipboard_item_idx: self.selected_clipboard_item_idx,
+        }
+    }
+}
+
+// ------------------------------------------------------------
+// Equality – only cheap fields
+// ------------------------------------------------------------
+impl PartialEq for UIState {
+    fn eq(&self, other: &Self) -> bool {
+        self.mode == other.mode
+            && self.overlay == other.overlay
+            && self.clipboard_overlay_active == other.clipboard_overlay_active
+            && self.prompt_buffer == other.prompt_buffer
+    }
+}
+
+// ------------------------------------------------------------
+// Unit tests (compile & behaviour smoke tests)
+// ------------------------------------------------------------
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{app_state::AppState, fs_state::FSState};
-    use std::sync::{Mutex, RwLock};
 
-    fn create_test_state_coordinator() -> Arc<StateCoordinator> {
-        let app_state = Arc::new(Mutex::new(AppState::default()));
-        let ui_state = RwLock::new(UIState::default());
-        let fs_state = Arc::new(Mutex::new(FSState::default()));
-
-        Arc::new(StateCoordinator::new(app_state, ui_state, fs_state))
+    #[test]
+    fn clipboard_toggle() {
+        let mut st = UIState::default();
+        assert!(!st.clipboard_overlay_active);
+        st.toggle_clipboard_overlay();
+        assert!(st.clipboard_overlay_active);
     }
 
     #[test]
-    fn test_layout_calculation() {
-        let renderer = UIRenderer::new();
-        let area = Rect::new(0, 0, 100, 50);
-        let layout = renderer.calculate_main_layout(area);
-
-        assert_eq!(layout.len(), 2);
-        assert!(layout[0].height > layout[1].height); // Content area should be larger than status
-        assert_eq!(layout[1].height, 1); // Status bar should be 1 line
+    fn prompt_edit() {
+        let mut st = UIState::default();
+        st.prompt_set("abc");
+        st.prompt_insert('d');
+        assert_eq!(st.prompt_buffer.as_str(), "abcd");
+        assert!(st.prompt_backspace());
+        assert_eq!(st.prompt_buffer.as_str(), "abc");
     }
 
     #[test]
-    fn test_overlay_area_calculation() {
-        let renderer = UIRenderer::new();
-        let screen = Rect::new(0, 0, 100, 50);
-
-        let help_area = renderer.calculate_centered_overlay(screen, 80, 80);
-        assert!(help_area.width <= screen.width);
-        assert!(help_area.height <= screen.height);
-
-        let search_area = renderer.calculate_search_overlay_area(screen);
-        assert_eq!(search_area.height, 5);
-    }
-
-    #[test]
-    fn test_cache_hit_tracking() {
-        let mut renderer = UIRenderer::new();
-        let screen = Rect::new(0, 0, 100, 50);
-
-        // First access should be a cache miss
-        renderer.update_layout_cache(screen);
-
-        // Second access should be a cache hit
-        renderer.update_layout_cache(screen);
-
-        let (hits, misses, _) = renderer.get_cache_stats();
-        assert!(hits > 0);
-        assert!(misses > 0);
-    }
-
-    #[test]
-    fn test_performance_tracking() {
-        let mut renderer = UIRenderer::new();
-        let start = Instant::now();
-
-        // Simulate a slow render
-        std::thread::sleep(std::time::Duration::from_millis(20));
-        renderer.update_performance_metrics(start);
-
-        let stats = renderer.get_render_stats();
-        assert!(stats.slow_renders > 0);
-        assert!(stats.total_render_time.as_millis() >= 20);
+    fn redraw_bits() {
+        let st = UIState::default();
+        st.request_redraw(RedrawFlag::Main);
+        assert!(st.needs_redraw());
+        st.clear_redraw();
+        assert!(!st.needs_redraw());
     }
 }

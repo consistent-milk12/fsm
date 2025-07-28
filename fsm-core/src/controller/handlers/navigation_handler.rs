@@ -72,8 +72,11 @@ impl NavigationHandler {
         // Direct lookup
         if let Some(action) = self.bindings.get(&key_event).cloned() {
             debug!("NavigationHandler: matched key to action {action:?}");
-            Ok(vec![action])
+            let result = vec![action];
+            debug!("NavigationHandler: returning {} actions", result.len());
+            Ok(result)
         } else {
+            debug!("NavigationHandler: no match, returning empty");
             Ok(vec![])
         }
     }

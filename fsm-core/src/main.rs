@@ -42,10 +42,14 @@ use fsm_core::{
         action_dispatcher::ModularActionDispatcher,
         actions::Action,
         event_loop::{EventLoop, TaskResult},
-        event_processor::{Event, EventProcessor, EventSenders, terminal_event_to_event},
+        event_processor::{EventProcessor, EventSenders, terminal_event_to_event},
         handler_registry::HandlerRegistry,
+        handlers::{
+            clipboard_handler::ClipboardHandler, file_ops_handler::FileOpsHandler,
+            keyboard_handler::KeyboardHandler, navigation_handler::NavigationHandler,
+            search_handler::SearchHandler,
+        },
         state_coordinator::StateCoordinator,
-        state_provider::StateProvider,
     },
     fs::object_info::ObjectInfo,
     model::{
@@ -174,12 +178,22 @@ impl App {
         let event_processor: EventProcessor = EventProcessor::new();
         let event_senders: EventSenders = event_processor.senders();
 
+        // Register handlers with EventProcessor
+        event_processor.register_handler(Box::new(NavigationHandler::new()));
+        event_processor.register_handler(Box::new(KeyboardHandler::new()));
+        event_processor.register_handler(Box::new(ClipboardHandler::new()));
+        event_processor.register_handler(Box::new(SearchHandler::new()));
+        event_processor.register_handler(Box::new(FileOpsHandler::new()));
+
+        info!("Registered 5 handlers with EventProcessor");
+
         // Create ModularActionDispatcher
         let action_dispatcher: ModularActionDispatcher =
             ModularActionDispatcher::new(state_coordinator.clone(), task_tx.clone());
 
         // Create HandlerRegistry with StateProvider integration
-        let handler_registry: HandlerRegistry = HandlerRegistry::with_state_provider(state_coordinator.clone());
+        let handler_registry: HandlerRegistry =
+            HandlerRegistry::with_state_provider(state_coordinator.clone());
 
         // Create EventLoop
         let event_loop: EventLoop = EventLoop::new(task_rx, action_rx, state_coordinator.clone());
@@ -327,31 +341,42 @@ impl App {
                     break;
                 }
 
-                // Terminal input events
                 maybe_event = event_stream.next() => {
-                    if let Some(Ok(terminal_event)) = maybe_event {
-                        if let Some(processed_event) = terminal_event_to_event(terminal_event) {
-                            // Submit to EventProcessor for prioritized handling
-                            if let Err(dropped_event) = self.event_processor.submit(processed_event) {
-                                warn!("Event queue full, dropped event: {:?}", dropped_event);
-                            }
-                        }
-                    }
+                   debug!("Raw terminal event received: {:?}", maybe_event); // Add this
+                   if let Some(Ok(terminal_event)) = maybe_event {
+                       debug!("Processing terminal event: {:?}", terminal_event); // Add this
+                       if let Some(processed_event) = terminal_event_to_event(terminal_event) {
+                           debug!("Converted to event: {:?}", processed_event); // Add this
+                           if let Err(dropped_event) = self.event_processor.submit(processed_event) {
+                               warn!("Event queue full, dropped event: {:?}", dropped_event);
+                           } else {
+                               debug!("Event submitted successfully"); // Add this
+                           }
+                       } else {
+                           debug!("terminal_event_to_event returned None"); // Add this
+                       }
+                   }
                 }
 
                 // Process events from EventProcessor
                 actions = self.event_processor.process_batch() => {
+                    debug!("  High: {}", self.event_processor.high_rx.len());
+                    debug!("  Critical: {}", self.event_processor.critical_rx.len());
+                    debug!("  Normal: {}", self.event_processor.normal_rx.len());
                     if let Some(actions) = actions {
+                        debug!("EventProcessor generated {} actions: {:?}", actions.len(), actions);
                         for action in actions {
+                            debug!("About to dispatch action: {:?}", action);
                             if matches!(action, Action::Quit) {
                                 info!("Quit action from event processor");
                                 break;
                             }
                             if !self.dispatch_action(action).await? {
-                                info!("Termination from event processor action");
                                 break;
                             }
                         }
+                    } else {
+                        debug!("EventProcessor returned None - no actions generated");
                     }
                 }
 

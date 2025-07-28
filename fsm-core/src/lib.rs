@@ -46,8 +46,7 @@ pub mod model {
 
     pub mod ui_state;
     pub use ui_state::{
-        FileOperationProgress, LoadingState, Notification, NotificationLevel, RedrawFlag, UIMode,
-        UIOverlay, UIState,
+        LoadingState, Notification, NotificationLevel, RedrawFlag, UIMode, UIOverlay, UIState,
     };
 }
 
@@ -59,6 +58,9 @@ pub mod view {
     pub mod traits;
 
     pub mod ui;
+
+    pub mod snapshots;
+    pub use snapshots::*;
 
     pub mod components {
         pub mod clipboard_overlay;

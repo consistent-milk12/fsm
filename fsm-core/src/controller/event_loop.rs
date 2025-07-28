@@ -2,25 +2,19 @@
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use tokio::sync::mpsc::UnboundedReceiver;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
-use crate::FSState;
 use crate::controller::actions::{Action, OperationId};
 use crate::controller::state_coordinator::StateCoordinator;
-use crate::controller::state_provider::StateProvider;
 use crate::error::AppError;
+
 use crate::fs::object_info::ObjectInfo;
-use crate::model::PaneState;
-use crate::model::{
-    RedrawFlag,
-    app_state::{AppState, TaskType},
-    ui_state::UIState,
-};
+use crate::model::{RedrawFlag, ui_state::UIState};
 
 /// Enhanced task result with operation tracking
 #[derive(Debug, Clone)]
@@ -341,7 +335,7 @@ impl EventLoop {
 
                 // Update app state operation tracking
                 {
-                    let mut app_state = self.state_coordinator.app_state();
+                    let app_state = self.state_coordinator.app_state();
 
                     if let Some(task_id) = app_state
                         .operation_tasks
@@ -479,9 +473,7 @@ impl EventLoop {
         total: u64,
         message: Option<String>,
     ) -> Result<Vec<Action>> {
-        debug!(
-            "Progress update for task {task_id}: {current}/{total}",
-        );
+        debug!("Progress update for task {task_id}: {current}/{total}",);
 
         let mut moved: Option<String> = None;
 
@@ -500,12 +492,8 @@ impl EventLoop {
             }));
 
         // Update task progress via StateProvider
-        self.state_coordinator.update_task_progress(
-            task_id.to_string(),
-            current,
-            total,
-            message,
-        );
+        self.state_coordinator
+            .update_task_progress(task_id.to_string(), current, total, message);
 
         Ok(vec![])
     }

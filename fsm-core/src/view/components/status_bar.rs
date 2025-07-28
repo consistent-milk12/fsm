@@ -1,23 +1,17 @@
-//! src/view/components/status_bar.rs - Updated status bar for unified StateCoordinator
-//!
-//! The status bar displays the current mode, path, number of marked items and
-//! basic performance metrics.  In the new architecture the old
-//! `StateCoordinator::get_performance_stats()` and `current_directory()` methods
-//! have been removed.  This rewrite acquires the necessary information
-//! directly from the `AppState` and `FSState` via the [`StateCoordinator`].
-//! Performance statistics are derived from the handler registry and task list.
+//! src/view/components/status_bar.rs
+//! ============================================================
+//! Lock-free status bar that pulls just a few scalar values from
+//! the coordinator on demand (two quick Mutex guards).  All other
+//! data is supplied by the `UiSnapshot` captured by the renderer.
+
+use ratatui::{prelude::*, widgets::Paragraph};
 
 use crate::{
-    controller::state_coordinator::StateCoordinator,
-    model::ui_state::{UIMode, UIState},
-    view::theme,
-};
-use ratatui::{
-    prelude::*,
-    widgets::{Paragraph, Widget},
+    controller::state_coordinator::StateCoordinator, model::ui_state::UIMode,
+    view::snapshots::UiSnapshot, view::theme,
 };
 
-/// Optimized status bar renderer
+/// One-line status bar shown at the bottom of the screen.
 pub struct OptimizedStatusBar;
 
 impl OptimizedStatusBar {
@@ -25,67 +19,102 @@ impl OptimizedStatusBar {
         Self
     }
 
-    /// Render the status bar with updated metrics.
+    /// Render the bar.
+    ///
+    /// * `ui`    – immutable snapshot of UIState
+    /// * `coord` – coordinator for small pieces of global state
+    /// * `rect`  – bar rectangle (height == 1 in the renderer)
     pub fn render_with_metrics(
         &self,
         frame: &mut Frame<'_>,
-        ui_state: &UIState,
-        state_coordinator: &StateCoordinator,
-        area: Rect,
+        ui: &UiSnapshot,
+        coord: &StateCoordinator,
+        rect: Rect,
     ) {
-        // Determine mode string
-        let mode_str = match ui_state.mode {
-            UIMode::Browse => "Browse",
-            UIMode::Visual => "Visual",
-            UIMode::Search => "Search",
-            UIMode::Command => "Command",
+        // -----------------------------------------------------
+        // 1) Gather a few live figures (short lock scope)
+        // -----------------------------------------------------
+        let (cwd, marked) = {
+            let fs = coord.fs_state();
+            let pane = fs.active_pane();
+            (pane.cwd.clone(), pane.marked_entries.len())
         };
 
-        // Acquire current path from the active pane in FSState
-        let current_path = {
-            let fs_state = state_coordinator.fs_state();
-
-            fs_state.active_pane().cwd.clone()
-        };
-        let path_display = current_path.to_string_lossy();
-
-        let left_text = format!(
-            "{} | {} | Marked: {}",
-            mode_str,
-            path_display,
-            ui_state.marked_indices.len()
-        );
-
-        // Compute simple performance metrics
-        let active_tasks = {
-            // Count active tasks in AppState
-            let app_state = state_coordinator.app_state();
-            app_state.tasks.len()
+        let task_count = {
+            let app = coord.app_state();
+            app.tasks.len()
         };
 
-        // Handler performance metrics removed due to circular dependency fix
-        let right_text = format!("Tasks: {active_tasks} | Handlers: N/A | Performance: N/A");
+        // -----------------------------------------------------
+        // 2) Compose left / right strings
+        // -----------------------------------------------------
+        let mode_str = match ui.overlay {
+            _ if ui.clipboard_active => "Clipboard",
+            _ if ui.overlay.is_search_mode() => "Search",
+            _ => match ui.search_mode {
+                _ if ui.search_mode != crate::model::fs_state::SearchMode::None => "Search",
+                _ => match &ui.prompt_type {
+                    Some(_) => "Command",
+                    None => match ui.mode {
+                        UIMode::Browse => "Browse",
+                        UIMode::Search => "Search",
+                        UIMode::Command => "Command",
+                        UIMode::Visual => "Visual",
+                    },
+                },
+            },
+        };
 
-        // Split area into left and right halves
-        let layout = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-            .split(area);
+        // truncate path if the bar is narrow ------------------
+        let mut path = cwd.to_string_lossy().to_string();
+        let max_path = rect.width.saturating_sub(40) as usize; // leave space
+        if path.len() > max_path {
+            if let Some(tail) = path.get(path.len() - max_path + 3..) {
+                path = format!("…{}", tail);
+            }
+        }
 
-        Paragraph::new(left_text)
+        let left = format!("{mode_str} | {path} | Marked: {marked}");
+        let right = format!("Tasks: {task_count}");
+
+        // -----------------------------------------------------
+        // 3) Split area 50 / 50 and paint
+        // -----------------------------------------------------
+        let [l, r] = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .areas(rect);
+
+        Paragraph::new(left)
             .style(Style::default().fg(theme::FOREGROUND).bg(theme::BACKGROUND))
             .alignment(Alignment::Left)
-            .render(layout[0], frame.buffer_mut());
+            .render(l, frame.buffer_mut());
 
-        Paragraph::new(right_text)
+        Paragraph::new(right)
             .style(Style::default().fg(theme::FOREGROUND).bg(theme::BACKGROUND))
             .alignment(Alignment::Right)
-            .render(layout[1], frame.buffer_mut());
+            .render(r, frame.buffer_mut());
     }
 }
 
 impl Default for OptimizedStatusBar {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// ------------------------------------------------------------------
+// Helper: quick predicate on UIOverlay so we don't match manually
+// ------------------------------------------------------------------
+trait OverlayExt {
+    fn is_search_mode(self) -> bool;
+}
+
+impl OverlayExt for crate::model::ui_state::UIOverlay {
+    fn is_search_mode(self) -> bool {
+        matches!(
+            self,
+            crate::model::ui_state::UIOverlay::Search
+                | crate::model::ui_state::UIOverlay::FileNameSearch
+                | crate::model::ui_state::UIOverlay::ContentSearch
+        )
     }
 }

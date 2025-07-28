@@ -199,10 +199,22 @@ mod tests {
         }
 
         fn request_redraw(&self, _flag: RedrawFlag) {}
+
         fn needs_redraw(&self) -> bool {
             false
         }
+
         fn clear_redraw(&self) {}
+
+        fn update_task_progress(
+            &self,
+            task_id: String,
+            current: u64,
+            total: u64,
+            message: Option<String>,
+        ) {
+            todo!()
+        }
     }
 
     fn create_test_dispatcher() -> NavigationDispatcher {

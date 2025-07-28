@@ -20,6 +20,7 @@
 //! and [`enum_map`](https://docs.rs/enum-map) for efficient mapping
 //! from `Priority` values to counters:contentReference[oaicite:3]{index=3}.
 
+use crate::AppError;
 use crate::controller::actions::Action;
 use crate::controller::event_loop::TaskResult;
 use arc_swap::ArcSwap;
@@ -65,7 +66,10 @@ pub enum Event {
     Task { result: Box<TaskResult> },
 
     /// Direct action injection.
-    Action { action: Box<Action>, priority: Priority },
+    Action {
+        action: Box<Action>,
+        priority: Priority,
+    },
 
     /// Periodic tick for UI updates.
     Tick,
@@ -130,16 +134,16 @@ struct HandlerEntry {
 /// Event processor using Kanal channels.
 pub struct EventProcessor {
     /// Critical priority channel (ESC, Quit)
-    critical_rx: AsyncReceiver<Event>,
-    critical_tx: AsyncSender<Event>,
+    pub critical_rx: AsyncReceiver<Event>,
+    pub critical_tx: AsyncSender<Event>,
 
     /// High priority channel (user input)
-    high_rx: AsyncReceiver<Event>,
-    high_tx: AsyncSender<Event>,
+    pub high_rx: AsyncReceiver<Event>,
+    pub high_tx: AsyncSender<Event>,
 
     /// Normal priority channel (background tasks)
-    normal_rx: AsyncReceiver<Event>,
-    normal_tx: AsyncSender<Event>,
+    pub normal_rx: AsyncReceiver<Event>,
+    pub normal_tx: AsyncSender<Event>,
 
     /// Registered handlers.  Instead of storing a nested
     /// `Vec<Arc<Mutex<Box<dyn EventHandler>>>>`, which required
@@ -150,13 +154,13 @@ pub struct EventProcessor {
     /// cloning each `HandlerEntry`) and push a new entry; the
     /// [`ArcSwap`] then atomically updates the pointer to the new
     /// vector, giving readers a lock‑free snapshot:contentReference[oaicite:4]{index=4}.
-    handlers: ArcSwap<Vec<HandlerEntry>>,
+    pub handlers: ArcSwap<Vec<HandlerEntry>>,
 
     /// Performance metrics.
-    metrics: EventMetrics,
+    pub metrics: EventMetrics,
 
     /// Event processing configuration.
-    config: ProcessorConfig,
+    pub config: ProcessorConfig,
 }
 
 /// Performance metrics with lock‑free counters.
@@ -345,29 +349,38 @@ impl EventProcessor {
     /// Process a batch of events up to `batch_size`.  Returns a vector of
     /// actions to be executed or `None` if no actions were produced.
     pub async fn process_batch(&self) -> Option<Vec<Action>> {
-        let start = Instant::now();
         let mut actions = Vec::new();
-        let mut events_processed = 0usize;
+        let mut events_processed = 0;
 
+        // Process at least one event if available, up to batch_size
         for _ in 0..self.config.batch_size {
             match self.recv_next_event().await {
                 Some(event) => {
                     events_processed += 1;
                     match self.process_event(event) {
-                        Ok(mut event_actions) => actions.append(&mut event_actions),
-
+                        Ok(mut event_actions) => {
+                            debug!("process_event returned {} actions", event_actions.len());
+                            actions.append(&mut event_actions);
+                        }
                         Err(e) => warn!("Error processing event: {}", e),
                     }
                 }
-
-                None => break,
+                None => {
+                    // Only break if we haven't processed any events yet
+                    if events_processed == 0 {
+                        return None;
+                    } else {
+                        break;
+                    }
+                }
             }
         }
 
-        if events_processed > 0 {
-            self.update_metrics(events_processed, start.elapsed());
-            self.update_queue_depths();
-        }
+        debug!(
+            "process_batch: collected {} actions from {} events",
+            actions.len(),
+            events_processed
+        );
 
         if actions.is_empty() {
             None
@@ -382,72 +395,85 @@ impl EventProcessor {
     /// `tokio::select!`.  Returns `None` when all receivers are
     /// disconnected.
     async fn recv_next_event(&self) -> Option<Event> {
-        // Try critical
+        // Try critical first
         match self.critical_rx.try_recv() {
             Ok(Some(event)) => {
+                debug!("recv_next_event: got critical event");
                 self.metrics.priority_counts[Priority::Critical].fetch_add(1, Ordering::Relaxed);
                 return Some(event);
             }
-
-            Ok(None) => {}
-
-            Err(_e) => return None,
+            Ok(None) => debug!("recv_next_event: no critical events"),
+            Err(_e) => {
+                debug!("recv_next_event: critical channel closed");
+                return None;
+            }
         }
 
-        // Try high
+        // Try high priority
         match self.high_rx.try_recv() {
             Ok(Some(event)) => {
+                debug!("recv_next_event: got high priority event");
                 self.metrics.priority_counts[Priority::High].fetch_add(1, Ordering::Relaxed);
-
                 return Some(event);
             }
 
-            Ok(None) => {}
+            Ok(None) => debug!("recv_next_event: no high priority events"),
 
-            Err(_e) => return None,
+            Err(_e) => {
+                debug!("recv_next_event: high priority channel closed");
+                return None;
+            }
         }
-        // Try normal
+
+        // Try normal priority
         match self.normal_rx.try_recv() {
             Ok(Some(event)) => {
+                debug!("recv_next_event: got normal priority event");
                 self.metrics.priority_counts[Priority::Normal].fetch_add(1, Ordering::Relaxed);
-
                 return Some(event);
             }
 
-            Ok(None) => {}
+            Ok(None) => debug!("recv_next_event: no normal priority events"),
 
-            Err(_e) => return None,
+            Err(_e) => {
+                debug!("recv_next_event: normal channel closed");
+                return None;
+            }
         }
+
+        debug!("recv_next_event: no events available, awaiting...");
 
         // Await whichever arrives first
         select! {
             recv_crit = self.critical_rx.recv() => {
                 match recv_crit {
                     Ok(event) => {
+                        debug!("recv_next_event: awaited critical event");
                         self.metrics.priority_counts[Priority::Critical].fetch_add(1, Ordering::Relaxed);
-
                         Some(event)
                     }
 
                     Err(_e) => None,
                 }
             }
+
             recv_high = self.high_rx.recv() => {
                 match recv_high {
                     Ok(event) => {
+                        debug!("recv_next_event: awaited high priority event");
                         self.metrics.priority_counts[Priority::High].fetch_add(1, Ordering::Relaxed);
-
                         Some(event)
                     }
 
                     Err(_e) => None,
                 }
             }
+
             recv_norm = self.normal_rx.recv() => {
                 match recv_norm {
                     Ok(event) => {
+                        debug!("recv_next_event: awaited normal priority event");
                         self.metrics.priority_counts[Priority::Normal].fetch_add(1, Ordering::Relaxed);
-
                         Some(event)
                     }
 
@@ -458,7 +484,7 @@ impl EventProcessor {
     }
 
     /// Process a single event through the handler chain.
-    fn process_event(&self, event: Event) -> Result<Vec<Action>, crate::error::AppError> {
+    fn process_event(&self, event: Event) -> Result<Vec<Action>, AppError> {
         trace!("Processing event: {:?}", event);
         // Load the current handler list atomically.  This returns an
         // `Arc<Vec<HandlerEntry>>`; dereferencing provides a slice of
@@ -473,7 +499,13 @@ impl EventProcessor {
 
             if guard.can_handle(&event) {
                 debug!("Handler {} processing event", entry.name);
-                return guard.handle(event);
+                let result: Result<Vec<Action>, AppError> = guard.handle(event);
+                debug!(
+                    "Handler {} returned: {:?}",
+                    entry.name,
+                    result.as_ref().map(|v| v.len()).unwrap_or(0)
+                );
+                return result;
             }
         }
 
@@ -511,7 +543,9 @@ impl EventProcessor {
     fn update_queue_depths(&self) {
         self.metrics.queue_depths[Priority::Critical]
             .store(self.critical_rx.len(), Ordering::Relaxed);
+
         self.metrics.queue_depths[Priority::High].store(self.high_rx.len(), Ordering::Relaxed);
+
         self.metrics.queue_depths[Priority::Normal].store(self.normal_rx.len(), Ordering::Relaxed);
         // Low remains zero
     }

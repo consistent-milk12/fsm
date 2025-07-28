@@ -111,6 +111,7 @@ kanal = "0.1.1"
 nanoid = "0.4.0"
 async-trait = "0.1.88"
 regex = "1.11.1"
+futures-lite = "2.6.0"
 
 [[bin]]
 name = "fs"

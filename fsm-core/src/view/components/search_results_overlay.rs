@@ -1,11 +1,18 @@
 //! src/view/components/search_results_overlay.rs
-use crate::model::ui_state::UIState;
+//! ============================================================
+//! Pure, lock-free overlay that shows the final list of matches
+//! after a content / filename search.  The caller passes an
+//! immutable results slice plus the row index that should be
+//! highlighted.
+
+use crate::fs::object_info::ObjectInfo;
 use crate::view::theme;
 use ratatui::{
     prelude::*,
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
 };
 
+/// Results pane (no internal state)
 pub struct OptimizedSearchResultsOverlay;
 
 impl OptimizedSearchResultsOverlay {
@@ -13,34 +20,58 @@ impl OptimizedSearchResultsOverlay {
         Self
     }
 
-    pub fn render_results(&self, frame: &mut Frame<'_>, ui_state: &UIState, area: Rect) {
-        let results = &ui_state.search_results;
-        let block = Block::default()
-            .title("Search Results")
+    /// Paint the results list.
+    ///
+    /// * `results`  – slice of hits (pre-sorted by the caller)  
+    /// * `selected` – optional highlight index  
+    /// * `rect`     – target rectangle
+    pub fn render_results(
+        &self,
+        frame: &mut Frame<'_>,
+        results: &[ObjectInfo],
+        selected: Option<usize>,
+        rect: Rect,
+    ) {
+        // -----------------------------------------------------
+        // Chrome
+        // -----------------------------------------------------
+        let chrome = Block::default()
+            .title(" Search Results ")
             .borders(Borders::ALL)
             .border_style(Style::default().fg(theme::PURPLE))
             .style(Style::default().bg(theme::BACKGROUND));
 
-        frame.render_widget(Clear, area);
+        // clear background first
+        frame.render_widget(Clear, rect);
 
+        // -----------------------------------------------------
+        // Empty results
+        // -----------------------------------------------------
         if results.is_empty() {
-            let message = Paragraph::new("No results found.")
-                .block(block)
-                .alignment(Alignment::Center);
-            frame.render_widget(message, area);
+            frame.render_widget(
+                Paragraph::new("No results found.")
+                    .block(chrome)
+                    .alignment(Alignment::Center),
+                rect,
+            );
             return;
         }
 
-        let items: Vec<ListItem> = results
+        // -----------------------------------------------------
+        // Build list items
+        // -----------------------------------------------------
+        let items: Vec<ListItem<'_>> = results
             .iter()
-            .map(|obj| ListItem::new(obj.path.to_string_lossy().into_owned()))
+            .map(|obj| ListItem::new(obj.path.to_string_lossy()))
             .collect();
 
-        let mut list_state = ListState::default();
-        list_state.select(ui_state.selected);
+        // highlight state
+        let mut state = ListState::default();
+        state.select(selected);
 
+        // list widget
         let list = List::new(items)
-            .block(block)
+            .block(chrome)
             .highlight_symbol("▶ ")
             .highlight_style(
                 Style::default()
@@ -49,7 +80,7 @@ impl OptimizedSearchResultsOverlay {
                     .add_modifier(Modifier::BOLD),
             );
 
-        frame.render_stateful_widget(list, area, &mut list_state);
+        frame.render_stateful_widget(list, rect, &mut state);
     }
 }
 

@@ -1,12 +1,21 @@
-//! Enhanced search overlay with live filtering and results preview
-use crate::model::ui_state::{UIOverlay, UIState};
-use crate::view::theme;
+//! src/view/components/search_overlay.rs
+//! ============================================================
+//! Search / filter overlay that is **lock-free**: it consumes a
+//! pre-built `SearchSnapshot` (prepared by the renderer) and draws
+//! the search box plus a small preview list of results.
+
 use ratatui::{
     prelude::*,
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
 };
+use smallvec::SmallVec;
 
+use crate::model::ui_state::UIOverlay;
+use crate::view::snapshots::SearchSnapshot;
+use crate::view::theme; // colour constants
+
+/// Paints a search bar + live results preview.
 pub struct OptimizedSearchOverlay {
     overlay_type: UIOverlay,
 }
@@ -16,104 +25,101 @@ impl OptimizedSearchOverlay {
         Self { overlay_type }
     }
 
-    pub fn render_with_input(&self, frame: &mut Frame<'_>, ui_state: &UIState, area: Rect) {
-        // Clear the area
-        frame.render_widget(Clear, area);
+    // ---------------------------------------------------------
+    // Public API called by the renderer
+    // ---------------------------------------------------------
+    pub fn render_with_input(&self, frame: &mut Frame<'_>, snap: &SearchSnapshot, rect: Rect) {
+        // clear background -----------------------------------
+        frame.render_widget(Clear, rect);
 
+        // title differs per overlay kind ---------------------
         let title = match self.overlay_type {
-            UIOverlay::Search => " Search ",
             UIOverlay::FileNameSearch => " File Name Search ",
             UIOverlay::ContentSearch => " Content Search ",
             _ => " Search ",
         };
 
-        // Create layout: input area + results preview
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(3), // Input field
-                Constraint::Min(0),    // Results preview
-            ])
-            .split(area);
+        // split: input line + results list -------------------
+        let [input_rect, res_rect] =
+            Layout::vertical([Constraint::Length(3), Constraint::Min(0)]).areas(rect);
 
-        // Render input field
-        self.render_input_field(frame, ui_state, chunks[0], title);
+        self.draw_input_field(frame, snap, input_rect, title);
 
-        // Render results preview if there are results
-        if !ui_state.filename_search_results.is_empty() && !ui_state.input.is_empty() {
-            self.render_results_preview(frame, ui_state, chunks[1]);
-        } else if !ui_state.input.is_empty() {
-            self.render_search_help(frame, chunks[1]);
-        }
-    }
-
-    fn render_input_field(
-        &self,
-        frame: &mut Frame<'_>,
-        ui_state: &UIState,
-        area: Rect,
-        title: &str,
-    ) {
-        // Create input text with cursor indicator
-        let mut input_text = ui_state.input.to_string();
-
-        // Add cursor indicator if needed
-        if ui_state.input_cursor <= input_text.len() {
-            if ui_state.input_cursor == input_text.len() {
-                input_text.push('│'); // Cursor at end
-            } else {
-                input_text.insert(ui_state.input_cursor, '│'); // Cursor in middle
+        if res_rect.height >= 3 {
+            if !snap.results.is_empty() && !snap.query.is_empty() {
+                self.draw_results(frame, snap, res_rect);
+            } else if !snap.query.is_empty() {
+                self.draw_help(frame, res_rect);
             }
         }
-
-        let input_block = Block::default()
-            .borders(Borders::ALL)
-            .title(title)
-            .title_alignment(Alignment::Center)
-            .border_style(Style::default().fg(theme::CYAN))
-            .style(Style::default().bg(theme::BACKGROUND));
-
-        let input_paragraph = Paragraph::new(input_text)
-            .block(input_block)
-            .style(Style::default().fg(theme::FOREGROUND));
-
-        frame.render_widget(input_paragraph, area);
     }
 
-    fn render_results_preview(&self, frame: &mut Frame<'_>, ui_state: &UIState, area: Rect) {
-        if area.height < 3 {
-            return; // Not enough space
+    // ---------------------------------------------------------
+    // Input line with blinking cursor
+    // ---------------------------------------------------------
+    fn draw_input_field(
+        &self,
+        frame: &mut Frame<'_>,
+        snap: &SearchSnapshot,
+        rect: Rect,
+        title: &str,
+    ) {
+        let mut buf = snap.query.to_string();
+        let cur = snap.cursor.min(buf.len());
+        if cur == buf.len() {
+            buf.push('│');
+        } else {
+            buf.insert(cur, '│');
         }
 
-        let results_count = ui_state.filename_search_results.len();
-        let title = format!(" {results_count} Results ");
+        frame.render_widget(
+            Paragraph::new(buf)
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(title)
+                        .title_alignment(Alignment::Center)
+                        .border_style(Style::default().fg(theme::CYAN))
+                        .style(Style::default().bg(theme::BACKGROUND)),
+                )
+                .style(Style::default().fg(theme::FOREGROUND)),
+            rect,
+        );
+    }
 
-        // Create list items from search results
-        let items: Vec<ListItem> = ui_state
-            .filename_search_results
+    // ---------------------------------------------------------
+    // Results preview (first ≤10 hits)
+    // ---------------------------------------------------------
+    fn draw_results(&self, frame: &mut Frame<'_>, snap: &SearchSnapshot, rect: Rect) {
+        let total = snap.results.len();
+        let title = format!(" {total} Result(s) ");
+
+        let items: SmallVec<[ListItem; 10]> = snap
+            .results
             .iter()
-            .take(10) // Limit to first 10 results
+            .take(10)
             .enumerate()
             .map(|(i, obj)| {
-                let file_name = obj.name.as_str();
-                let path = obj
+                let fname = obj.name.as_str();
+                let dir = obj
                     .path
                     .parent()
                     .and_then(|p| p.file_name())
                     .map(|n| n.to_string_lossy())
-                    .unwrap_or_else(|| "".into());
+                    .unwrap_or_default();
 
-                let line = if path.is_empty() {
+                // build a single line
+                let line = if dir.is_empty() {
                     Line::from(vec![
                         Span::styled(format!("{:2} ", i + 1), Style::default().fg(theme::COMMENT)),
-                        Span::styled(file_name, Style::default().fg(theme::FOREGROUND)),
+                        Span::styled(fname, Style::default().fg(theme::FOREGROUND)),
                     ])
                 } else {
                     Line::from(vec![
                         Span::styled(format!("{:2} ", i + 1), Style::default().fg(theme::COMMENT)),
-                        Span::styled(file_name, Style::default().fg(theme::FOREGROUND)),
-                        Span::styled(" in ", Style::default().fg(theme::COMMENT)),
-                        Span::styled(path, Style::default().fg(theme::PURPLE)),
+                        Span::styled(fname, Style::default().fg(theme::FOREGROUND)),
+                        Span::raw(" in "),
+                        Span::styled(dir, Style::default().fg(theme::PURPLE)),
                     ])
                 };
 
@@ -121,43 +127,39 @@ impl OptimizedSearchOverlay {
             })
             .collect();
 
-        let results_block = Block::default()
-            .borders(Borders::ALL)
-            .title(title)
-            .title_alignment(Alignment::Center)
-            .border_style(Style::default().fg(theme::PURPLE))
-            .style(Style::default().bg(theme::BACKGROUND));
-
-        let results_list = List::new(items)
-            .block(results_block)
+        let list = List::new(items)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(title)
+                    .title_alignment(Alignment::Center)
+                    .border_style(Style::default().fg(theme::PURPLE))
+                    .style(Style::default().bg(theme::BACKGROUND)),
+            )
             .style(Style::default().fg(theme::FOREGROUND));
 
-        frame.render_widget(results_list, area);
+        frame.render_widget(list, rect);
 
-        // Show "more results" indicator if truncated
-        if results_count > 10 {
-            let more_area = Rect {
-                x: area.x + 2,
-                y: area.y + area.height - 2,
-                width: area.width.saturating_sub(4),
+        // “…and more” footer if truncated --------------------
+        if total > 10 && rect.height >= 2 {
+            let footer = Paragraph::new(format!("… and {} more", total - 10))
+                .style(Style::default().fg(theme::COMMENT));
+            let footer_rect = Rect {
+                x: rect.x + 2,
+                y: rect.y + rect.height - 2,
+                width: rect.width.saturating_sub(4),
                 height: 1,
             };
-
-            let more_text = format!("... and {} more", results_count - 10);
-            let more_paragraph =
-                Paragraph::new(more_text).style(Style::default().fg(theme::COMMENT));
-
-            frame.render_widget(more_paragraph, more_area);
+            frame.render_widget(footer, footer_rect);
         }
     }
 
-    fn render_search_help(&self, frame: &mut Frame<'_>, area: Rect) {
-        if area.height < 3 {
-            return;
-        }
-
-        let help_lines = vec![
-            Line::from("Start typing to search files..."),
+    // ---------------------------------------------------------
+    // Help panel when there is no match yet
+    // ---------------------------------------------------------
+    fn draw_help(&self, frame: &mut Frame<'_>, rect: Rect) {
+        let lines = vec![
+            Line::from("Start typing to search…"),
             Line::from(""),
             Line::from(vec![Span::styled(
                 "Tips:",
@@ -165,23 +167,24 @@ impl OptimizedSearchOverlay {
                     .fg(theme::YELLOW)
                     .add_modifier(Modifier::BOLD),
             )]),
-            Line::from("• Use * for wildcards (*.rs, test*)"),
-            Line::from("• Use / for path separators (src/lib.rs)"),
-            Line::from("• Press Enter to navigate to first result"),
-            Line::from("• Press Esc to cancel search"),
+            Line::from("• Use * wildcards (*.rs, test*)"),
+            Line::from("• Use / for path segments (src/lib.rs)"),
+            Line::from("• Enter → open first result"),
+            Line::from("• Esc → cancel search"),
         ];
 
-        let help_block = Block::default()
-            .borders(Borders::ALL)
-            .title(" Search Help ")
-            .title_alignment(Alignment::Center)
-            .border_style(Style::default().fg(theme::COMMENT))
-            .style(Style::default().bg(theme::BACKGROUND));
-
-        let help_paragraph = Paragraph::new(help_lines)
-            .block(help_block)
-            .style(Style::default().fg(theme::FOREGROUND));
-
-        frame.render_widget(help_paragraph, area);
+        frame.render_widget(
+            Paragraph::new(lines)
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(" Search Help ")
+                        .title_alignment(Alignment::Center)
+                        .border_style(Style::default().fg(theme::COMMENT))
+                        .style(Style::default().bg(theme::BACKGROUND)),
+                )
+                .style(Style::default().fg(theme::FOREGROUND)),
+            rect,
+        );
     }
 }
