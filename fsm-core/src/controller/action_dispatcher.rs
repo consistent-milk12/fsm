@@ -634,7 +634,7 @@ impl ModularActionDispatcher {
     fn show_error(&self, message: &str) {
         let msg = message.to_string();
         self.state_provider.update_ui_state(Box::new(move |ui| {
-            ui.show_error(&msg);
+            ui.error(&msg);
         }));
         self.state_provider.request_redraw(RedrawFlag::StatusBar);
     }

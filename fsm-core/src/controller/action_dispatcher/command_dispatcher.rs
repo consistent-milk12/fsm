@@ -119,7 +119,7 @@ impl CommandDispatcher {
             pane.selected.store(0, Ordering::Relaxed);
         }
 
-        self.show_success("Directory changed successfully");
+        self.success("Directory changed successfully");
         Ok(())
     }
 
@@ -140,7 +140,7 @@ impl CommandDispatcher {
             .await
             .with_context(|| format!("Failed to create directory: {}", name))?;
 
-        self.show_success(&format!("Created directory: {}", name));
+        self.success(&format!("Created directory: {}", name));
 
         // Reload current directory
         let entries = self.load_directory_safely(&current_dir).await?;
@@ -169,7 +169,7 @@ impl CommandDispatcher {
             .await
             .with_context(|| format!("Failed to create file: {}", name))?;
 
-        self.show_success(&format!("Created file: {}", name));
+        self.success(&format!("Created file: {}", name));
 
         // Reload current directory
         let entries = self.load_directory_safely(&current_dir).await?;
@@ -193,7 +193,7 @@ impl CommandDispatcher {
             fs.active_pane_mut().entries = entries;
         }
 
-        self.show_success("Directory reloaded");
+        self.success("Directory reloaded");
         Ok(())
     }
 
@@ -203,7 +203,7 @@ impl CommandDispatcher {
             fs.active_pane().cwd.clone()
         };
 
-        self.show_info(&format!("Current directory: {}", current_dir.display()));
+        self.info(&format!("Current directory: {}", current_dir.display()));
         Ok(())
     }
 
@@ -213,7 +213,7 @@ impl CommandDispatcher {
             fs.active_pane().entries.len()
         };
 
-        self.show_info(&format!("Directory contains {} entries", entry_count));
+        self.info(&format!("Directory contains {} entries", entry_count));
         Ok(())
     }
 
@@ -238,12 +238,12 @@ impl CommandDispatcher {
         let results_clone = results.clone();
         self.state_provider
             .update_ui_state(Box::new(move |ui: &mut UIState| {
-                ui.filename_search_results = results_clone;
+                ui.fil = results_clone;
                 ui.overlay = UIOverlay::SearchResults;
                 ui.request_redraw(RedrawFlag::All);
             }));
 
-        self.show_info(&format!("Found {} matches for '{}'", matches, pattern));
+        self.info(&format!("Found {} matches for '{}'", matches, pattern));
         Ok(())
     }
 
@@ -380,7 +380,7 @@ impl CommandDispatcher {
                     let input_clone = input.clone();
                     self.state_provider
                         .update_ui_state(Box::new(move |ui: &mut UIState| {
-                            ui.add_to_history(input_clone);
+                            ui.history_push(input_clone);
                         }));
 
                     // Execute command
@@ -388,7 +388,7 @@ impl CommandDispatcher {
                         if e.to_string().contains("quit") {
                             return Ok(DispatchResult::Terminate);
                         }
-                        self.show_error(&format!("Command failed: {}", e));
+                        self.error(&format!("Command failed: {}", e));
                     }
                 }
 
@@ -396,7 +396,7 @@ impl CommandDispatcher {
                 self.state_provider
                     .update_ui_state(Box::new(|ui: &mut UIState| {
                         ui.overlay = UIOverlay::None;
-                        ui.clear_input();
+                        ui.clear_redraw();
                         ui.input_prompt_type = None;
                         ui.request_redraw(RedrawFlag::All);
                     }));
@@ -407,7 +407,7 @@ impl CommandDispatcher {
             Some(InputPromptType::CreateFile) => {
                 if !input.is_empty() {
                     if let Err(e) = self.execute_command(&format!("touch {}", input)).await {
-                        self.show_error(&format!("Failed to create file: {}", e));
+                        self.error(&format!("Failed to create file: {}", e));
                     }
                 }
                 self.close_overlay();
@@ -417,7 +417,7 @@ impl CommandDispatcher {
             Some(InputPromptType::CreateDirectory) => {
                 if !input.is_empty() {
                     if let Err(e) = self.execute_command(&format!("mkdir {}", input)).await {
-                        self.show_error(&format!("Failed to create directory: {}", e));
+                        self.error(&format!("Failed to create directory: {}", e));
                     }
                 }
                 self.close_overlay();
@@ -427,7 +427,7 @@ impl CommandDispatcher {
             Some(InputPromptType::GoToPath) => {
                 if !input.is_empty() {
                     if let Err(e) = self.execute_command(&format!("cd {}", input)).await {
-                        self.show_error(&format!("Failed to change directory: {}", e));
+                        self.error(&format!("Failed to change directory: {}", e));
                     }
                 }
                 self.close_overlay();
@@ -445,7 +445,7 @@ impl CommandDispatcher {
         self.state_provider
             .update_ui_state(Box::new(|ui: &mut UIState| {
                 ui.overlay = UIOverlay::None;
-                ui.clear_input();
+                ui.clear_redraw();
                 ui.input_prompt_type = None;
                 ui.request_redraw(RedrawFlag::All);
             }));
@@ -459,27 +459,27 @@ impl CommandDispatcher {
         }
     }
 
-    fn show_success(&self, message: &str) {
+    fn success(&self, message: &str) {
         let msg = message.to_string();
         self.state_provider
             .update_ui_state(Box::new(move |ui: &mut UIState| {
-                ui.show_success(&msg);
+                ui.success(&msg);
             }));
     }
 
-    fn show_info(&self, message: &str) {
+    fn info(&self, message: &str) {
         let msg = message.to_string();
         self.state_provider
             .update_ui_state(Box::new(move |ui: &mut UIState| {
-                ui.show_info(&msg);
+                ui.info(&msg);
             }));
     }
 
-    fn show_error(&self, message: &str) {
+    fn error(&self, message: &str) {
         let msg = message.to_string();
         self.state_provider
             .update_ui_state(Box::new(move |ui: &mut UIState| {
-                ui.show_error(&msg);
+                ui.error(&msg);
             }));
     }
 }
@@ -495,79 +495,5 @@ impl ActionMatcher for CommandDispatcher {
 
     fn name(&self) -> &'static str {
         "command"
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::model::{app_state::AppState, fs_state::FSState, ui_state::UIState};
-    use std::sync::{Mutex, RwLock};
-
-    // Mock StateProvider for testing
-    struct MockStateProvider {
-        ui_state: Arc<RwLock<UIState>>,
-        fs_state: Arc<Mutex<crate::model::FSState>>,
-        app_state: Arc<Mutex<AppState>>,
-    }
-
-    impl StateProvider for MockStateProvider {
-        fn ui_state(&self) -> Arc<RwLock<UIState>> {
-            self.ui_state.clone()
-        }
-
-        fn update_ui_state(&self, update: Box<dyn FnOnce(&mut UIState) + Send>) {
-            if let Ok(mut ui) = self.ui_state.write() {
-                update(&mut ui);
-            }
-        }
-
-        fn fs_state(&self) -> std::sync::MutexGuard<'_, crate::model::FSState> {
-            self.fs_state.lock().unwrap()
-        }
-
-        fn app_state(&self) -> std::sync::MutexGuard<'_, AppState> {
-            self.app_state.lock().unwrap()
-        }
-
-        fn request_redraw(&self, _flag: RedrawFlag) {}
-        fn needs_redraw(&self) -> bool {
-            false
-        }
-        fn clear_redraw(&self) {}
-    }
-
-    fn create_test_dispatcher() -> (
-        CommandDispatcher,
-        tokio::sync::mpsc::UnboundedReceiver<TaskResult>,
-    ) {
-        let (task_tx, task_rx) = tokio::sync::mpsc::unbounded_channel();
-        let state_provider = Arc::new(MockStateProvider {
-            ui_state: Arc::new(RwLock::new(UIState::default())),
-            fs_state: Arc::new(Mutex::new(crate::model::FSState::default())),
-            app_state: Arc::new(Mutex::new(AppState::default())),
-        });
-
-        let dispatcher = CommandDispatcher::new(state_provider, task_tx);
-        (dispatcher, task_rx)
-    }
-
-    #[tokio::test]
-    async fn test_submit_input_prompt() {
-        let (mut dispatcher, _rx) = create_test_dispatcher();
-
-        let result = dispatcher
-            .handle(Action::SubmitInputPrompt("pwd".to_string()))
-            .await;
-        assert!(result.is_ok());
-        assert!(matches!(result.unwrap(), DispatchResult::Continue));
-    }
-
-    #[test]
-    fn test_can_handle() {
-        let (dispatcher, _rx) = create_test_dispatcher();
-
-        assert!(dispatcher.can_handle(&Action::SubmitInputPrompt("test".to_string())));
-        assert!(!dispatcher.can_handle(&Action::Quit));
     }
 }

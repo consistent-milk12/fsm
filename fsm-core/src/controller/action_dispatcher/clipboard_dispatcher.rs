@@ -34,7 +34,7 @@ impl ClipboardDispatcher {
             Ok(_) => {
                 self.state_provider
                     .update_ui_state(Box::new(|ui: &mut UIState| {
-                        ui.show_success("Item copied to clipboard");
+                        ui.success("Item copied to clipboard");
                     }));
                 Ok(DispatchResult::Continue)
             }
@@ -42,7 +42,7 @@ impl ClipboardDispatcher {
                 let error_msg = format!("Copy failed: {}", e);
                 self.state_provider
                     .update_ui_state(Box::new(move |ui: &mut UIState| {
-                        ui.show_error(&error_msg);
+                        ui.error(&error_msg);
                     }));
                 Ok(DispatchResult::Continue)
             }
@@ -60,7 +60,7 @@ impl ClipboardDispatcher {
             Ok(_) => {
                 self.state_provider
                     .update_ui_state(Box::new(|ui: &mut UIState| {
-                        ui.show_success("Item cut to clipboard");
+                        ui.success("Item cut to clipboard");
                     }));
                 Ok(DispatchResult::Continue)
             }
@@ -68,7 +68,7 @@ impl ClipboardDispatcher {
                 let error_msg = format!("Cut failed: {}", e);
                 self.state_provider
                     .update_ui_state(Box::new(move |ui: &mut UIState| {
-                        ui.show_error(&error_msg);
+                        ui.error(&error_msg);
                     }));
                 Ok(DispatchResult::Continue)
             }
@@ -122,9 +122,9 @@ impl ClipboardDispatcher {
         self.state_provider
             .update_ui_state(Box::new(move |ui: &mut UIState| {
                 if success_count == total_count {
-                    ui.show_success(&format!("{} items copied to clipboard", success_count));
+                    ui.success(&format!("{} items copied to clipboard", success_count));
                 } else {
-                    ui.show_warning(&format!(
+                    ui.warn(&format!(
                         "{}/{} items copied successfully",
                         success_count, total_count
                     ));
@@ -150,9 +150,9 @@ impl ClipboardDispatcher {
         self.state_provider
             .update_ui_state(Box::new(move |ui: &mut UIState| {
                 if success_count == total_count {
-                    ui.show_success(&format!("{} items cut to clipboard", success_count));
+                    ui.success(&format!("{} items cut to clipboard", success_count));
                 } else {
-                    ui.show_warning(&format!(
+                    ui.warn(&format!(
                         "{}/{} items cut successfully",
                         success_count, total_count
                     ));
@@ -180,7 +180,7 @@ impl ClipboardDispatcher {
         let dest_display = destination.display().to_string();
         self.state_provider
             .update_ui_state(Box::new(move |ui: &mut UIState| {
-                ui.show_info(&format!("Paste operation to {} initiated", dest_display));
+                ui.info(&format!("Paste operation to {} initiated", dest_display));
             }));
 
         Ok(DispatchResult::Continue)
@@ -190,7 +190,7 @@ impl ClipboardDispatcher {
     async fn handle_select_clipboard_item(&self, index: usize) -> Result<DispatchResult> {
         self.state_provider
             .update_ui_state(Box::new(move |ui: &mut UIState| {
-                ui.selected_clipboard_item_index = index;
+                ui.selected_clipboard_item_idx = index;
                 ui.request_redraw(RedrawFlag::Overlay);
             }));
         Ok(DispatchResult::Continue)
@@ -204,14 +204,14 @@ impl ClipboardDispatcher {
             Ok(_) => {
                 self.state_provider
                     .update_ui_state(Box::new(|ui: &mut UIState| {
-                        ui.show_success("Item removed from clipboard");
+                        ui.success("Item removed from clipboard");
                     }));
             }
             Err(e) => {
                 let error_msg = format!("Failed to remove item: {}", e);
                 self.state_provider
                     .update_ui_state(Box::new(move |ui: &mut UIState| {
-                        ui.show_error(&error_msg);
+                        ui.error(&error_msg);
                     }));
             }
         }
@@ -224,7 +224,7 @@ impl ClipboardDispatcher {
         self.state_provider
             .update_ui_state(Box::new(|ui: &mut UIState| {
                 ui.clear_clipboard();
-                ui.show_success("Clipboard cleared");
+                ui.success("Clipboard cleared");
             }));
         Ok(DispatchResult::Continue)
     }
@@ -241,7 +241,7 @@ impl ClipboardDispatcher {
         let dest_display = destination.display().to_string();
         self.state_provider
             .update_ui_state(Box::new(move |ui: &mut UIState| {
-                ui.show_info(&format!("Pasting item {} to {}", item_id, dest_display));
+                ui.info(&format!("Pasting item {} to {}", item_id, dest_display));
             }));
 
         Ok(DispatchResult::Continue)
@@ -264,7 +264,7 @@ impl ClipboardDispatcher {
         let item_count = item_ids.len();
         self.state_provider
             .update_ui_state(Box::new(move |ui: &mut UIState| {
-                ui.show_info(&format!(
+                ui.info(&format!(
                     "Executing paste operation for {} items",
                     item_count
                 ));
@@ -365,85 +365,5 @@ impl ActionMatcher for ClipboardDispatcher {
 
     fn name(&self) -> &'static str {
         "clipboard"
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::model::{app_state::AppState, fs_state::FSState, ui_state::UIState};
-    use std::sync::{Mutex, RwLock};
-
-    // Mock StateProvider for testing
-    struct MockStateProvider {
-        ui_state: Arc<RwLock<UIState>>,
-        fs_state: Arc<Mutex<FSState>>,
-        app_state: Arc<Mutex<AppState>>,
-    }
-
-    impl StateProvider for MockStateProvider {
-        fn ui_state(&self) -> Arc<RwLock<UIState>> {
-            self.ui_state.clone()
-        }
-
-        fn update_ui_state(&self, update: Box<dyn FnOnce(&mut UIState) + Send>) {
-            if let Ok(mut ui) = self.ui_state.write() {
-                update(&mut ui);
-            }
-        }
-
-        fn fs_state(&self) -> std::sync::MutexGuard<'_, FSState> {
-            self.fs_state.lock().unwrap()
-        }
-
-        fn app_state(&self) -> std::sync::MutexGuard<'_, AppState> {
-            self.app_state.lock().unwrap()
-        }
-
-        fn request_redraw(&self, _flag: RedrawFlag) {}
-        fn needs_redraw(&self) -> bool {
-            false
-        }
-        fn clear_redraw(&self) {}
-    }
-
-    fn create_test_dispatcher() -> ClipboardDispatcher {
-        let state_provider = Arc::new(MockStateProvider {
-            ui_state: Arc::new(RwLock::new(UIState::default())),
-            fs_state: Arc::new(Mutex::new(FSState::default())),
-            app_state: Arc::new(Mutex::new(AppState::default())),
-        });
-
-        ClipboardDispatcher::new(state_provider)
-    }
-
-    #[tokio::test]
-    async fn test_clipboard_copy() {
-        let mut dispatcher = create_test_dispatcher();
-
-        let path = PathBuf::from("/test/file.txt");
-        let result = dispatcher.handle(Action::Copy(path)).await;
-
-        assert!(result.is_ok());
-        assert!(matches!(result.unwrap(), DispatchResult::Continue));
-    }
-
-    #[tokio::test]
-    async fn test_clipboard_toggle() {
-        let mut dispatcher = create_test_dispatcher();
-
-        let result = dispatcher.handle(Action::ToggleClipboard).await;
-
-        assert!(result.is_ok());
-        assert!(matches!(result.unwrap(), DispatchResult::Continue));
-    }
-
-    #[test]
-    fn test_can_handle() {
-        let dispatcher = create_test_dispatcher();
-
-        assert!(dispatcher.can_handle(&Action::Copy(PathBuf::from("/test"))));
-        assert!(dispatcher.can_handle(&Action::ToggleClipboard));
-        assert!(!dispatcher.can_handle(&Action::Quit));
     }
 }

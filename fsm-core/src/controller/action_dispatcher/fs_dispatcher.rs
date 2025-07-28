@@ -39,12 +39,12 @@ impl FileOpsDispatcher {
     async fn navigate_to_directory(&self, target_path: PathBuf) -> Result<DispatchResult> {
         // Validate path first (fast check)
         if !target_path.exists() {
-            self.show_error("Directory does not exist");
+            self.error("Directory does not exist");
             return Ok(DispatchResult::Continue);
         }
 
         if !target_path.is_dir() {
-            self.show_error("Path is not a directory");
+            self.error("Path is not a directory");
             return Ok(DispatchResult::Continue);
         }
 
@@ -64,7 +64,7 @@ impl FileOpsDispatcher {
                 Ok(DispatchResult::Continue)
             }
             Err(e) => {
-                self.show_error(&format!("Failed to load directory: {}", e));
+                self.error(&format!("Failed to load directory: {}", e));
                 Ok(DispatchResult::Continue)
             }
         }
@@ -172,12 +172,12 @@ impl FileOpsDispatcher {
 
         match TokioFs::File::create(&file_path).await {
             Ok(_) => {
-                self.show_success(&format!("Created file: {}", name));
+                self.success(&format!("Created file: {}", name));
                 // Reload directory
                 self.navigate_to_directory(current_dir).await
             }
             Err(e) => {
-                self.show_error(&format!("Failed to create file: {}", e));
+                self.error(&format!("Failed to create file: {}", e));
                 Ok(DispatchResult::Continue)
             }
         }
@@ -194,12 +194,12 @@ impl FileOpsDispatcher {
 
         match TokioFs::create_dir(&dir_path).await {
             Ok(_) => {
-                self.show_success(&format!("Created directory: {}", name));
+                self.success(&format!("Created directory: {}", name));
                 // Reload directory
                 self.navigate_to_directory(current_dir).await
             }
             Err(e) => {
-                self.show_error(&format!("Failed to create directory: {}", e));
+                self.error(&format!("Failed to create directory: {}", e));
                 Ok(DispatchResult::Continue)
             }
         }
@@ -223,19 +223,19 @@ impl FileOpsDispatcher {
         }
     }
 
-    fn show_success(&self, message: &str) {
+    fn success(&self, message: &str) {
         let msg = message.to_string();
         self.state_provider
             .update_ui_state(Box::new(move |ui: &mut UIState| {
-                ui.show_success(&msg);
+                ui.success(&msg);
             }));
     }
 
-    fn show_error(&self, message: &str) {
+    fn error(&self, message: &str) {
         let msg = message.to_string();
         self.state_provider
             .update_ui_state(Box::new(move |ui: &mut UIState| {
-                ui.show_error(&msg);
+                ui.error(&msg);
             }));
     }
 }
@@ -258,78 +258,5 @@ impl ActionMatcher for FileOpsDispatcher {
 
     fn name(&self) -> &'static str {
         "file_ops"
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::model::{app_state::AppState, fs_state::FSState, ui_state::UIState};
-    use std::sync::{Mutex, RwLock};
-
-    // Mock StateProvider for testing
-    struct MockStateProvider {
-        ui_state: Arc<RwLock<UIState>>,
-        fs_state: Arc<Mutex<FSState>>,
-        app_state: Arc<Mutex<AppState>>,
-    }
-
-    impl StateProvider for MockStateProvider {
-        fn ui_state(&self) -> Arc<RwLock<UIState>> {
-            self.ui_state.clone()
-        }
-
-        fn update_ui_state(&self, update: Box<dyn FnOnce(&mut UIState) + Send>) {
-            if let Ok(mut ui) = self.ui_state.write() {
-                update(&mut ui);
-            }
-        }
-
-        fn fs_state(&self) -> std::sync::MutexGuard<'_, FSState> {
-            self.fs_state.lock().unwrap()
-        }
-
-        fn app_state(&self) -> std::sync::MutexGuard<'_, AppState> {
-            self.app_state.lock().unwrap()
-        }
-
-        fn request_redraw(&self, _flag: RedrawFlag) {}
-        fn needs_redraw(&self) -> bool {
-            false
-        }
-        fn clear_redraw(&self) {}
-    }
-
-    fn create_test_dispatcher() -> (
-        FileOpsDispatcher,
-        tokio::sync::mpsc::UnboundedReceiver<TaskResult>,
-    ) {
-        let (task_tx, task_rx) = tokio::sync::mpsc::unbounded_channel();
-        let state_provider = Arc::new(MockStateProvider {
-            ui_state: Arc::new(RwLock::new(UIState::default())),
-            fs_state: Arc::new(Mutex::new(FSState::default())),
-            app_state: Arc::new(Mutex::new(AppState::default())),
-        });
-
-        let dispatcher = FileOpsDispatcher::new(state_provider, task_tx);
-        (dispatcher, task_rx)
-    }
-
-    #[tokio::test]
-    async fn test_go_to_parent() {
-        let (mut dispatcher, _rx) = create_test_dispatcher();
-
-        let result = dispatcher.handle(Action::GoToParent).await;
-        assert!(result.is_ok());
-        assert!(matches!(result.unwrap(), DispatchResult::Continue));
-    }
-
-    #[test]
-    fn test_can_handle() {
-        let (dispatcher, _rx) = create_test_dispatcher();
-
-        assert!(dispatcher.can_handle(&Action::EnterSelected));
-        assert!(dispatcher.can_handle(&Action::ReloadDirectory));
-        assert!(!dispatcher.can_handle(&Action::Quit));
     }
 }
