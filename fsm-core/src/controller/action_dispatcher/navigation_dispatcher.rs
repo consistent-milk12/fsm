@@ -2,13 +2,12 @@
 //! High-performance navigation action handling
 
 use anyhow::Result;
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, MutexGuard};
 
 use crate::controller::Action;
 use crate::controller::state_provider::StateProvider;
 use crate::model::ui_state::RedrawFlag;
-use crate::model::{FSState, PaneState};
 
 use super::{ActionMatcher, ActionPriority, DispatchResult};
 

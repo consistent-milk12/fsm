@@ -13,7 +13,7 @@ use std::{
 
 use anyhow::Result;
 use tokio::sync::mpsc::UnboundedReceiver;
-use tracing::{debug, error, info};
+use tracing::{debug, info};
 
 use crate::{
     controller::{
@@ -22,10 +22,7 @@ use crate::{
     },
     error::AppError,
     fs::object_info::ObjectInfo,
-    model::{
-        fs_state::PaneState,
-        ui_state::{LoadingState, RedrawFlag, UIState},
-    },
+    model::{fs_state::PaneState, ui_state::RedrawFlag},
 };
 
 /// ---------- task result types -------------------------------------------------
@@ -270,6 +267,7 @@ impl EventLoop {
         }
     }
 
+    #[allow(unused)]
     async fn on_file_op(
         &self,
         op_id: OperationId,

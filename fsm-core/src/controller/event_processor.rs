@@ -29,7 +29,7 @@ use kanal::{AsyncReceiver, AsyncSender, bounded_async};
 use parking_lot::Mutex;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::select;
 use tracing::{debug, trace, warn};
 
@@ -120,7 +120,7 @@ pub trait EventHandler: Send + Sync {
 /// underlying handler, so updates via the `Mutex` are visible to all
 /// readers.
 #[derive(Clone)]
-struct HandlerEntry {
+pub struct HandlerEntry {
     /// Handler execution priority (lower values run first).
     priority: u8,
 
@@ -515,6 +515,7 @@ impl EventProcessor {
     }
 
     /// Update performance metrics.
+    #[allow(unused)]
     fn update_metrics(&self, count: usize, elapsed: Duration) {
         self.metrics
             .total_events
@@ -540,6 +541,7 @@ impl EventProcessor {
     }
 
     /// Update queue depth metrics.
+    #[allow(unused)]
     fn update_queue_depths(&self) {
         self.metrics.queue_depths[Priority::Critical]
             .store(self.critical_rx.len(), Ordering::Relaxed);

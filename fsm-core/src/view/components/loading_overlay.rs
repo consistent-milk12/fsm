@@ -4,8 +4,6 @@
 //! of the atomic counters in `LoadingState` and never touches
 //! shared state again while painting.
 
-use std::time::{Duration, Instant};
-
 use crate::model::ui_state::LoadingState;
 use crate::view::theme;
 use ratatui::{

@@ -223,7 +223,7 @@ impl ClipboardDispatcher {
     async fn handle_clear_clipboard(&self) -> Result<DispatchResult> {
         self.state_provider
             .update_ui_state(Box::new(|ui: &mut UIState| {
-                ui.clear_clipboard();
+                let _ = ui.clear_clipboard();
                 ui.success("Clipboard cleared");
             }));
         Ok(DispatchResult::Continue)
@@ -248,6 +248,7 @@ impl ClipboardDispatcher {
     }
 
     /// Handle execute clipboard paste operation
+    #[allow(unused)]
     async fn handle_execute_clipboard_paste(
         &self,
         operation_id: OperationId, // Simplified operation ID

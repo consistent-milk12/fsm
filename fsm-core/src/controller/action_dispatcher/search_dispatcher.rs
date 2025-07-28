@@ -3,8 +3,6 @@
 
 use anyhow::Result;
 use std::borrow::Cow;
-use std::iter::Peekable;
-use std::str::Chars;
 use std::sync::Arc;
 
 use crate::controller::Action;

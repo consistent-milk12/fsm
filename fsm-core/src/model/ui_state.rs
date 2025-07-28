@@ -19,7 +19,6 @@ use clipr::{ClipBoardConfig, ClipBoardItem, clipboard::ClipBoard};
 
 use crate::AppError;
 use crate::controller::actions::InputPromptType;
-use crate::fs::object_info::ObjectInfo; // only for tests
 use crate::model::fs_state::SearchMode;
 
 // ------------------------------------------------------------
@@ -55,7 +54,7 @@ pub enum UIMode {
     Visual,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, Hash, PartialEq, Eq)]
 #[repr(u8)]
 pub enum UIOverlay {
     #[default]

@@ -1,358 +1,519 @@
-//! src/view/renderer.rs
-//! ============================================================
-//! Frame renderer that draws the entire TUI from an *immutable*
-//! `UiSnapshot`.  No locks are taken while painting.
-
-use std::{collections::HashMap, time::Instant};
+//! src/view/ui.rs
+//! Enhanced UI renderer with proper state integration and lock-free rendering
 
 use ratatui::{
     prelude::*,
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, Borders},
 };
-use tracing::{debug, instrument, warn};
+use std::{collections::HashMap, time::Instant};
+use tracing::instrument;
 
 use crate::{
     controller::state_coordinator::StateCoordinator,
-    fs::object_info::ObjectInfo,
-    model::{
-        fs_state::PaneState,
-        snapshots::{SearchSnapshot, UiSnapshot},
-        ui_state::{NotificationLevel, RedrawFlag, UIOverlay},
-    },
-    view::components::{
-        clipboard_overlay::OptimizedClipboardOverlay, error_overlay::ErrorOverlay,
-        file_operations_overlay::OptimizedFileOperationsOverlay,
-        help_overlay::OptimizedHelpOverlay, input_prompt_overlay::OptimizedPromptOverlay,
-        loading_overlay::OptimizedLoadingOverlay,
-        notification_overlay::OptimizedNotificationOverlay, object_table::OptimizedFileTable,
-        search_overlay::OptimizedSearchOverlay,
-        search_results_overlay::OptimizedSearchResultsOverlay, status_bar::OptimizedStatusBar,
+    model::ui_state::{NotificationLevel, RedrawFlag, UIOverlay},
+    view::{
+        components::{
+            clipboard_overlay::OptimizedClipboardOverlay, error_overlay::ErrorOverlay,
+            file_operations_overlay::OptimizedFileOperationsOverlay,
+            help_overlay::OptimizedHelpOverlay, input_prompt_overlay::OptimizedPromptOverlay,
+            loading_overlay::OptimizedLoadingOverlay,
+            notification_overlay::OptimizedNotificationOverlay, object_table::OptimizedFileTable,
+            search_overlay::OptimizedSearchOverlay,
+            search_results_overlay::OptimizedSearchResultsOverlay, status_bar::OptimizedStatusBar,
+        },
+        snapshots::{PromptSnapshot, SearchSnapshot, UiSnapshot},
     },
 };
 
-/// ---------------------------------------------------------------------------
-/// Renderer struct (contains only caches + stats)
-/// ---------------------------------------------------------------------------
+/// Enhanced UI renderer with component caches and performance tracking
 pub struct UIRenderer {
-    /// layout / area caches
+    /// Layout area caches
     cache: LayoutCache,
-    /// clipboard overlay (holds its own cache)
-    clip: OptimizedClipboardOverlay,
-    /// perf
+
+    /// Component instances with internal state
+    clipboard_overlay: OptimizedClipboardOverlay,
+    file_table: OptimizedFileTable,
+    status_bar: OptimizedStatusBar,
+    help_overlay: OptimizedHelpOverlay,
+    prompt_overlay: OptimizedPromptOverlay,
+    loading_overlay: OptimizedLoadingOverlay,
+    notification_overlay: OptimizedNotificationOverlay,
+    search_overlay: OptimizedSearchOverlay,
+    search_results_overlay: OptimizedSearchResultsOverlay,
+    file_ops_overlay: OptimizedFileOperationsOverlay,
+
+    /// Performance tracking
     stats: RenderStats,
-    frame: u64,
-    dirty: u32,
+    frame_count: u64,
+    dirty_flags: u32,
 }
 
 #[derive(Default)]
-struct LayoutCache {
-    main: Option<(Rect, [Rect; 2])>,
-    overlay: Option<(Rect, Rect)>,
-    screen: Rect,
-    hit: u64,
-    miss: u64,
+pub struct LayoutCache {
+    main_layout: Option<(Rect, [Rect; 2])>,
+    overlay_areas: HashMap<UIOverlay, Rect>,
+    screen_size: Rect,
+    hit_count: u64,
+    miss_count: u64,
 }
 
 #[derive(Default)]
 pub struct RenderStats {
-    pub frames: u64,
-    pub skips: u64,
-    pub slow: u64,
-    pub total: std::time::Duration,
+    pub frames_rendered: u64,
+    pub frames_skipped: u64,
+    pub slow_frames: u64,
+    pub total_time: std::time::Duration,
+    pub last_frame_time: std::time::Duration,
 }
 
-/// ---------------------------------------------------------------------------
-/// ctor
-/// ---------------------------------------------------------------------------
 impl UIRenderer {
     pub fn new() -> Self {
         Self {
             cache: LayoutCache::default(),
-            clip: OptimizedClipboardOverlay::new(),
+            clipboard_overlay: OptimizedClipboardOverlay::new(),
+            file_table: OptimizedFileTable::new(),
+            status_bar: OptimizedStatusBar::new(),
+            help_overlay: OptimizedHelpOverlay::new(),
+            prompt_overlay: OptimizedPromptOverlay::new(),
+            loading_overlay: OptimizedLoadingOverlay::new(),
+            notification_overlay: OptimizedNotificationOverlay::new(),
+            search_overlay: OptimizedSearchOverlay::new(UIOverlay::FileNameSearch),
+            search_results_overlay: OptimizedSearchResultsOverlay::new(),
+            file_ops_overlay: OptimizedFileOperationsOverlay::new(),
             stats: RenderStats::default(),
-            frame: 0,
-            dirty: u32::MAX,
+            frame_count: 0,
+            dirty_flags: u32::MAX,
         }
     }
-}
 
-/// ---------------------------------------------------------------------------
-/// public API
-/// ---------------------------------------------------------------------------
-impl UIRenderer {
-    #[instrument(level = "trace", skip(self, f, snap, coord))]
-    pub fn render(&mut self, f: &mut Frame<'_>, snap: &UiSnapshot, coord: &StateCoordinator) {
-        // -----------------------------------------------------
-        // quick bail-out if nothing changed
-        // -----------------------------------------------------
-        if self.frame > 0 && snap.redraw_flags == 0 && self.dirty == 0 {
-            self.stats.skips += 1;
+    /// Main render entry point with enhanced state integration
+    #[instrument(level = "trace", skip(self, frame, coord))]
+    pub fn render(&mut self, frame: &mut Frame<'_>, coord: &StateCoordinator) {
+        let render_start = Instant::now();
+
+        // Create immutable UI snapshot
+        let ui_snapshot = self.create_ui_snapshot(coord);
+
+        // Skip if no redraw needed
+        if self.frame_count > 0 && ui_snapshot.redraw_flags == 0 && self.dirty_flags == 0 {
+            self.stats.frames_skipped += 1;
             return;
         }
 
-        let start = Instant::now();
-        self.update_layout_cache(f.size());
+        // Update layout cache
+        self.update_layout_cache(frame.area());
 
-        // -----------------------------------------------------
-        // split layout (content + status bar)
-        // -----------------------------------------------------
-        let main = self.cache.main.as_ref().expect("cache filled").1;
+        // Get main layout areas
+        let main_areas = self
+            .cache
+            .main_layout
+            .as_ref()
+            .expect("Layout cache populated")
+            .1;
 
-        self.draw_main(f, snap, coord, main[0]);
-        self.draw_status_bar(f, snap, coord, main[1]);
-        self.draw_overlays(f, snap, coord);
+        // Render components
+        self.render_main_content(frame, &ui_snapshot, coord, main_areas[0]);
+        self.render_status_bar(frame, &ui_snapshot, coord, main_areas[1]);
+        self.render_overlays(frame, &ui_snapshot, coord);
 
-        // perf
-        let dur = start.elapsed();
-        self.stats.total += dur;
-        if dur.as_millis() > 16 {
-            self.stats.slow += 1;
+        // Update performance metrics
+        let frame_time = render_start.elapsed();
+        self.stats.total_time += frame_time;
+        self.stats.last_frame_time = frame_time;
+        self.stats.frames_rendered += 1;
+        self.frame_count += 1;
+
+        if frame_time.as_millis() > 16 {
+            self.stats.slow_frames += 1;
         }
-        self.stats.frames += 1;
-        self.frame += 1;
-        self.dirty = 0; // reset component dirty flags
-    }
-}
 
-/// ---------------------------------------------------------------------------
-/// main components
-/// ---------------------------------------------------------------------------
-impl UIRenderer {
-    fn draw_main(
+        self.dirty_flags = 0;
+    }
+
+    /// Create UI snapshot from enhanced state
+    fn create_ui_snapshot(&self, coord: &StateCoordinator) -> UiSnapshot {
+        let ui_state = coord.ui_state();
+        let ui_guard = ui_state.read().expect("UI state lock poisoned");
+        UiSnapshot::from(&*ui_guard)
+    }
+
+    /// Update layout cache on screen size change
+    fn update_layout_cache(&mut self, screen_size: Rect) {
+        if self.cache.screen_size == screen_size {
+            self.cache.hit_count += 1;
+            return;
+        }
+
+        self.cache.screen_size = screen_size;
+        self.cache.miss_count += 1;
+
+        // Main layout: content + status bar
+        let main_areas =
+            Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(screen_size);
+
+        self.cache.main_layout = Some((screen_size, main_areas));
+        self.cache.overlay_areas.clear();
+        self.dirty_flags = u32::MAX;
+    }
+
+    /// Render main file browser with enhanced pane state
+    fn render_main_content(
         &mut self,
-        f: &mut Frame<'_>,
-        snap: &UiSnapshot,
+        frame: &mut Frame<'_>,
+        ui_snapshot: &UiSnapshot,
         coord: &StateCoordinator,
         area: Rect,
     ) {
-        if snap.redraw_flags & RedrawFlag::Main.bits() as u32 == 0 && self.dirty & 1 == 0 {
+        if ui_snapshot.redraw_flags & RedrawFlag::Main.bits() as u32 == 0
+            && self.dirty_flags & 1 == 0
+        {
             return;
         }
 
-        let fs = coord.fs_state();
-        let pane: &PaneState = fs.active_pane();
+        let fs_state = coord.fs_state();
+        let active_pane = fs_state.active_pane();
 
-        if pane.is_loading.load(std::sync::atomic::Ordering::Relaxed) {
-            self.draw_dir_loading(f, area);
+        // Show loading or file table
+        if active_pane
+            .is_loading
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            self.render_loading_placeholder(frame, area);
         } else {
-            let file_table = OptimizedFileTable::new();
-            file_table.render_optimized(f, pane, area);
+            // Get UI state for file table
+            let ui_state = coord.ui_state();
+            let ui_guard = ui_state.read().expect("UI state lock poisoned");
+
+            self.file_table.render_optimized(
+                frame,
+                &*ui_guard,
+                active_pane,
+                &active_pane.cwd,
+                area,
+            );
         }
-        self.dirty |= 1;
+
+        self.dirty_flags |= 1;
     }
 
-    fn draw_dir_loading(&self, f: &mut Frame<'_>, r: Rect) {
-        let b = Block::default()
-            .title(" Loading… ")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Yellow));
-        f.render_widget(b, r);
-    }
-
-    fn draw_status_bar(
+    /// Render status bar with enhanced metrics
+    fn render_status_bar(
         &mut self,
-        f: &mut Frame<'_>,
-        snap: &UiSnapshot,
+        frame: &mut Frame<'_>,
+        ui_snapshot: &UiSnapshot,
         coord: &StateCoordinator,
         area: Rect,
     ) {
-        if snap.redraw_flags & RedrawFlag::StatusBar.bits() as u32 == 0 && self.dirty & 2 == 0 {
+        if ui_snapshot.redraw_flags & RedrawFlag::StatusBar.bits() as u32 == 0
+            && self.dirty_flags & 2 == 0
+        {
             return;
         }
 
-        OptimizedStatusBar::new().render_with_metrics(f, snap, coord, area);
-        self.dirty |= 2;
+        self.status_bar
+            .render_with_metrics(frame, ui_snapshot, coord, area);
+        self.dirty_flags |= 2;
     }
-}
 
-/// ---------------------------------------------------------------------------
-/// overlays
-/// ---------------------------------------------------------------------------
-impl UIRenderer {
-    fn draw_overlays(&mut self, f: &mut Frame<'_>, snap: &UiSnapshot, coord: &StateCoordinator) {
-        let scr = f.size();
+    /// Render all overlays with enhanced integration
+    fn render_overlays(
+        &mut self,
+        frame: &mut Frame<'_>,
+        ui_snapshot: &UiSnapshot,
+        coord: &StateCoordinator,
+    ) {
+        let screen_size = frame.area();
 
-        // modal overlay ------------------------------------------------------
-        if snap.overlay != UIOverlay::None {
-            let o_rect = self.overlay_area(scr, snap.overlay);
-            self.draw_modal(f, snap, coord, o_rect);
+        // Modal overlays
+        if ui_snapshot.overlay != UIOverlay::None {
+            let overlay_area = self.get_overlay_area(screen_size, ui_snapshot.overlay);
+            self.render_modal_overlay(frame, ui_snapshot, coord, overlay_area);
         }
 
-        // clipboard overlay --------------------------------------------------
-        if snap.clipboard_active {
-            let r = self.centered(scr, 85, 80);
-            if let Err(_) = self.clip.render_sync_fallback(f, r, snap) {
-                self.draw_error(f, "Clipboard error", r);
+        // Clipboard overlay
+        if ui_snapshot.clipboard_active {
+            let clipboard_area = self.centered_rect(screen_size, 85, 80);
+            if let Err(_) =
+                self.clipboard_overlay
+                    .render_sync_fallback(frame, clipboard_area, ui_snapshot)
+            {
+                self.render_error_overlay(frame, "Clipboard unavailable", clipboard_area);
             }
         }
 
-        // toast / banner -----------------------------------------------------
-        if let Some(n) = &snap.notification {
-            let r = self.notification_rect(scr, n.level);
-            OptimizedNotificationOverlay::new().render_notification(f, n, r);
+        // File operations progress (using enhanced FSState)
+        self.render_file_operations_progress(frame, coord, screen_size);
+
+        // Notifications
+        if let Some(notification) = &ui_snapshot.notification {
+            let notification_area = self.notification_rect(screen_size, notification.level);
+            self.notification_overlay
+                .render_notification(frame, notification, notification_area);
         }
     }
 
-    fn draw_modal(
+    /// Render modal overlays with proper snapshot creation
+    fn render_modal_overlay(
         &mut self,
-        f: &mut Frame<'_>,
-        snap: &UiSnapshot,
+        frame: &mut Frame<'_>,
+        ui_snapshot: &UiSnapshot,
         coord: &StateCoordinator,
         area: Rect,
     ) {
-        match snap.overlay {
-            UIOverlay::Help => OptimizedHelpOverlay::new().render_fast(f, area),
+        match ui_snapshot.overlay {
+            UIOverlay::Help => {
+                self.help_overlay.render_fast(frame, area);
+            }
 
             UIOverlay::FileNameSearch | UIOverlay::ContentSearch => {
-                let pane = coord.fs_state().active_pane();
-                let search_snap = SearchSnapshot::from(pane, snap);
-                OptimizedSearchOverlay::new(snap.overlay).render_with_input(f, &search_snap, area);
+                let search_snapshot = self.create_search_snapshot(coord, ui_snapshot);
+                self.search_overlay = OptimizedSearchOverlay::new(ui_snapshot.overlay);
+                self.search_overlay
+                    .render_with_input(frame, &search_snapshot, area);
             }
 
             UIOverlay::SearchResults => {
-                let pane = coord.fs_state().active_pane();
-                let sel = pane.selected.load(std::sync::atomic::Ordering::Relaxed);
-                OptimizedSearchResultsOverlay::new().render_results(
-                    f,
-                    &pane.search_results,
-                    Some(sel),
+                let fs_state = coord.fs_state();
+                let active_pane = fs_state.active_pane();
+                let selected = active_pane
+                    .selected
+                    .load(std::sync::atomic::Ordering::Relaxed);
+
+                self.search_results_overlay.render_results(
+                    frame,
+                    &active_pane.search_results,
+                    Some(selected),
                     area,
                 );
             }
 
-            UIOverlay::Loading => {
-                if let Some(l) = &snap.loading {
-                    OptimizedLoadingOverlay::new().render_progress(f, l, area);
-                }
-            }
-
             UIOverlay::Prompt => {
-                if let Some(tp) = &snap.prompt_type {
-                    OptimizedPromptOverlay::new().render_input(f, snap, tp, area);
+                if let Some(prompt_snapshot) = self.create_prompt_snapshot(coord) {
+                    self.prompt_overlay
+                        .render_input(frame, &prompt_snapshot, area);
                 }
             }
 
-            _ => {}
-        }
-    }
-}
+            UIOverlay::Loading => {
+                if let Some(loading_state) = &ui_snapshot.loading {
+                    self.loading_overlay
+                        .render_progress(frame, loading_state, area);
+                }
+            }
 
-/// ---------------------------------------------------------------------------
-/// util: layout / rectangles
-/// ---------------------------------------------------------------------------
-impl UIRenderer {
-    fn update_layout_cache(&mut self, scr: Rect) {
-        if self.cache.screen == scr {
-            self.cache.hit += 1;
-            return;
-        }
-
-        self.cache.screen = scr;
-        self.cache.miss += 1;
-        self.cache.main = Some((scr, {
-            let [c, s] = Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(scr);
-            [c, s]
-        }));
-        self.cache.overlay = None;
-        self.dirty = u32::MAX;
-    }
-
-    fn overlay_area(&mut self, scr: Rect, kind: UIOverlay) -> Rect {
-        if let Some((prev, a)) = self.cache.overlay {
-            if prev == scr {
-                return a;
+            _ => {
+                self.render_error_overlay(frame, "Unknown overlay", area);
             }
         }
-        let r = match kind {
-            UIOverlay::Help => self.centered(scr, 80, 80),
-            UIOverlay::FileNameSearch | UIOverlay::ContentSearch => self.search_rect(scr),
-            UIOverlay::SearchResults => self.centered(scr, 90, 70),
-            UIOverlay::Loading => self.centered(scr, 50, 30),
-            UIOverlay::Prompt => self.centered(scr, 60, 25),
-            _ => self.centered(scr, 70, 60),
-        };
-        self.cache.overlay = Some((scr, r));
-        r
     }
 
-    fn centered(&self, r: Rect, w_pct: u16, h_pct: u16) -> Rect {
-        let w = (r.width * w_pct / 100).min(r.width);
-        let h = (r.height * h_pct / 100).min(r.height);
-        Rect {
-            x: (r.width - w) / 2,
-            y: (r.height - h) / 2,
-            width: w,
-            height: h,
-        }
+    /// Create search snapshot with enhanced state integration
+    fn create_search_snapshot(
+        &self,
+        coord: &StateCoordinator,
+        ui_snapshot: &UiSnapshot,
+    ) -> SearchSnapshot {
+        let fs_state = coord.fs_state();
+        let active_pane = fs_state.active_pane();
+        let ui_state = coord.ui_state();
+        let ui_guard = ui_state.read().expect("UI state lock poisoned");
+
+        SearchSnapshot::from_states(&*ui_guard, active_pane).unwrap_or_else(|| SearchSnapshot {
+            query: ui_snapshot.search_query.clone().unwrap_or_default(),
+            cursor: 0,
+            results: std::sync::Arc::from([]),
+            mode: ui_snapshot.search_mode,
+        })
     }
-    fn search_rect(&self, r: Rect) -> Rect {
-        Rect {
-            x: (r.width * 15) / 100,
-            y: r.height / 4,
-            width: (r.width * 70) / 100,
-            height: 5,
+
+    /// Create prompt snapshot from enhanced UI state
+    fn create_prompt_snapshot(&self, coord: &StateCoordinator) -> Option<PromptSnapshot> {
+        let ui_state = coord.ui_state();
+        let ui_guard = ui_state.read().expect("UI state lock poisoned");
+        PromptSnapshot::from_ui(&*ui_guard)
+    }
+
+    /// Enhanced file operations progress with proper FSState integration
+    fn render_file_operations_progress(
+        &mut self,
+        frame: &mut Frame<'_>,
+        coord: &StateCoordinator,
+        screen_size: Rect,
+    ) {
+        let fs_state = coord.fs_state();
+
+        // Use enhanced FSState active_operations
+        if let Some((avg_progress, count)) = fs_state.get_operation_summary() {
+            let progress_area = Rect {
+                x: screen_size.width.saturating_sub(30),
+                y: screen_size.height.saturating_sub(4),
+                width: 28,
+                height: 3,
+            };
+
+            self.file_ops_overlay
+                .render_summary(frame, avg_progress, count, progress_area);
         }
     }
 
-    fn notification_rect(&self, scr: Rect, lvl: NotificationLevel) -> Rect {
-        let h = if lvl == NotificationLevel::Error {
-            5
-        } else {
-            3
+    /// Get or compute overlay area with caching
+    fn get_overlay_area(&mut self, screen_size: Rect, overlay_type: UIOverlay) -> Rect {
+        if let Some(&area) = self.cache.overlay_areas.get(&overlay_type) {
+            return area;
+        }
+
+        let area = match overlay_type {
+            UIOverlay::Help => self.centered_rect(screen_size, 85, 90),
+            UIOverlay::FileNameSearch | UIOverlay::ContentSearch => {
+                self.search_input_rect(screen_size)
+            }
+            UIOverlay::SearchResults => self.centered_rect(screen_size, 90, 70),
+            UIOverlay::Prompt => self.centered_rect(screen_size, 60, 25),
+            UIOverlay::Loading => self.centered_rect(screen_size, 50, 30),
+            _ => self.centered_rect(screen_size, 70, 60),
         };
-        let w = (scr.width * 60) / 100;
+
+        self.cache.overlay_areas.insert(overlay_type, area);
+        area
+    }
+
+    /// Calculate centered rectangle
+    fn centered_rect(&self, container: Rect, width_pct: u16, height_pct: u16) -> Rect {
+        let width = (container.width * width_pct / 100).min(container.width);
+        let height = (container.height * height_pct / 100).min(container.height);
+
         Rect {
-            x: (scr.width - w) / 2,
+            x: container.x + (container.width.saturating_sub(width)) / 2,
+            y: container.y + (container.height.saturating_sub(height)) / 2,
+            width,
+            height,
+        }
+    }
+
+    /// Search input area positioning
+    fn search_input_rect(&self, screen_size: Rect) -> Rect {
+        let width = (screen_size.width * 70) / 100;
+        let height = 8;
+
+        Rect {
+            x: (screen_size.width.saturating_sub(width)) / 2,
+            y: screen_size.height / 4,
+            width,
+            height,
+        }
+    }
+
+    /// Notification positioning based on level
+    fn notification_rect(&self, screen_size: Rect, level: NotificationLevel) -> Rect {
+        let width = (screen_size.width * 60) / 100;
+        let height = match level {
+            NotificationLevel::Error => 6,
+            _ => 4,
+        };
+
+        Rect {
+            x: (screen_size.width.saturating_sub(width)) / 2,
             y: 2,
-            width: w,
-            height: h,
+            width,
+            height,
         }
     }
-}
 
-/// ---------------------------------------------------------------------------
-/// misc
-/// ---------------------------------------------------------------------------
-impl UIRenderer {
-    fn draw_error(&self, f: &mut Frame<'_>, msg: &str, r: Rect) {
-        ErrorOverlay::new(msg.into()).render(f, r);
+    /// Loading placeholder for directory scan
+    fn render_loading_placeholder(&self, frame: &mut Frame<'_>, area: Rect) {
+        let block = Block::default()
+            .title(" Loading Directory... ")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Yellow))
+            .style(Style::default().bg(Color::Black));
+
+        frame.render_widget(block, area);
+    }
+
+    /// Generic error overlay
+    fn render_error_overlay(&self, frame: &mut Frame<'_>, message: &str, area: Rect) {
+        ErrorOverlay::new(message.to_string()).render(frame, area);
+    }
+
+    /// Performance statistics access
+    pub fn get_stats(&self) -> &RenderStats {
+        &self.stats
+    }
+
+    /// Reset performance counters
+    pub fn reset_stats(&mut self) {
+        self.stats = RenderStats::default();
+        self.frame_count = 0;
     }
 }
 
-/// ---------------------------------------------------------------------------
-/// stats helpers
-/// ---------------------------------------------------------------------------
+impl Default for UIRenderer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RenderStats {
+    /// Calculate frames per second
     pub fn fps(&self) -> f64 {
-        if self.frames > 0 {
-            self.frames as f64 / self.total.as_secs_f64()
+        if self.total_time.as_secs_f64() > 0.0 {
+            self.frames_rendered as f64 / self.total_time.as_secs_f64()
+        } else {
+            0.0
+        }
+    }
+
+    /// Frame time in milliseconds
+    pub fn frame_time_ms(&self) -> f64 {
+        self.last_frame_time.as_secs_f64() * 1000.0
+    }
+
+    /// Cache efficiency
+    pub fn cache_hit_rate(&self, cache: &LayoutCache) -> f64 {
+        let total = cache.hit_count + cache.miss_count;
+        if total > 0 {
+            cache.hit_count as f64 / total as f64
         } else {
             0.0
         }
     }
 }
 
-/// ---------------------------------------------------------------------------
-/// tests (basic smoke only – heavy tests live elsewhere)
-// ---------------------------------------------------------------------------
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::model::{app_state::AppState, fs_state::FSState};
-    use std::sync::{Mutex, RwLock};
+    use std::sync::{Arc, Mutex, RwLock};
 
-    fn dummy_coord() -> Arc<StateCoordinator> {
-        let app = Arc::new(Mutex::new(AppState::default()));
-        let ui = RwLock::new(UIState::default());
-        let fs = Arc::new(Mutex::new(FSState::default()));
-        Arc::new(StateCoordinator::new(app, ui, fs))
+    fn create_test_coordinator() -> Arc<StateCoordinator> {
+        let app_state = Arc::new(Mutex::new(AppState::default()));
+        let ui_state = RwLock::new(UIState::default());
+        let fs_state = Arc::new(Mutex::new(FSState::default()));
+
+        Arc::new(StateCoordinator::new(app_state, ui_state, fs_state))
     }
 
     #[test]
-    fn cache_hit() {
-        let mut r = UIRenderer::new();
-        r.update_layout_cache(Rect::new(0, 0, 100, 40));
-        r.update_layout_cache(Rect::new(0, 0, 100, 40));
-        assert_eq!(r.cache.hit, 1);
+    fn test_layout_cache_efficiency() {
+        let mut renderer = UIRenderer::new();
+        let rect = Rect::new(0, 0, 100, 40);
+
+        renderer.update_layout_cache(rect);
+        assert_eq!(renderer.cache.miss_count, 1);
+
+        renderer.update_layout_cache(rect);
+        assert_eq!(renderer.cache.hit_count, 1);
+    }
+
+    #[test]
+    fn test_centered_rect_calculation() {
+        let renderer = UIRenderer::new();
+        let container = Rect::new(0, 0, 100, 50);
+        let centered = renderer.centered_rect(container, 50, 50);
+
+        assert_eq!(centered.width, 50);
+        assert_eq!(centered.height, 25);
+        assert_eq!(centered.x, 25);
+        assert_eq!(centered.y, 12);
     }
 }

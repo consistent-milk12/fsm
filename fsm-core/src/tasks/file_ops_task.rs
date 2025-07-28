@@ -7,6 +7,9 @@
 //! - Proper error handling and resource cleanup
 //! - Integration with TaskResult::FileOperation variants
 
+use crate::controller::actions::OperationId;
+use crate::controller::event_loop::{FileOperationType, TaskResult};
+use crate::error::AppError;
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -15,11 +18,6 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
-
-use crate::controller;
-use crate::controller::actions::OperationId;
-use crate::controller::event_loop::{FileOperationType, TaskResult};
-use crate::error::AppError;
 
 const BUFFER_SIZE: usize = 64 * 1024; // 64KB chunks
 const PROGRESS_INTERVAL: u64 = 1024 * 1024; // Report every 1MB
@@ -327,12 +325,22 @@ impl FileOperationTask {
         Ok(())
     }
 
-    /// TODO: FIX PERCENTAGE
     async fn report_progress(&self, current: u64, total: u64, current_file: &Path) -> Result<()> {
-        let progress = TaskResult::Progress {
+        let pct: f32 = if total > 0 {
+            (current as f32 / total as f32) * 100.0
+        } else {
+            0.0
+        };
+
+        let progress: TaskResult = TaskResult::Progress {
             task_id: 0, // File operations use operation_id instead
-            pct: 0.0,
-            msg: Some(format!("Processing: {}", current_file.display())),
+            pct,
+            msg: Some(format!(
+                "Processing: {} ({}/{})",
+                current_file.display(),
+                current,
+                total
+            )),
         };
 
         self.task_tx
@@ -341,7 +349,6 @@ impl FileOperationTask {
 
         Ok(())
     }
-
     fn check_cancellation(&self) -> Result<()> {
         if self.cancel_token.is_cancelled() {
             Err(anyhow::anyhow!("Operation cancelled"))

@@ -1,6 +1,6 @@
 //! Optimized metadata loading with batch processing and caching
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::{debug, info};
 
@@ -65,19 +65,19 @@ pub fn spawn_batch_metadata_load(
     batch_size: usize,
 ) {
     tokio::spawn(async move {
-        let start_time: Instant = Instant::now();
-        let total_entries: usize = light_entries.len();
+        let start_time = Instant::now();
+        let total_entries = light_entries.len();
 
         debug!(
             "Starting batch metadata load for {total_entries} entries in {}",
             parent_dir.display()
         );
 
-        let mut processed: usize = 0;
-        let mut successful: i32 = 0;
+        let mut processed = 0;
+        let mut successful = 0;
 
         for (index, light_info) in light_entries.into_iter().enumerate() {
-            let path: PathBuf = light_info.path.clone();
+            let path = light_info.path.clone();
 
             match ObjectInfo::from_light_info(light_info).await {
                 Ok(_full_info) => {
@@ -91,12 +91,13 @@ pub fn spawn_batch_metadata_load(
 
             processed += 1;
 
-            // TODO: FIX PERCENTAGE
             // Report progress periodically
             if processed % batch_size == 0 || processed == total_entries {
-                let progress_result: TaskResult = TaskResult::Progress {
+                let pct = (processed as f32 / total_entries as f32) * 100.0;
+
+                let progress_result = TaskResult::Progress {
                     task_id,
-                    pct: 0.0,
+                    pct,
                     msg: Some(format!(
                         "Loaded {} of {} metadata entries",
                         processed, total_entries
@@ -112,13 +113,13 @@ pub fn spawn_batch_metadata_load(
             }
         }
 
-        let exec: Duration = start_time.elapsed();
+        let exec = start_time.elapsed();
         info!(
             "Batch metadata loading completed: {}/{} successful in {:?}",
             successful, total_entries, exec
         );
 
-        let completion_result: TaskResult = TaskResult::Generic {
+        let completion_result = TaskResult::Generic {
             task_id,
             result: Ok(()),
             msg: Some(format!(

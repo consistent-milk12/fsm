@@ -17,13 +17,10 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use compact_str::CompactString;
-use ratatui::prelude::Rect;
 
 use crate::fs::object_info::ObjectInfo;
 use crate::model::fs_state::{EntryFilter, EntrySort, PaneState};
-use crate::model::ui_state::{
-    LoadingState, Notification, NotificationLevel, RedrawFlag, UIOverlay,
-};
+use crate::model::ui_state::{LoadingState, Notification, UIOverlay};
 
 use crate::UIState;
 use crate::controller::actions::InputPromptType;

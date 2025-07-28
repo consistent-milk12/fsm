@@ -2,7 +2,7 @@
 //! UI state and overlay management
 
 use anyhow::Result;
-use std::sync::{Arc, RwLock, RwLockReadGuard};
+use std::sync::Arc;
 
 use crate::controller::Action;
 use crate::controller::actions::InputPromptType;

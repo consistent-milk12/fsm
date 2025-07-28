@@ -213,8 +213,9 @@ impl PaneState {
     }
 
     pub fn mark_selected(&self) -> bool {
-        let selected_idx = self.selected.load(Ordering::Relaxed);
-        if let Some(entry) = self.entries.get(selected_idx) {
+        let selected_idx: usize = self.selected.load(Ordering::Relaxed);
+
+        if let Some(_) = self.entries.get(selected_idx) {
             // Return the path to mark, don't modify here
             true
         } else {
