@@ -1,5 +1,4 @@
 //! FSM-Core main.rs - Minimal entry point delegating to EventLoop
-
 use std::{
     io::{self, Stdout},
     panic::PanicHookInfo,
