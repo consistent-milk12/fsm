@@ -24,11 +24,11 @@ pub fn spawn_content_search(
 
         match execute_ripgrep_search(&pattern, &path).await {
             Ok(lines) => {
-                let task_result: TaskResult = TaskResult::ContentSearchComplete {
+                let task_result: TaskResult = TaskResult::ContentSearchDone {
                     task_id,
                     query: pattern,
                     results: lines,
-                    execution_time: start_time.elapsed(),
+                    exec: start_time.elapsed(),
                 };
 
                 if let Err(e) = task_tx.send(task_result) {
@@ -40,8 +40,8 @@ pub fn spawn_content_search(
                 let task_result: TaskResult = TaskResult::Generic {
                     task_id,
                     result: Err(AppError::Ripgrep(e.to_string())),
-                    message: Some(format!("Content search failed: {}", e)),
-                    execution_time: start_time.elapsed(),
+                    msg: Some(format!("Content search failed: {}", e)),
+                    exec: start_time.elapsed(),
                 };
 
                 if let Err(e) = task_tx.send(task_result) {
@@ -64,11 +64,11 @@ pub fn spawn_filename_search(
 
         match execute_filename_search(&pattern, &path).await {
             Ok(object_infos) => {
-                let task_result: TaskResult = TaskResult::SearchComplete {
+                let task_result: TaskResult = TaskResult::SearchDone {
                     task_id,
                     query: pattern,
                     results: object_infos,
-                    execution_time: start_time.elapsed(),
+                    exec: start_time.elapsed(),
                 };
 
                 if let Err(e) = task_tx.send(task_result) {
@@ -80,8 +80,8 @@ pub fn spawn_filename_search(
                 let task_result: TaskResult = TaskResult::Generic {
                     task_id,
                     result: Err(AppError::Ripgrep(e.to_string())),
-                    message: Some(format!("Filename search failed: {}", e)),
-                    execution_time: start_time.elapsed(),
+                    msg: Some(format!("Filename search failed: {}", e)),
+                    exec: start_time.elapsed(),
                 };
 
                 if let Err(e) = task_tx.send(task_result) {

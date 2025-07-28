@@ -27,8 +27,8 @@ pub fn spawn_metadata_load(
                 let task_result: TaskResult = TaskResult::Generic {
                     task_id,
                     result: Ok(()),
-                    message: Some(format!("Metadata loaded for {}", path.display())),
-                    execution_time: start_time.elapsed(),
+                    msg: Some(format!("Metadata loaded for {}", path.display())),
+                    exec: start_time.elapsed(),
                 };
 
                 let _ = task_tx.send(task_result);
@@ -46,8 +46,8 @@ pub fn spawn_metadata_load(
                         std::io::ErrorKind::Other,
                         e.to_string(),
                     ))),
-                    message: Some(format!("Metadata load failed for {}", path.display())),
-                    execution_time: start_time.elapsed(),
+                    msg: Some(format!("Metadata load failed for {}", path.display())),
+                    exec: start_time.elapsed(),
                 };
 
                 let _ = task_tx.send(task_result);
@@ -91,13 +91,13 @@ pub fn spawn_batch_metadata_load(
 
             processed += 1;
 
+            // TODO: FIX PERCENTAGE
             // Report progress periodically
             if processed % batch_size == 0 || processed == total_entries {
                 let progress_result: TaskResult = TaskResult::Progress {
                     task_id,
-                    current: processed as u64,
-                    total: total_entries as u64,
-                    message: Some(format!(
+                    pct: 0.0,
+                    msg: Some(format!(
                         "Loaded {} of {} metadata entries",
                         processed, total_entries
                     )),
@@ -112,19 +112,19 @@ pub fn spawn_batch_metadata_load(
             }
         }
 
-        let execution_time: Duration = start_time.elapsed();
+        let exec: Duration = start_time.elapsed();
         info!(
             "Batch metadata loading completed: {}/{} successful in {:?}",
-            successful, total_entries, execution_time
+            successful, total_entries, exec
         );
 
         let completion_result: TaskResult = TaskResult::Generic {
             task_id,
             result: Ok(()),
-            message: Some(format!(
+            msg: Some(format!(
                 "Batch metadata completed: {successful}/{total_entries} successful",
             )),
-            execution_time,
+            exec,
         };
 
         let _ = task_tx.send(completion_result);

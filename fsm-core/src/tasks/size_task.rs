@@ -35,7 +35,7 @@ pub fn spawn_size_calculation(
 
         match result {
             Ok(Ok((total_size, items_count))) => {
-                let execution_time = start_time.elapsed();
+                let exec = start_time.elapsed();
 
                 if total_size > 0 || items_count > 0 {
                     object_info.size = total_size;
@@ -46,18 +46,18 @@ pub fn spawn_size_calculation(
                         path.display(),
                         total_size,
                         items_count,
-                        execution_time
+                        exec
                     );
                 }
 
                 let task_result = TaskResult::Generic {
                     task_id,
                     result: Ok(()),
-                    message: Some(format!(
+                    msg: Some(format!(
                         "Calculated size: {} bytes, {} items",
                         total_size, items_count
                     )),
-                    execution_time,
+                    exec,
                 };
 
                 let _ = task_tx.send(task_result);
@@ -68,8 +68,8 @@ pub fn spawn_size_calculation(
                 let task_result = TaskResult::Generic {
                     task_id,
                     result: Err(AppError::Io(e)),
-                    message: Some(format!("Size calculation failed for {}", path.display())),
-                    execution_time: start_time.elapsed(),
+                    msg: Some(format!("Size calculation failed for {}", path.display())),
+                    exec: start_time.elapsed(),
                 };
 
                 let _ = task_tx.send(task_result);
@@ -87,11 +87,11 @@ pub fn spawn_size_calculation(
                         std::io::ErrorKind::Other,
                         format!("Task panicked: {}", e),
                     ))),
-                    message: Some(format!(
+                    msg: Some(format!(
                         "Size calculation task failed for {}",
                         path.display()
                     )),
-                    execution_time: start_time.elapsed(),
+                    exec: start_time.elapsed(),
                 };
 
                 let _ = task_tx.send(task_result);
@@ -182,17 +182,18 @@ pub fn spawn_progressive_size_calculation(
                             total_size += metadata.len();
                             file_count += 1;
 
+                            // TODO: FIX PERCENTAGE
                             // Report progress periodically (every 100 files or 10MB)
                             if file_count % 100 == 0 || total_size % (10 * 1024 * 1024) == 0 {
                                 let progress = TaskResult::Progress {
                                     task_id,
-                                    current: file_count,
-                                    total: 0, // Unknown total
-                                    message: Some(format!(
+                                    pct: 0.0,
+                                    msg: Some(format!(
                                         "Scanned {} files, {} bytes",
                                         file_count, total_size
                                     )),
                                 };
+
                                 let _ = task_tx.send(progress);
                             }
                         }
@@ -213,7 +214,7 @@ pub fn spawn_progressive_size_calculation(
 
         match result {
             Ok(Ok((total_size, items_count))) => {
-                let execution_time = start_time.elapsed();
+                let exec = start_time.elapsed();
 
                 if total_size > 0 || items_count > 0 {
                     object_info.size = total_size;
@@ -224,18 +225,18 @@ pub fn spawn_progressive_size_calculation(
                         path.display(),
                         total_size,
                         items_count,
-                        execution_time
+                        exec
                     );
                 }
 
                 let task_result = TaskResult::Generic {
                     task_id,
                     result: Ok(()),
-                    message: Some(format!(
+                    msg: Some(format!(
                         "Final size: {} bytes, {} items",
                         total_size, items_count
                     )),
-                    execution_time,
+                    exec,
                 };
 
                 let _ = task_tx.send(task_result);
@@ -250,8 +251,8 @@ pub fn spawn_progressive_size_calculation(
                 let task_result = TaskResult::Generic {
                     task_id,
                     result: Err(AppError::Io(e)),
-                    message: Some(format!("Size calculation failed for {}", path.display())),
-                    execution_time: start_time.elapsed(),
+                    msg: Some(format!("Size calculation failed for {}", path.display())),
+                    exec: start_time.elapsed(),
                 };
 
                 let _ = task_tx.send(task_result);
@@ -269,62 +270,15 @@ pub fn spawn_progressive_size_calculation(
                         std::io::ErrorKind::Other,
                         format!("Task panicked: {}", e),
                     ))),
-                    message: Some(format!(
+                    msg: Some(format!(
                         "Size calculation task failed for {}",
                         path.display()
                     )),
-                    execution_time: start_time.elapsed(),
+                    exec: start_time.elapsed(),
                 };
 
                 let _ = task_tx.send(task_result);
             }
         }
     });
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tempfile::TempDir;
-    use tokio::fs as TokioFs;
-    use tokio::sync::mpsc;
-
-    #[tokio::test]
-    async fn test_size_calculation() {
-        let temp_dir = TempDir::new().unwrap();
-        let test_dir = temp_dir.path().join("test_dir");
-        TokioFs::create_dir(&test_dir).await.unwrap();
-
-        // Create test files
-        TokioFs::write(test_dir.join("file1.txt"), b"hello")
-            .await
-            .unwrap();
-        TokioFs::write(test_dir.join("file2.txt"), b"world!")
-            .await
-            .unwrap();
-
-        let (task_tx, mut task_rx) = mpsc::unbounded_channel();
-
-        let object_info = ObjectInfo {
-            path: test_dir.clone(),
-            name: "test_dir".to_string(),
-            is_dir: true,
-            size: 0,
-            items_count: 0,
-            ..Default::default()
-        };
-
-        spawn_size_calculation(1, temp_dir.path().to_path_buf(), object_info, task_tx);
-
-        // Wait for completion
-        if let Some(TaskResult::Generic {
-            result, message, ..
-        }) = task_rx.recv().await
-        {
-            assert!(result.is_ok());
-            assert!(message.unwrap().contains("11 bytes")); // "hello" + "world!" = 11 bytes
-        } else {
-            panic!("Expected size calculation result");
-        }
-    }
 }

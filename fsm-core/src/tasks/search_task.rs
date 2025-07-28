@@ -19,7 +19,7 @@ pub struct SearchResults {
     pub parsed_lines: Vec<Text<'static>>,
     pub total_matches: usize,
     pub base_directory: PathBuf,
-    pub execution_time: Duration,
+    pub exec: Duration,
 }
 
 /// Spawn content search task using ripgrep
@@ -34,11 +34,11 @@ pub fn spawn_content_search(
 
         match execute_ripgrep_search(&pattern, &path).await {
             Ok(results) => {
-                let task_result = TaskResult::ContentSearchComplete {
+                let task_result = TaskResult::ContentSearchDone {
                     task_id,
                     query: pattern,
                     results: results.lines,
-                    execution_time: start_time.elapsed(),
+                    exec: start_time.elapsed(),
                 };
 
                 if let Err(e) = task_tx.send(task_result) {
@@ -49,8 +49,8 @@ pub fn spawn_content_search(
                 let task_result = TaskResult::Generic {
                     task_id,
                     result: Err(AppError::Ripgrep(e.to_string())),
-                    message: Some(format!("Search failed: {}", e)),
-                    execution_time: start_time.elapsed(),
+                    msg: Some(format!("Search failed: {}", e)),
+                    exec: start_time.elapsed(),
                 };
 
                 if let Err(e) = task_tx.send(task_result) {
@@ -75,11 +75,11 @@ pub fn spawn_filename_search(
             Ok(results) => {
                 let object_infos = convert_to_object_infos(results.lines, &path).await;
 
-                let task_result = TaskResult::SearchComplete {
+                let task_result = TaskResult::SearchDone {
                     task_id,
                     query: pattern,
                     results: object_infos,
-                    execution_time: start_time.elapsed(),
+                    exec: start_time.elapsed(),
                 };
 
                 if let Err(e) = task_tx.send(task_result) {
@@ -90,8 +90,8 @@ pub fn spawn_filename_search(
                 let task_result = TaskResult::Generic {
                     task_id,
                     result: Err(AppError::Ripgrep(e.to_string())),
-                    message: Some(format!("Filename search failed: {}", e)),
-                    execution_time: start_time.elapsed(),
+                    msg: Some(format!("Filename search failed: {}", e)),
+                    exec: start_time.elapsed(),
                 };
 
                 if let Err(e) = task_tx.send(task_result) {
@@ -149,7 +149,7 @@ async fn execute_ripgrep_search(pattern: &str, path: &PathBuf) -> Result<SearchR
         lines,
         parsed_lines,
         base_directory: path.clone(),
-        execution_time: Duration::ZERO, // Set by caller
+        exec: Duration::ZERO, // Set by caller
     })
 }
 
@@ -192,7 +192,7 @@ async fn execute_filename_search(pattern: &str, path: &PathBuf) -> Result<Search
         parsed_lines: lines.iter().map(|l| Text::raw(l.clone())).collect(),
         lines,
         base_directory: path.clone(),
-        execution_time: Duration::ZERO,
+        exec: Duration::ZERO,
     })
 }
 

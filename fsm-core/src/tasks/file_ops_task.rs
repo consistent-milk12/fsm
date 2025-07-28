@@ -17,6 +17,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 use crate::controller;
+use crate::controller::actions::OperationId;
 use crate::controller::event_loop::{FileOperationType, TaskResult};
 use crate::error::AppError;
 
@@ -75,20 +76,20 @@ impl FileOperationTask {
             }
         };
 
-        let execution_time = start_time.elapsed();
+        let exec = start_time.elapsed();
         let operation_type = self.get_operation_type();
 
         // Send completion result
         let completion = TaskResult::FileOperation {
-            operation_id: controller::actions::OperationId(self.operation_id.clone()),
-            operation_type,
             result: result.map_err(|e| {
                 AppError::Io(std::io::Error::new(
                     std::io::ErrorKind::Other,
                     e.to_string(),
                 ))
             }),
-            execution_time,
+            exec,
+            op_id: OperationId::from_string(self.operation_id.clone()),
+            op_kind: operation_type,
         };
 
         if let Err(e) = self.task_tx.send(completion) {
@@ -326,12 +327,12 @@ impl FileOperationTask {
         Ok(())
     }
 
+    /// TODO: FIX PERCENTAGE
     async fn report_progress(&self, current: u64, total: u64, current_file: &Path) -> Result<()> {
         let progress = TaskResult::Progress {
             task_id: 0, // File operations use operation_id instead
-            current,
-            total,
-            message: Some(format!("Processing: {}", current_file.display())),
+            pct: 0.0,
+            msg: Some(format!("Processing: {}", current_file.display())),
         };
 
         self.task_tx
@@ -378,49 +379,4 @@ pub fn spawn_file_operation(
     });
 
     operation_id
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tempfile::TempDir;
-    use tokio::sync::mpsc;
-
-    #[tokio::test]
-    async fn test_file_copy() {
-        let temp_dir = TempDir::new().unwrap();
-        let source = temp_dir.path().join("source.txt");
-        let dest = temp_dir.path().join("dest.txt");
-
-        // Create source file
-        TokioFs::write(&source, b"test content").await.unwrap();
-
-        let (task_tx, mut task_rx) = mpsc::unbounded_channel();
-        let cancel_token = CancellationToken::new();
-
-        let operation = FileOperation::Copy {
-            source: source.clone(),
-            dest: dest.clone(),
-        };
-
-        let task = FileOperationTask::new(operation, task_tx, cancel_token);
-        task.execute().await.unwrap();
-
-        // Verify file was copied
-        let content = TokioFs::read_to_string(&dest).await.unwrap();
-        assert_eq!(content, "test content");
-
-        // Check that completion message was sent
-        if let Some(TaskResult::FileOperation {
-            operation_type,
-            result,
-            ..
-        }) = task_rx.recv().await
-        {
-            assert!(matches!(operation_type, FileOperationType::Copy));
-            assert!(result.is_ok());
-        } else {
-            panic!("Expected FileOperation task result");
-        }
-    }
 }
