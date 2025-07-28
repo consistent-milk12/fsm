@@ -1,10 +1,7 @@
 // fsm-core/src/controller/handlers/search_handler.rs
 // Fixed to work with UIState overlay system and input management
 
-use crate::controller::{
-    actions::Action,
-    event_processor::{Event, EventHandler},
-};
+use crate::controller::actions::Action;
 use crate::error::AppError;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::collections::HashMap;

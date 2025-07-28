@@ -16,12 +16,7 @@ pub mod controller {
     pub mod event_loop;
     pub use event_loop::{EventLoop, TaskResult};
 
-    pub mod event_processor;
-    pub use event_processor::EventHandler;
-
     pub mod state_coordinator;
-
-    pub mod action_batcher;
 
     pub mod state_provider;
 

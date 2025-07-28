@@ -6,7 +6,6 @@ use std::sync::Arc;
 use tracing::{debug, instrument};
 
 use crate::controller::Action;
-use crate::controller::actions::OperationId;
 use crate::controller::state_provider::StateProvider;
 use crate::model::ui_state::{RedrawFlag, UIState};
 
@@ -28,7 +27,14 @@ impl ClipboardDispatcher {
     async fn handle_copy(&self, path: PathBuf) -> Result<DispatchResult> {
         debug!("Copying to clipboard: {:?}", path);
 
-        let result = self.copy_to_clipboard_async(path).await;
+        // Use StateProvider's direct UI state access
+        let ui_state = self.state_provider.ui_state();
+        let result = {
+            let mut ui = ui_state
+                .write()
+                .map_err(|_| anyhow::anyhow!("UI state lock poisoned"))?;
+            ui.copy_path(path).await
+        };
 
         match result {
             Ok(_) => {
@@ -39,7 +45,7 @@ impl ClipboardDispatcher {
                 Ok(DispatchResult::Continue)
             }
             Err(e) => {
-                let error_msg = format!("Copy failed: {e}");
+                let error_msg = format!("Copy failed: {}", e);
                 self.state_provider
                     .update_ui_state(Box::new(move |ui: &mut UIState| {
                         ui.error(&error_msg);
@@ -54,7 +60,13 @@ impl ClipboardDispatcher {
     async fn handle_cut(&self, path: PathBuf) -> Result<DispatchResult> {
         debug!("Cutting to clipboard: {:?}", path);
 
-        let result = self.cut_to_clipboard_async(path).await;
+        let ui_state = self.state_provider.ui_state();
+        let result = {
+            let mut ui = ui_state
+                .write()
+                .map_err(|_| anyhow::anyhow!("UI state lock poisoned"))?;
+            ui.cut_path(path).await
+        };
 
         match result {
             Ok(_) => {
@@ -65,7 +77,7 @@ impl ClipboardDispatcher {
                 Ok(DispatchResult::Continue)
             }
             Err(e) => {
-                let error_msg = format!("Cut failed: {e}");
+                let error_msg = format!("Cut failed: {}", e);
                 self.state_provider
                     .update_ui_state(Box::new(move |ui: &mut UIState| {
                         ui.error(&error_msg);
@@ -112,9 +124,17 @@ impl ClipboardDispatcher {
 
         let mut success_count = 0;
         let total_count = paths.len();
+        let ui_state = self.state_provider.ui_state();
 
         for path in paths {
-            if self.copy_to_clipboard_async(path).await.is_ok() {
+            let result = {
+                let mut ui = ui_state
+                    .write()
+                    .map_err(|_| anyhow::anyhow!("UI state lock poisoned"))?;
+                ui.copy_path(path).await
+            };
+
+            if result.is_ok() {
                 success_count += 1;
             }
         }
@@ -122,10 +142,11 @@ impl ClipboardDispatcher {
         self.state_provider
             .update_ui_state(Box::new(move |ui: &mut UIState| {
                 if success_count == total_count {
-                    ui.success(format!("{success_count} items copied to clipboard"));
+                    ui.success(&format!("{} items copied to clipboard", success_count));
                 } else {
-                    ui.warn(format!(
-                        "{success_count}/{total_count} items copied successfully"
+                    ui.warn(&format!(
+                        "{}/{} items copied successfully",
+                        success_count, total_count
                     ));
                 }
             }));
@@ -139,9 +160,17 @@ impl ClipboardDispatcher {
 
         let mut success_count = 0;
         let total_count = paths.len();
+        let ui_state = self.state_provider.ui_state();
 
         for path in paths {
-            if self.cut_to_clipboard_async(path).await.is_ok() {
+            let result = {
+                let mut ui = ui_state
+                    .write()
+                    .map_err(|_| anyhow::anyhow!("UI state lock poisoned"))?;
+                ui.cut_path(path).await
+            };
+
+            if result.is_ok() {
                 success_count += 1;
             }
         }
@@ -149,10 +178,11 @@ impl ClipboardDispatcher {
         self.state_provider
             .update_ui_state(Box::new(move |ui: &mut UIState| {
                 if success_count == total_count {
-                    ui.success(format!("{success_count} items cut to clipboard"));
+                    ui.success(&format!("{} items cut to clipboard", success_count));
                 } else {
-                    ui.warn(format!(
-                        "{success_count}/{total_count} items cut successfully"
+                    ui.warn(&format!(
+                        "{}/{} items cut successfully",
+                        success_count, total_count
                     ));
                 }
             }));
@@ -162,7 +192,6 @@ impl ClipboardDispatcher {
 
     /// Handle paste to current directory
     async fn handle_paste_to_current(&self) -> Result<DispatchResult> {
-        // Get current directory from filesystem state
         let current_dir = {
             let fs = self.state_provider.fs_state();
             fs.active_pane().cwd.clone()
@@ -178,7 +207,7 @@ impl ClipboardDispatcher {
         let dest_display = destination.display().to_string();
         self.state_provider
             .update_ui_state(Box::new(move |ui: &mut UIState| {
-                ui.info(format!("Paste operation to {dest_display} initiated"));
+                ui.info(&format!("Paste operation to {} initiated", dest_display));
             }));
 
         Ok(DispatchResult::Continue)
@@ -194,19 +223,29 @@ impl ClipboardDispatcher {
         Ok(DispatchResult::Continue)
     }
 
-    /// Handle remove item from clipboard
-    async fn handle_remove_from_clipboard(&self, item_id: u64) -> Result<DispatchResult> {
-        let result = self.remove_clipboard_item_async(item_id).await;
+    async fn handle_clear_clipboard(&self) -> Result<DispatchResult> {
+        let ui_state = self.state_provider.ui_state();
+
+        // Perform async operation without holding the lock
+        let result: Result<(), anyhow::Error> = {
+            let mut ui = ui_state
+                .write()
+                .map_err(|_| anyhow::anyhow!("UI state lock poisoned"))?;
+
+            // Call async method on mutable reference
+            ui.clipboard.clear().await;
+            Ok(())
+        };
 
         match result {
             Ok(_) => {
                 self.state_provider
                     .update_ui_state(Box::new(|ui: &mut UIState| {
-                        ui.success("Item removed from clipboard");
+                        ui.success("Clipboard cleared");
                     }));
             }
             Err(e) => {
-                let error_msg = format!("Failed to remove item: {e}");
+                let error_msg = format!("Failed to clear clipboard: {}", e);
                 self.state_provider
                     .update_ui_state(Box::new(move |ui: &mut UIState| {
                         ui.error(&error_msg);
@@ -216,78 +255,7 @@ impl ClipboardDispatcher {
 
         Ok(DispatchResult::Continue)
     }
-
-    /// Handle clear clipboard
-    async fn handle_clear_clipboard(&self) -> Result<DispatchResult> {
-        self.state_provider
-            .update_ui_state(Box::new(|ui: &mut UIState| {
-                std::mem::drop(ui.clear_clipboard());
-                ui.success("Clipboard cleared");
-            }));
-        Ok(DispatchResult::Continue)
-    }
-
-    /// Handle paste specific clipboard item
-    async fn handle_paste_clipboard_item(
-        &self,
-        item_id: u64,
-        destination: PathBuf,
-    ) -> Result<DispatchResult> {
-        debug!("Pasting clipboard item {} to: {:?}", item_id, destination);
-
-        // TODO: Implement actual paste operation for specific item
-        let dest_display = destination.display().to_string();
-        self.state_provider
-            .update_ui_state(Box::new(move |ui: &mut UIState| {
-                ui.info(format!("Pasting item {item_id} to {dest_display}"));
-            }));
-
-        Ok(DispatchResult::Continue)
-    }
-
-    /// Handle execute clipboard paste operation
-    #[allow(unused)]
-    async fn handle_execute_clipboard_paste(
-        &self,
-        operation_id: OperationId, // Simplified operation ID
-        item_ids: Vec<u64>,
-        destination: PathBuf,
-    ) -> Result<DispatchResult> {
-        debug!(
-            "Executing clipboard paste operation {} with {} items",
-            operation_id,
-            item_ids.len()
-        );
-
-        // TODO: Implement actual batch paste operation
-        let item_count = item_ids.len();
-        self.state_provider
-            .update_ui_state(Box::new(move |ui: &mut UIState| {
-                ui.info(format!("Executing paste operation for {item_count} items"));
-            }));
-
-        Ok(DispatchResult::Continue)
-    }
-
-    /// Async clipboard operations (placeholder implementations)
-    async fn copy_to_clipboard_async(&self, _path: PathBuf) -> Result<()> {
-        // TODO: Implement actual clipboard copy operation
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        Ok(())
-    }
-
-    async fn cut_to_clipboard_async(&self, _path: PathBuf) -> Result<()> {
-        // TODO: Implement actual clipboard cut operation
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        Ok(())
-    }
-
-    async fn remove_clipboard_item_async(&self, _item_id: u64) -> Result<()> {
-        // TODO: Implement actual clipboard item removal
-        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-        Ok(())
-    }
-
+    
     /// Handle action asynchronously
     pub async fn handle(&mut self, action: Action) -> Result<DispatchResult> {
         match action {
@@ -308,21 +276,6 @@ impl ClipboardDispatcher {
             Action::Paste => self.handle_paste_to_current().await,
             Action::PasteToDirectory(dest) => self.handle_paste_to_directory(dest).await,
             Action::SelectClipboardItem(index) => self.handle_select_clipboard_item(index).await,
-            Action::RemoveFromClipboard(item_id) => {
-                self.handle_remove_from_clipboard(item_id).await
-            }
-            Action::PasteClipboardItem {
-                item_id,
-                destination,
-            } => self.handle_paste_clipboard_item(item_id, destination).await,
-            Action::ExecuteClipboardPaste {
-                operation_id,
-                item_ids,
-                destination,
-            } => {
-                self.handle_execute_clipboard_paste(operation_id, item_ids, destination)
-                    .await
-            }
             _ => Ok(DispatchResult::NotHandled),
         }
     }
@@ -348,10 +301,7 @@ impl ActionMatcher for ClipboardDispatcher {
                 | Action::ClipboardUp
                 | Action::ClipboardDown
                 | Action::SelectClipboardItem(_)
-                | Action::RemoveFromClipboard(_)
                 | Action::ClearClipboard
-                | Action::PasteClipboardItem { .. }
-                | Action::ExecuteClipboardPaste { .. }
         )
     }
 

@@ -7,7 +7,7 @@
 use std::{
     collections::VecDeque,
     path::PathBuf,
-    sync::Arc,
+    sync::{Arc, MutexGuard, atomic::Ordering},
     time::{Duration, Instant},
 };
 
@@ -16,6 +16,7 @@ use tokio::sync::mpsc::UnboundedReceiver;
 use tracing::{debug, info};
 
 use crate::{
+    FSState,
     controller::{
         actions::{Action, OperationId},
         state_coordinator::StateCoordinator,
@@ -242,12 +243,14 @@ impl EventLoop {
             Ok(entries) => {
                 // update pane -------------------------------------------------
                 {
-                    let mut fs = self.coord.fs_state();
+                    let mut fs: MutexGuard<'_, FSState> = self.coord.fs_state();
                     let p: &mut PaneState = fs.active_pane_mut();
                     if p.cwd == path {
                         p.set_entries(entries);
+                        p.is_loading.store(false, Ordering::Relaxed); // ADD THIS LINE
                     }
                 }
+
                 // user feedback ----------------------------------------------
                 self.coord.update_ui_state(|ui| {
                     ui.success(format!("Loaded {}", path.display()));
@@ -258,10 +261,20 @@ impl EventLoop {
                 vec![Action::ReloadDirectory]
             }
             Err(e) => {
+                {
+                    let mut fs: MutexGuard<'_, FSState> = self.coord.fs_state();
+                    let p: &mut PaneState = fs.active_pane_mut();
+                    if p.cwd == path {
+                        p.is_loading.store(false, Ordering::Relaxed); // ADD THIS LINE
+                    }
+                }
+
                 self.error(format!("Load {} failed: {}", path.display(), e));
+
                 self.coord
                     .app_state()
                     .complete_task(id, Some(e.to_string().into()));
+
                 vec![]
             }
         }
