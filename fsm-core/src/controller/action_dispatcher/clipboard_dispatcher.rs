@@ -93,13 +93,13 @@ impl ClipboardDispatcher {
             ClipboardNavigation::Up => {
                 self.state_provider
                     .update_ui_state(Box::new(|ui: &mut UIState| {
-                        ui.move_clipboard_selection_up();
+                        ui.clipboard_up();
                     }));
             }
             ClipboardNavigation::Down => {
                 self.state_provider
                     .update_ui_state(Box::new(|ui: &mut UIState| {
-                        ui.move_clipboard_selection_down();
+                        ui.clipboard_down();
                     }));
             }
         }

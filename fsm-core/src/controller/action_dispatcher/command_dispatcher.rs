@@ -235,10 +235,15 @@ impl CommandDispatcher {
         let results = self.perform_filename_search(pattern);
         let matches = results.len();
 
-        let results_clone = results.clone();
+        // Store results in FSState where search results belong
+        {
+            let mut fs = self.state_provider.fs_state();
+            fs.active_pane_mut().search_results = results;
+        }
+
+        // Update UI state for overlay
         self.state_provider
-            .update_ui_state(Box::new(move |ui: &mut UIState| {
-                ui.fil = results_clone;
+            .update_ui_state(Box::new(|ui: &mut UIState| {
                 ui.overlay = UIOverlay::SearchResults;
                 ui.request_redraw(RedrawFlag::All);
             }));

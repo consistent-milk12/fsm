@@ -67,7 +67,8 @@ impl UIControlDispatcher {
         self.state_provider
             .update_ui_state(Box::new(move |ui: &mut UIState| {
                 ui.overlay = overlay_clone;
-                ui.clear_input();
+                ui.prompt_buffer.clear();
+                ui.prompt_cursor = 0;
 
                 if matches!(action_clone, Action::CloseOverlay) {
                     ui.input_prompt_type = None;
@@ -85,7 +86,8 @@ impl UIControlDispatcher {
         self.state_provider
             .update_ui_state(Box::new(move |ui: &mut UIState| {
                 ui.overlay = UIOverlay::Prompt;
-                ui.clear_input();
+                ui.prompt_buffer.clear();
+                ui.prompt_cursor = 0;
                 ui.input_prompt_type = Some(prompt_type);
                 ui.request_redraw(RedrawFlag::All);
             }));
@@ -98,7 +100,7 @@ impl UIControlDispatcher {
         let input = input.to_string();
         self.state_provider
             .update_ui_state(Box::new(move |ui: &mut UIState| {
-                ui.set_input(&input);
+                ui.prompt_set(&input);
                 ui.request_redraw(RedrawFlag::Overlay);
             }));
 
@@ -110,14 +112,14 @@ impl UIControlDispatcher {
         self.state_provider
             .update_ui_state(Box::new(|ui: &mut UIState| {
                 ui.overlay = UIOverlay::Prompt;
-                ui.clear_input();
+                ui.prompt_buffer.clear();
+                ui.prompt_cursor = 0;
                 ui.input_prompt_type = Some(InputPromptType::Custom("command".to_string()));
                 ui.request_redraw(RedrawFlag::All);
             }));
 
         DispatchResult::Continue
     }
-
     /// Handle action asynchronously
     pub async fn handle(&mut self, action: Action) -> Result<DispatchResult> {
         // Fast path for overlay toggles

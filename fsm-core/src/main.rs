@@ -58,7 +58,6 @@ use fsm_core::{
         fs_state::FSState,
         ui_state::{RedrawFlag, UIState},
     },
-    view::ui::UIRenderer,
 };
 
 type AppTerminal = Terminal<Backend<Stdout>>;
@@ -500,19 +499,16 @@ impl App {
     }
 
     async fn log_final_metrics(&self) {
-        let event_metrics = self.event_processor.metrics();
-        let event_loop_metrics = self.event_loop.get_metrics();
+        let event_loop_metrics = self.event_loop.snapshot_metrics();
 
         info!("Final metrics:");
-        info!("  Events processed: {}", event_metrics.total_events);
-        info!("  Tasks processed: {}", event_loop_metrics.tasks_processed);
+        info!("  Tasks processed: {}", event_loop_metrics.tasks);
+        info!("  Actions processed: {}", event_loop_metrics.actions);
         info!(
-            "  Actions processed: {}",
-            event_loop_metrics.actions_processed
+            "  Average latency: {:.2}ms",
+            event_loop_metrics.avg.as_millis()
         );
-        info!("  Average latency: {:.2}ms", event_metrics.avg_latency_ms());
-        info!("  Dropped events: {}", event_metrics.dropped_events);
-        info!("  Slow frames: {}", self.performance_monitor.slow_frames);
+        info!("  Queued actions: {}", event_loop_metrics.queued);
     }
 
     async fn setup_shutdown_handler(&self) {

@@ -125,10 +125,16 @@ impl SearchDispatcher {
         let search_results = self.perform_filename_search(query);
         let query = query.to_string();
 
+        // Store results in FSState and update UI
+        {
+            let mut fs = self.state_provider.fs_state();
+            fs.active_pane_mut().search_results = search_results;
+        }
+
         self.state_provider
             .update_ui_state(Box::new(move |ui: &mut UIState| {
-                ui.set_input(&query);
-                ui.filename_search_results = search_results;
+                ui.prompt_set(&query);
+                ui.search_query = Some(query.into());
                 ui.request_redraw(RedrawFlag::Overlay);
             }));
 
@@ -141,9 +147,13 @@ impl SearchDispatcher {
             Action::FileNameSearch(query) => Ok(self.handle_filename_search(&query)),
 
             Action::ShowFilenameSearchResults(results) => {
+                {
+                    let mut fs = self.state_provider.fs_state();
+                    fs.active_pane_mut().search_results = results;
+                }
+
                 self.state_provider
-                    .update_ui_state(Box::new(move |ui: &mut UIState| {
-                        ui.filename_search_results = results;
+                    .update_ui_state(Box::new(|ui: &mut UIState| {
                         ui.request_redraw(RedrawFlag::Overlay);
                     }));
 
@@ -151,9 +161,13 @@ impl SearchDispatcher {
             }
 
             Action::ShowSearchResults(results) => {
+                {
+                    let mut fs = self.state_provider.fs_state();
+                    fs.active_pane_mut().search_results = results;
+                }
+
                 self.state_provider
-                    .update_ui_state(Box::new(move |ui: &mut UIState| {
-                        ui.filename_search_results = results;
+                    .update_ui_state(Box::new(|ui: &mut UIState| {
                         ui.request_redraw(RedrawFlag::All);
                     }));
 
