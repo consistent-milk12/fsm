@@ -79,12 +79,7 @@ impl FileOperationTask {
 
         // Send completion result
         let completion = TaskResult::FileOperation {
-            result: result.map_err(|e| {
-                AppError::Io(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    e.to_string(),
-                ))
-            }),
+            result: result.map_err(|e| AppError::Io(std::io::Error::other(e.to_string()))),
             exec,
             op_id: OperationId::from_string(self.operation_id.clone()),
             op_kind: operation_type,
@@ -220,7 +215,7 @@ impl FileOperationTask {
                     .await?;
             } else if entry_path.is_dir() {
                 // Use Box::pin to handle async recursion
-                Box::pin(self.copy_directory_recursive(&entry_path, &dest_path.parent().unwrap()))
+                Box::pin(self.copy_directory_recursive(&entry_path, dest_path.parent().unwrap()))
                     .await?;
             }
         }

@@ -55,10 +55,7 @@ pub fn spawn_directory_scan(
                 Ok(entries)
             }
             Err(e) => {
-                let app_error = AppError::Io(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    e.to_string(),
-                ));
+                let app_error = AppError::Io(std::io::Error::other(e.to_string()));
 
                 let task_result = TaskResult::DirectoryLoad {
                     task_id,
@@ -137,7 +134,7 @@ pub fn spawn_streaming_directory_scan(
         let mut read_dir = match fs::read_dir(&path).await {
             Ok(rd) => rd,
             Err(e) => {
-                let error_msg = format!("Failed to read directory: {}", e);
+                let error_msg = format!("Failed to read directory: {e}");
                 let _ = update_tx.send(ScanUpdate::ScanError(error_msg.clone()));
 
                 let app_error = AppError::Io(e);
@@ -157,7 +154,7 @@ pub fn spawn_streaming_directory_scan(
             let entry = match entry_result {
                 Ok(e) => e,
                 Err(e) => {
-                    let error_msg = format!("Failed to read entry: {}", e);
+                    let error_msg = format!("Failed to read entry: {e}");
                     let _ = update_tx.send(ScanUpdate::ScanError(error_msg));
                     continue;
                 }
@@ -195,7 +192,7 @@ pub fn spawn_streaming_directory_scan(
                         let progress_result = TaskResult::Progress {
                             task_id,
                             pct: processed as f32,
-                            msg: Some(format!("Scanned {} entries", processed)),
+                            msg: Some(format!("Scanned {processed} entries")),
                         };
                         let _ = task_tx.send(progress_result);
 
@@ -260,10 +257,7 @@ pub fn spawn_two_phase_directory_scan(
         let (entries, light_entries) = match scan_with_light_metadata(&path, show_hidden).await {
             Ok(result) => result,
             Err(e) => {
-                let app_error = AppError::Io(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    e.to_string(),
-                ));
+                let app_error = AppError::Io(std::io::Error::other(e.to_string()));
 
                 let task_result = TaskResult::DirectoryLoad {
                     task_id,

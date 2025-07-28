@@ -42,10 +42,7 @@ pub fn spawn_metadata_load(
 
                 let task_result: TaskResult = TaskResult::Generic {
                     task_id,
-                    result: Err(AppError::Io(std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        e.to_string(),
-                    ))),
+                    result: Err(AppError::Io(std::io::Error::other(e.to_string()))),
                     msg: Some(format!("Metadata load failed for {}", path.display())),
                     exec: start_time.elapsed(),
                 };
@@ -99,8 +96,7 @@ pub fn spawn_batch_metadata_load(
                     task_id,
                     pct,
                     msg: Some(format!(
-                        "Loaded {} of {} metadata entries",
-                        processed, total_entries
+                        "Loaded {processed} of {total_entries} metadata entries"
                     )),
                 };
 

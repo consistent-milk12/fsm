@@ -399,7 +399,7 @@ impl AppState {
         );
 
         // Add to recent queries
-        if let Some(pos) = search_state.recent_queries.iter().position(|q| q == &query) {
+        if let Some(pos) = search_state.recent_queries.iter().position(|q| q == query) {
             search_state.recent_queries.remove(pos);
         }
         search_state.recent_queries.push_front(query.clone());

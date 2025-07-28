@@ -39,7 +39,7 @@ impl ClipboardDispatcher {
                 Ok(DispatchResult::Continue)
             }
             Err(e) => {
-                let error_msg = format!("Copy failed: {}", e);
+                let error_msg = format!("Copy failed: {e}");
                 self.state_provider
                     .update_ui_state(Box::new(move |ui: &mut UIState| {
                         ui.error(&error_msg);
@@ -65,7 +65,7 @@ impl ClipboardDispatcher {
                 Ok(DispatchResult::Continue)
             }
             Err(e) => {
-                let error_msg = format!("Cut failed: {}", e);
+                let error_msg = format!("Cut failed: {e}");
                 self.state_provider
                     .update_ui_state(Box::new(move |ui: &mut UIState| {
                         ui.error(&error_msg);
@@ -122,11 +122,10 @@ impl ClipboardDispatcher {
         self.state_provider
             .update_ui_state(Box::new(move |ui: &mut UIState| {
                 if success_count == total_count {
-                    ui.success(&format!("{} items copied to clipboard", success_count));
+                    ui.success(format!("{success_count} items copied to clipboard"));
                 } else {
-                    ui.warn(&format!(
-                        "{}/{} items copied successfully",
-                        success_count, total_count
+                    ui.warn(format!(
+                        "{success_count}/{total_count} items copied successfully"
                     ));
                 }
             }));
@@ -150,11 +149,10 @@ impl ClipboardDispatcher {
         self.state_provider
             .update_ui_state(Box::new(move |ui: &mut UIState| {
                 if success_count == total_count {
-                    ui.success(&format!("{} items cut to clipboard", success_count));
+                    ui.success(format!("{success_count} items cut to clipboard"));
                 } else {
-                    ui.warn(&format!(
-                        "{}/{} items cut successfully",
-                        success_count, total_count
+                    ui.warn(format!(
+                        "{success_count}/{total_count} items cut successfully"
                     ));
                 }
             }));
@@ -180,7 +178,7 @@ impl ClipboardDispatcher {
         let dest_display = destination.display().to_string();
         self.state_provider
             .update_ui_state(Box::new(move |ui: &mut UIState| {
-                ui.info(&format!("Paste operation to {} initiated", dest_display));
+                ui.info(format!("Paste operation to {dest_display} initiated"));
             }));
 
         Ok(DispatchResult::Continue)
@@ -208,7 +206,7 @@ impl ClipboardDispatcher {
                     }));
             }
             Err(e) => {
-                let error_msg = format!("Failed to remove item: {}", e);
+                let error_msg = format!("Failed to remove item: {e}");
                 self.state_provider
                     .update_ui_state(Box::new(move |ui: &mut UIState| {
                         ui.error(&error_msg);
@@ -241,7 +239,7 @@ impl ClipboardDispatcher {
         let dest_display = destination.display().to_string();
         self.state_provider
             .update_ui_state(Box::new(move |ui: &mut UIState| {
-                ui.info(&format!("Pasting item {} to {}", item_id, dest_display));
+                ui.info(format!("Pasting item {item_id} to {dest_display}"));
             }));
 
         Ok(DispatchResult::Continue)
@@ -265,10 +263,7 @@ impl ClipboardDispatcher {
         let item_count = item_ids.len();
         self.state_provider
             .update_ui_state(Box::new(move |ui: &mut UIState| {
-                ui.info(&format!(
-                    "Executing paste operation for {} items",
-                    item_count
-                ));
+                ui.info(format!("Executing paste operation for {item_count} items"));
             }));
 
         Ok(DispatchResult::Continue)

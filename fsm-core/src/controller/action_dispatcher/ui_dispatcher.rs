@@ -29,7 +29,7 @@ impl UIControlDispatcher {
                 let current = {
                     let ui_state = self.state_provider.ui_state();
                     let ui = ui_state.read().expect("UI state lock poisoned");
-                    ui.overlay.clone()
+                    ui.overlay
                 };
 
                 let new_overlay = if current == UIOverlay::Help {
@@ -45,7 +45,7 @@ impl UIControlDispatcher {
                 let current = {
                     let ui_state = self.state_provider.ui_state();
                     let ui = ui_state.read().expect("UI state lock poisoned");
-                    ui.overlay.clone()
+                    ui.overlay
                 };
 
                 let new_overlay = if current == UIOverlay::FileNameSearch {
@@ -61,7 +61,7 @@ impl UIControlDispatcher {
             _ => return None,
         };
 
-        let overlay_clone = new_overlay.clone();
+        let overlay_clone = new_overlay;
         let action_clone = action.clone(); // if Action is Clone
 
         self.state_provider

@@ -184,13 +184,8 @@ impl UIRenderer {
             let ui_state = coord.ui_state();
             let ui_guard = ui_state.read().expect("UI state lock poisoned");
 
-            self.file_table.render_optimized(
-                frame,
-                &*ui_guard,
-                active_pane,
-                &active_pane.cwd,
-                area,
-            );
+            self.file_table
+                .render_optimized(frame, &ui_guard, active_pane, &active_pane.cwd, area);
         }
 
         self.dirty_flags |= 1;
@@ -233,9 +228,10 @@ impl UIRenderer {
         // Clipboard overlay
         if ui_snapshot.clipboard_active {
             let clipboard_area = self.centered_rect(screen_size, 85, 80);
-            if let Err(_) =
-                self.clipboard_overlay
-                    .render_sync_fallback(frame, clipboard_area, ui_snapshot)
+            if self
+                .clipboard_overlay
+                .render_sync_fallback(frame, clipboard_area, ui_snapshot)
+                .is_err()
             {
                 self.render_error_overlay(frame, "Clipboard unavailable", clipboard_area);
             }
@@ -318,7 +314,7 @@ impl UIRenderer {
         let ui_state = coord.ui_state();
         let ui_guard = ui_state.read().expect("UI state lock poisoned");
 
-        SearchSnapshot::from_states(&*ui_guard, active_pane).unwrap_or_else(|| SearchSnapshot {
+        SearchSnapshot::from_states(&ui_guard, active_pane).unwrap_or_else(|| SearchSnapshot {
             query: ui_snapshot.search_query.clone().unwrap_or_default(),
             cursor: 0,
             results: std::sync::Arc::from([]),
@@ -330,7 +326,7 @@ impl UIRenderer {
     fn create_prompt_snapshot(&self, coord: &StateCoordinator) -> Option<PromptSnapshot> {
         let ui_state = coord.ui_state();
         let ui_guard = ui_state.read().expect("UI state lock poisoned");
-        PromptSnapshot::from_ui(&*ui_guard)
+        PromptSnapshot::from_ui(&ui_guard)
     }
 
     /// Enhanced file operations progress with proper FSState integration

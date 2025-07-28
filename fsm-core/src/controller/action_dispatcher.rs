@@ -441,7 +441,7 @@ impl ModularActionDispatcher {
                     Ok(_) => true,
                     Err(e) => {
                         error!("Critical action failed: {}", e);
-                        self.show_error(&format!("Critical action failed: {}", e));
+                        self.show_error(&format!("Critical action failed: {e}"));
                         true
                     }
                 }
@@ -481,7 +481,7 @@ impl ModularActionDispatcher {
             Ok(_) => true,
             Err(e) => {
                 error!("Batch action failed: {}", e);
-                self.show_error(&format!("Action failed: {}", e));
+                self.show_error(&format!("Action failed: {e}"));
                 true
             }
         }

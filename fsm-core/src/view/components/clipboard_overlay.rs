@@ -244,7 +244,7 @@ impl OptimizedClipboardOverlay {
         path.rsplit_once('/')
             .and_then(|(_, f)| {
                 if f.len() < max - 4 {
-                    Some(format!(".../{}", f))
+                    Some(format!(".../{f}"))
                 } else {
                     None
                 }

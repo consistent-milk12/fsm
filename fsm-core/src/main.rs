@@ -289,18 +289,10 @@ impl App {
 
                     // File operations
                     (KeyCode::Char('c'), KeyModifiers::NONE) => {
-                        if let Some(path) = self.get_selected_path() {
-                            Some(Action::Copy(path))
-                        } else {
-                            None
-                        }
+                        self.get_selected_path().map(Action::Copy)
                     }
                     (KeyCode::Char('x'), KeyModifiers::NONE) => {
-                        if let Some(path) = self.get_selected_path() {
-                            Some(Action::Cut(path))
-                        } else {
-                            None
-                        }
+                        self.get_selected_path().map(Action::Cut)
                     }
                     (KeyCode::Char('v'), KeyModifiers::NONE) => Some(Action::Paste),
                     (KeyCode::Delete, _) => Some(Action::Delete),

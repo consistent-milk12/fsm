@@ -138,9 +138,9 @@ impl CommandDispatcher {
 
         TokioFs::create_dir(&new_dir)
             .await
-            .with_context(|| format!("Failed to create directory: {}", name))?;
+            .with_context(|| format!("Failed to create directory: {name}"))?;
 
-        self.success(&format!("Created directory: {}", name));
+        self.success(&format!("Created directory: {name}"));
 
         // Reload current directory
         let entries = self.load_directory_safely(&current_dir).await?;
@@ -167,9 +167,9 @@ impl CommandDispatcher {
 
         TokioFs::File::create(&new_file)
             .await
-            .with_context(|| format!("Failed to create file: {}", name))?;
+            .with_context(|| format!("Failed to create file: {name}"))?;
 
-        self.success(&format!("Created file: {}", name));
+        self.success(&format!("Created file: {name}"));
 
         // Reload current directory
         let entries = self.load_directory_safely(&current_dir).await?;
@@ -213,7 +213,7 @@ impl CommandDispatcher {
             fs.active_pane().entries.len()
         };
 
-        self.info(&format!("Directory contains {} entries", entry_count));
+        self.info(&format!("Directory contains {entry_count} entries"));
         Ok(())
     }
 
@@ -248,7 +248,7 @@ impl CommandDispatcher {
                 ui.request_redraw(RedrawFlag::All);
             }));
 
-        self.info(&format!("Found {} matches for '{}'", matches, pattern));
+        self.info(&format!("Found {matches} matches for '{pattern}'"));
         Ok(())
     }
 
@@ -393,7 +393,7 @@ impl CommandDispatcher {
                         if e.to_string().contains("quit") {
                             return Ok(DispatchResult::Terminate);
                         }
-                        self.error(&format!("Command failed: {}", e));
+                        self.error(&format!("Command failed: {e}"));
                     }
                 }
 
@@ -411,8 +411,8 @@ impl CommandDispatcher {
 
             Some(InputPromptType::CreateFile) => {
                 if !input.is_empty() {
-                    if let Err(e) = self.execute_command(&format!("touch {}", input)).await {
-                        self.error(&format!("Failed to create file: {}", e));
+                    if let Err(e) = self.execute_command(&format!("touch {input}")).await {
+                        self.error(&format!("Failed to create file: {e}"));
                     }
                 }
                 self.close_overlay();
@@ -421,8 +421,8 @@ impl CommandDispatcher {
 
             Some(InputPromptType::CreateDirectory) => {
                 if !input.is_empty() {
-                    if let Err(e) = self.execute_command(&format!("mkdir {}", input)).await {
-                        self.error(&format!("Failed to create directory: {}", e));
+                    if let Err(e) = self.execute_command(&format!("mkdir {input}")).await {
+                        self.error(&format!("Failed to create directory: {e}"));
                     }
                 }
                 self.close_overlay();
@@ -431,8 +431,8 @@ impl CommandDispatcher {
 
             Some(InputPromptType::GoToPath) => {
                 if !input.is_empty() {
-                    if let Err(e) = self.execute_command(&format!("cd {}", input)).await {
-                        self.error(&format!("Failed to change directory: {}", e));
+                    if let Err(e) = self.execute_command(&format!("cd {input}")).await {
+                        self.error(&format!("Failed to change directory: {e}"));
                     }
                 }
                 self.close_overlay();

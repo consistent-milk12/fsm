@@ -71,7 +71,7 @@ impl OptimizedLoadingOverlay {
                         .fg(theme::YELLOW)
                         .add_modifier(Modifier::BOLD),
                 )),
-                Line::from(format!("Elapsed: {:.0?}", elapsed)),
+                Line::from(format!("Elapsed: {elapsed:.0?}")),
             ];
 
             frame.render_widget(
@@ -90,7 +90,7 @@ impl OptimizedLoadingOverlay {
                         .fg(theme::YELLOW)
                         .add_modifier(Modifier::BOLD),
                 )),
-                Line::from(format!("Elapsed: {:.0?}", elapsed)),
+                Line::from(format!("Elapsed: {elapsed:.0?}")),
             ]);
 
             frame.render_widget(

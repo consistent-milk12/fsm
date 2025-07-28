@@ -54,8 +54,7 @@ pub fn spawn_size_calculation(
                     task_id,
                     result: Ok(()),
                     msg: Some(format!(
-                        "Calculated size: {} bytes, {} items",
-                        total_size, items_count
+                        "Calculated size: {total_size} bytes, {items_count} items"
                     )),
                     exec,
                 };
@@ -83,10 +82,9 @@ pub fn spawn_size_calculation(
 
                 let task_result = TaskResult::Generic {
                     task_id,
-                    result: Err(AppError::Io(std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        format!("Task panicked: {}", e),
-                    ))),
+                    result: Err(AppError::Io(std::io::Error::other(format!(
+                        "Task panicked: {e}"
+                    )))),
                     msg: Some(format!(
                         "Size calculation task failed for {}",
                         path.display()
@@ -189,8 +187,7 @@ pub fn spawn_progressive_size_calculation(
                                     task_id,
                                     pct: 0.0,
                                     msg: Some(format!(
-                                        "Scanned {} files, {} bytes",
-                                        file_count, total_size
+                                        "Scanned {file_count} files, {total_size} bytes"
                                     )),
                                 };
 
@@ -233,8 +230,7 @@ pub fn spawn_progressive_size_calculation(
                     task_id,
                     result: Ok(()),
                     msg: Some(format!(
-                        "Final size: {} bytes, {} items",
-                        total_size, items_count
+                        "Final size: {total_size} bytes, {items_count} items"
                     )),
                     exec,
                 };
@@ -266,10 +262,9 @@ pub fn spawn_progressive_size_calculation(
 
                 let task_result = TaskResult::Generic {
                     task_id,
-                    result: Err(AppError::Io(std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        format!("Task panicked: {}", e),
-                    ))),
+                    result: Err(AppError::Io(std::io::Error::other(format!(
+                        "Task panicked: {e}"
+                    )))),
                     msg: Some(format!(
                         "Size calculation task failed for {}",
                         path.display()

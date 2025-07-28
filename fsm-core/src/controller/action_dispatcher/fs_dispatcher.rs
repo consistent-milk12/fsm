@@ -64,7 +64,7 @@ impl FileOpsDispatcher {
                 Ok(DispatchResult::Continue)
             }
             Err(e) => {
-                self.error(&format!("Failed to load directory: {}", e));
+                self.error(&format!("Failed to load directory: {e}"));
                 Ok(DispatchResult::Continue)
             }
         }
@@ -172,12 +172,12 @@ impl FileOpsDispatcher {
 
         match TokioFs::File::create(&file_path).await {
             Ok(_) => {
-                self.success(&format!("Created file: {}", name));
+                self.success(&format!("Created file: {name}"));
                 // Reload directory
                 self.navigate_to_directory(current_dir).await
             }
             Err(e) => {
-                self.error(&format!("Failed to create file: {}", e));
+                self.error(&format!("Failed to create file: {e}"));
                 Ok(DispatchResult::Continue)
             }
         }
@@ -194,12 +194,12 @@ impl FileOpsDispatcher {
 
         match TokioFs::create_dir(&dir_path).await {
             Ok(_) => {
-                self.success(&format!("Created directory: {}", name));
+                self.success(&format!("Created directory: {name}"));
                 // Reload directory
                 self.navigate_to_directory(current_dir).await
             }
             Err(e) => {
-                self.error(&format!("Failed to create directory: {}", e));
+                self.error(&format!("Failed to create directory: {e}"));
                 Ok(DispatchResult::Continue)
             }
         }

@@ -40,7 +40,7 @@ pub fn spawn_content_search(
                 let task_result: TaskResult = TaskResult::Generic {
                     task_id,
                     result: Err(AppError::Ripgrep(e.to_string())),
-                    msg: Some(format!("Content search failed: {}", e)),
+                    msg: Some(format!("Content search failed: {e}")),
                     exec: start_time.elapsed(),
                 };
 
@@ -80,7 +80,7 @@ pub fn spawn_filename_search(
                 let task_result: TaskResult = TaskResult::Generic {
                     task_id,
                     result: Err(AppError::Ripgrep(e.to_string())),
-                    msg: Some(format!("Filename search failed: {}", e)),
+                    msg: Some(format!("Filename search failed: {e}")),
                     exec: start_time.elapsed(),
                 };
 
@@ -141,7 +141,7 @@ async fn execute_filename_search(pattern: &str, path: &PathBuf) -> Result<Vec<Ob
     let mut child: Child = Command::new("find")
         .arg(path)
         .arg("-name")
-        .arg(&format!("*{}*", pattern))
+        .arg(format!("*{pattern}*"))
         .arg("-type")
         .arg("f")
         .stdout(std::process::Stdio::piped())

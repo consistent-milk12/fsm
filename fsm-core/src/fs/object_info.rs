@@ -22,7 +22,7 @@ impl std::fmt::Display for ObjectType {
             ObjectType::Dir => write!(f, "Dir"),
             ObjectType::File => write!(f, "File"),
             ObjectType::Symlink => write!(f, "Symlink"),
-            ObjectType::Other(ext) => write!(f, "{}", ext),
+            ObjectType::Other(ext) => write!(f, "{ext}"),
         }
     }
 }
@@ -93,7 +93,7 @@ impl ObjectInfo {
         } else if is_symlink {
             ObjectType::Symlink
         } else if let Some(ref ext) = extension {
-            ObjectType::Other(ext.to_uppercase().into())
+            ObjectType::Other(ext.to_uppercase())
         } else {
             ObjectType::File
         };
@@ -323,7 +323,7 @@ fn format_bytes(bytes: u64) -> String {
     const THRESHOLD: u64 = 1024;
 
     if bytes < THRESHOLD {
-        return format!("{} B", bytes);
+        return format!("{bytes} B");
     }
 
     let mut size = bytes as f64;

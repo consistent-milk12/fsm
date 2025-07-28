@@ -70,7 +70,7 @@ impl OptimizedStatusBar {
         let max_path = rect.width.saturating_sub(40) as usize; // leave space
         if path.len() > max_path {
             if let Some(tail) = path.get(path.len() - max_path + 3..) {
-                path = format!("…{}", tail);
+                path = format!("…{tail}");
             }
         }
 

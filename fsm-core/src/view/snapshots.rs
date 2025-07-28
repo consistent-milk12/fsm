@@ -73,7 +73,7 @@ impl From<&UIState> for UiSnapshot {
             search_mode: src.search_mode,
             search_query: src.search_query.clone(),
             selected_clipboard_item_idx: src.selected_clipboard_item_idx,
-            mode: src.mode.clone(),
+            mode: src.mode,
         }
     }
 }
