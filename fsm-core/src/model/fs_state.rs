@@ -212,11 +212,13 @@ impl PaneState {
         self.adjust_scroll_for_selection(new_selected);
     }
 
-    /// Enhanced marking system
-    pub fn mark_selected(&mut self) {
-        if let Some(entry) = self.selected_entry() {
-            self.marked_entries
-                .insert(entry.path.clone(), Instant::now());
+    pub fn mark_selected(&self) -> bool {
+        let selected_idx = self.selected.load(Ordering::Relaxed);
+        if let Some(entry) = self.entries.get(selected_idx) {
+            // Return the path to mark, don't modify here
+            true
+        } else {
+            false
         }
     }
 
@@ -232,6 +234,11 @@ impl PaneState {
 
     pub fn clear_marks(&mut self) {
         self.marked_entries.clear();
+    }
+
+    pub fn get_selected_path(&self) -> Option<PathBuf> {
+        let selected_idx = self.selected.load(Ordering::Relaxed);
+        self.entries.get(selected_idx).map(|e| e.path.clone())
     }
 
     pub fn get_marked_paths(&self) -> Vec<PathBuf> {

@@ -208,10 +208,14 @@ pub enum Action {
 
     // ===== Enhanced File Operations =====
     /// Start file copy operation (shows destination prompt)
-    StartCopy { source: PathBuf },
+    StartCopy {
+        source: PathBuf,
+    },
 
     /// Start file move operation (shows destination prompt)
-    StartMove { source: PathBuf },
+    StartMove {
+        source: PathBuf,
+    },
 
     /// Execute copy operation
     ExecuteCopy {
@@ -242,7 +246,9 @@ pub enum Action {
     },
 
     /// File operation completed
-    FileOperationComplete { operation_id: OperationId },
+    FileOperationComplete {
+        operation_id: OperationId,
+    },
 
     /// File operation failed
     FileOperationError {
@@ -251,10 +257,15 @@ pub enum Action {
     },
 
     /// Cancel ongoing file operation
-    CancelFileOperation { operation_id: OperationId },
+    CancelFileOperation {
+        operation_id: OperationId,
+    },
 
     /// Update task status
-    UpdateTaskStatus { task_id: u64, completed: bool },
+    UpdateTaskStatus {
+        task_id: u64,
+        completed: bool,
+    },
 
     // ===== Clipboard Operations =====
     /// Copy selected item(s) to clipboard
@@ -294,7 +305,10 @@ pub enum Action {
     ClearClipboard,
 
     /// Paste selected clipboard item
-    PasteClipboardItem { item_id: u64, destination: PathBuf },
+    PasteClipboardItem {
+        item_id: u64,
+        destination: PathBuf,
+    },
 
     /// Show clipboard item details
     ShowClipboardItemDetails(u64),
@@ -372,7 +386,10 @@ pub enum Action {
     },
 
     /// Search in specific directory
-    SearchInDirectory { directory: PathBuf, pattern: String },
+    SearchInDirectory {
+        directory: PathBuf,
+        pattern: String,
+    },
 
     /// Cancel current search operation
     CancelSearch,
@@ -405,6 +422,12 @@ pub enum Action {
         task_id: u64,
         priority: i8, // -10 to 10
     },
+
+    // System events
+    TerminalResize(u16, u16),
+
+    // Input handling
+    InputCharacter(char),
 }
 
 impl Action {

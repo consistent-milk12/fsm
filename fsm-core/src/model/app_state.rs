@@ -235,7 +235,7 @@ pub struct AppState {
 
     // Action statistics
     pub action_stats: DashMap<CompactString, ActionStats>,
-    
+
     // Task progress tracking
     pub task_progress: HashMap<String, TaskProgress>,
 }
@@ -541,6 +541,22 @@ impl AppState {
     fn update_last_operation(&self) {
         let now = chrono::Utc::now().timestamp_millis() as u64;
         self.last_operation.store(now, Ordering::Relaxed);
+    }
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        use tokio::sync::mpsc;
+        let (task_tx, _) = mpsc::unbounded_channel();
+        let (action_tx, _) = mpsc::unbounded_channel();
+
+        Self::new(
+            Arc::new(Config::default()),
+            Arc::new(ObjectInfoCache::new()),
+            FSState::default(),
+            task_tx,
+            action_tx,
+        )
     }
 }
 

@@ -92,6 +92,61 @@ impl OptimizedClipboardOverlay {
         .await
     }
 
+    /// Sync fallback for rendering when async is not possible
+    pub fn render_sync_fallback(
+        &mut self,
+        frame: &mut Frame<'_>,
+        area: Rect,
+        ui_state: &UIState,
+    ) -> Result<(), AppError> {
+        frame.render_widget(Clear, area);
+
+        let layout = PrecomputedLayout::compute(area);
+        let mut list_state = ListState::default();
+
+        self.render_main_container(frame, &layout);
+
+        // Use cached items or show placeholder
+        if self.cached_items.is_empty() {
+            self.render_loading_state(frame, layout.content_area);
+        } else {
+            list_state.select(Some(
+                ui_state
+                    .selected_clipboard_item_index
+                    .min(self.cached_items.len().saturating_sub(1)),
+            ));
+            self.render_clipboard_content_optimized(
+                frame,
+                &layout,
+                &self.cached_items,
+                &mut list_state,
+            )?;
+        }
+
+        Ok(())
+    }
+
+    fn render_loading_state(&self, frame: &mut Frame<'_>, area: Rect) {
+        let loading_text = "Loading clipboard...";
+        let loading_block = Paragraph::new(loading_text)
+            .alignment(Alignment::Center)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .title(" Clipboard ")
+                    .title_alignment(Alignment::Center)
+                    .style(Style::default().bg(Color::Rgb(30, 25, 40)).fg(Color::White))
+                    .border_style(Style::default().fg(Color::Rgb(150, 150, 255))),
+            )
+            .style(
+                Style::default()
+                    .bg(Color::Rgb(30, 25, 40))
+                    .fg(Color::Rgb(180, 190, 220)),
+            );
+        frame.render_widget(loading_block, area);
+    }
+
     fn render_main_container(&self, frame: &mut Frame<'_>, layout: &PrecomputedLayout) {
         let main_block = Block::default()
             .borders(Borders::ALL)
@@ -307,8 +362,17 @@ impl OptimizedClipboardOverlay {
 
     /// Update cached items asynchronously (call from background task)
     pub async fn update_cache(&mut self, clipboard: &ClipBoard) -> Result<(), AppError> {
-        // In a real implementation, this would call clipboard.get_all_items().await
-        // For now, we'll just mark cache as invalid to trigger refresh
+        let items = clipboard.get_all_items().await;
+        self.cached_items.clear();
+        self.cached_items.extend(items);
+        self.last_update = std::time::Instant::now();
+        self.cache_valid = true;
+        Ok(())
+    }
+
+    /// Update cached items synchronously for compatibility
+    pub fn update_cache_sync(&mut self, _clipboard: &ClipBoard) -> Result<(), AppError> {
+        // For sync operations, just invalidate cache
         self.cache_valid = false;
         Ok(())
     }

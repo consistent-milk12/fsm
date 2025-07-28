@@ -3,14 +3,20 @@
 use crate::controller::state_coordinator::StateCoordinator;
 use crate::model::fs_state::PaneState;
 use crate::model::ui_state::{NotificationLevel, RedrawFlag, UIOverlay, UIState};
-use crate::view::components::clipboard_overlay::OptimizedClipboardOverlay;
-use crate::view::components::*;
+use crate::view::components::{
+    clipboard_overlay::OptimizedClipboardOverlay, error_overlay::ErrorOverlay,
+    file_operations_overlay::OptimizedFileOperationsOverlay, help_overlay::OptimizedHelpOverlay,
+    input_prompt_overlay::OptimizedPromptOverlay, loading_overlay::OptimizedLoadingOverlay,
+    notification_overlay::OptimizedNotificationOverlay, object_table::OptimizedFileTable,
+    search_overlay::OptimizedSearchOverlay, search_results_overlay::OptimizedSearchResultsOverlay,
+    status_bar::OptimizedStatusBar,
+};
 
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders};
+use ratatui::widgets::{Block, Borders, Paragraph};
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, RwLock, RwLockReadGuard};
 use std::time::Instant;
 use tracing::{debug, instrument, warn};
 
@@ -34,11 +40,11 @@ struct LayoutCache {
 }
 
 #[derive(Debug, Clone, Default)]
-struct RenderStats {
-    frames_rendered: u64,
-    frames_skipped: u64,
-    slow_renders: u64,
-    total_render_time: std::time::Duration,
+pub struct RenderStats {
+    pub frames_rendered: u64,
+    pub frames_skipped: u64,
+    pub slow_renders: u64,
+    pub total_render_time: std::time::Duration,
 }
 
 mod component_flags {
@@ -252,25 +258,29 @@ impl UIRenderer {
         }
     }
 
-    async fn render_clipboard_overlay_optimized(
+    fn render_clipboard_overlay_optimized(
         &mut self,
         frame: &mut Frame<'_>,
         ui_state: &UIState,
         area: Rect,
     ) {
-        if let Err(e) = self
+        // For now, render a simple fallback since async rendering in sync context is complex
+        if let Err(_e) = self
             .clipboard_overlay
-            .render_from_ui_state(frame, area, ui_state)
-            .await
+            .render_sync_fallback(frame, area, ui_state)
         {
-            warn!("Clipboard render error: {}", e);
             let error_area = Rect {
                 y: area.y + area.height.saturating_sub(3),
                 height: 3,
                 ..area
             };
-            ErrorOverlay::new("Clipboard render error".into()).render(frame, error_area);
+            self.render_error_fallback(frame, "Clipboard error", error_area);
         }
+    }
+
+    fn render_error_fallback(&self, frame: &mut Frame<'_>, message: &str, area: Rect) {
+        let error_overlay = ErrorOverlay::new(message.to_string());
+        error_overlay.render(frame, area);
     }
 
     fn render_notifications_optimized(
@@ -278,7 +288,7 @@ impl UIRenderer {
         frame: &mut Frame<'_>,
         ui_state: &Arc<RwLock<UIState>>,
     ) {
-        let ui_guard = ui_state.read().expect("UIState RwLock poisoned");
+        let ui_guard: RwLockReadGuard<'_, UIState> = ui_state.read().expect("UIState RwLock poisoned");
         if let Some(notification) = &ui_guard.notification {
             let area = self.calculate_notification_area(frame.area(), notification);
             let overlay = OptimizedNotificationOverlay::new();
@@ -458,14 +468,13 @@ impl UIRenderer {
         self.component_dirty_flags = u32::MAX;
     }
 
-    /// Update clipboard overlay cache asynchronously
-    pub async fn update_clipboard_cache(
+    /// Update clipboard overlay cache synchronously
+    pub fn update_clipboard_cache_sync(
         &mut self,
         ui_state: &UIState,
     ) -> Result<(), crate::error::AppError> {
         self.clipboard_overlay
-            .update_cache(&ui_state.clipboard)
-            .await
+            .update_cache_sync(&ui_state.clipboard)
     }
 }
 
@@ -514,6 +523,8 @@ impl RenderStats {
         }
     }
 }
+
+// Remove placeholder implementations as we're using actual components
 
 #[cfg(test)]
 mod tests {

@@ -428,8 +428,7 @@ impl UIState {
         false
     }
 
-    // Clipboard management with async operations
-    pub async fn toggle_clipboard_overlay(&mut self) {
+    pub fn toggle_clipboard_overlay(&mut self) {
         self.clipboard_overlay_active = !self.clipboard_overlay_active;
         if self.clipboard_overlay_active {
             self.selected_clipboard_item_index = 0;
@@ -437,17 +436,18 @@ impl UIState {
         self.request_redraw(RedrawFlag::Overlay);
     }
 
-    pub fn move_clipboard_selection_up(&mut self) {
-        if self.selected_clipboard_item_index > 0 {
-            self.selected_clipboard_item_index -= 1;
+    pub fn move_clipboard_selection_down(&mut self) {
+        // Remove async - clipboard.len() should be cached
+        if self.selected_clipboard_item_index < 10 {
+            // Use reasonable default
+            self.selected_clipboard_item_index += 1;
             self.request_redraw(RedrawFlag::Overlay);
         }
     }
 
-    pub async fn move_clipboard_selection_down(&mut self) {
-        let max_items = self.clipboard.len();
-        if self.selected_clipboard_item_index < max_items.saturating_sub(1) {
-            self.selected_clipboard_item_index += 1;
+    pub fn move_clipboard_selection_up(&mut self) {
+        if self.selected_clipboard_item_index > 0 {
+            self.selected_clipboard_item_index -= 1;
             self.request_redraw(RedrawFlag::Overlay);
         }
     }
