@@ -31,7 +31,7 @@ use crate::{
 /// * `AppState` – config, async tasks, etc. (guarded by `Mutex`)
 /// * `FSState`  – panes, operations, history (guarded by `Mutex`)
 /// * `UIState`  – atomics + small fields (lock-free reads via
-///                `ArcSwap`, writes behind `RwLock`)
+///   `ArcSwap`, writes behind `RwLock`)
 pub struct StateCoordinator {
     app_state: Arc<Mutex<AppState>>,
     ui_state: ArcSwap<RwLock<UIState>>,
@@ -137,7 +137,10 @@ impl StateCoordinator {
             .write()
             .map_err(|_| AppError::state_lock("UIState", "write lock poisoned"))?;
 
-        f(&mut guard).await.map_err(|e| AppError::ActionDispatch {
+        let fut = f(&mut guard);
+        drop(guard);
+
+        fut.await.map_err(|e| AppError::ActionDispatch {
             action: "async_ui_update".into(),
             reason: e.to_string(),
         })
@@ -155,12 +158,13 @@ impl StateCoordinator {
             .write()
             .map_err(|_| AppError::state_lock("UIState", "write lock poisoned"))?;
 
-        f(&mut guard)
-            .await
-            .map_err(|e| AppError::ClipboardOperation {
-                operation: "clipboard".into(),
-                reason: e.to_string(),
-            })
+        let fut = f(&mut guard);
+        drop(guard);
+
+        fut.await.map_err(|e| AppError::ClipboardOperation {
+            operation: "clipboard".into(),
+            reason: e.to_string(),
+        })
     }
 
     /// Async mutation with timeout.

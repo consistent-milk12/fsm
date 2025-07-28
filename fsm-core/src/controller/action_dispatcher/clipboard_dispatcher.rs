@@ -221,7 +221,7 @@ impl ClipboardDispatcher {
     async fn handle_clear_clipboard(&self) -> Result<DispatchResult> {
         self.state_provider
             .update_ui_state(Box::new(|ui: &mut UIState| {
-                let _ = ui.clear_clipboard();
+                std::mem::drop(ui.clear_clipboard());
                 ui.success("Clipboard cleared");
             }));
         Ok(DispatchResult::Continue)

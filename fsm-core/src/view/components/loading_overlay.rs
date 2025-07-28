@@ -23,7 +23,8 @@ impl OptimizedLoadingOverlay {
     /// Draw a determinate / indeterminate loading box.
     ///
     /// * `loading` – immutable `LoadingState` snapshot from the
-    ///               renderer (no atomics inside).  
+    /// * `loading` – immutable `LoadingState` snapshot from the
+    ///   renderer (no atomics inside).  
     /// * `rect`    – screen rectangle where the overlay is drawn.
     pub fn render_progress(&self, frame: &mut Frame<'_>, loading: &LoadingState, rect: Rect) {
         // -----------------------------------------------------

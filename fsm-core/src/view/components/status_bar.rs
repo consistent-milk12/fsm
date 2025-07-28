@@ -105,11 +105,11 @@ impl Default for OptimizedStatusBar {
 // Helper: quick predicate on UIOverlay so we don't match manually
 // ------------------------------------------------------------------
 trait OverlayExt {
-    fn is_search_mode(self) -> bool;
+    fn is_search_mode(&self) -> bool;
 }
 
 impl OverlayExt for crate::model::ui_state::UIOverlay {
-    fn is_search_mode(self) -> bool {
+    fn is_search_mode(&self) -> bool {
         matches!(
             self,
             crate::model::ui_state::UIOverlay::Search
