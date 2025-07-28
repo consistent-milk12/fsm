@@ -143,6 +143,10 @@ impl ActionMatcher for UIControlDispatcher {
         )
     }
 
+    async fn handle(&mut self, action: Action) -> Result<DispatchResult> {
+        self.handle(action).await
+    }
+
     fn priority(&self) -> ActionPriority {
         match self {
             _ => ActionPriority::High,

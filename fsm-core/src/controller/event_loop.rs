@@ -83,6 +83,22 @@ pub enum FileOperationType {
     Rename,
 }
 
+impl std::fmt::Display for FileOperationType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FileOperationType::Create => write!(f, "File system operation type: Create"),
+
+            FileOperationType::Copy => write!(f, "File system operation type: Copy"),
+
+            FileOperationType::Move => write!(f, "File system operation type: Move"),
+
+            FileOperationType::Rename => write!(f, "File system operation type: Rename"),
+
+            FileOperationType::Delete => write!(f, "File system operation type: Delete"),
+        }
+    }
+}
+
 /// Performance metrics
 #[derive(Debug, Clone)]
 pub struct MetricsSnapshot {
@@ -110,13 +126,14 @@ pub struct EventLoop {
 
 impl EventLoop {
     pub fn new(
-        task_rx: mpsc::UnboundedReceiver<TaskResult>,
         state_coordinator: Arc<StateCoordinator>,
-    ) -> Self {
-        let action_dispatcher =
-            ActionDispatcher::new(state_coordinator.clone(), mpsc::unbounded_channel().0);
+    ) -> (Self, mpsc::UnboundedSender<TaskResult>) {
+        let (task_tx, task_rx) = mpsc::unbounded_channel();
 
-        Self {
+        let action_dispatcher: ActionDispatcher =
+            ActionDispatcher::new(state_coordinator.clone(), task_tx.clone());
+
+        let event_loop: Self = EventLoop {
             state_coordinator,
             action_dispatcher,
             task_rx,
@@ -124,7 +141,9 @@ impl EventLoop {
             tasks_processed: 0,
             actions_processed: 0,
             start_time: Instant::now(),
-        }
+        };
+
+        (event_loop, task_tx)
     }
 
     /// Main event processing loop

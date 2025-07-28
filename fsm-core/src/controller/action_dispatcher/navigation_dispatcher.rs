@@ -131,6 +131,10 @@ impl ActionMatcher for NavigationDispatcher {
         )
     }
 
+    async fn handle(&mut self, action: Action) -> Result<DispatchResult> {
+        self.handle(action).await
+    }
+
     fn priority(&self) -> ActionPriority {
         ActionPriority::High
     }

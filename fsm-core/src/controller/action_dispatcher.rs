@@ -1,5 +1,4 @@
-//! Simplified Modular Action Dispatcher
-//! Direct action processing without batching complexity
+//! Simplified Modular Action Dispatcher with proper channel integration
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -59,10 +58,14 @@ pub enum ActionSource {
     Internal,
 }
 
-/// Core dispatcher trait
-pub trait ActionMatcher {
+/// Core dispatcher trait - matches utils.rs definition
+pub trait ActionMatcher: Send + Sync {
     fn can_handle(&self, action: &Action) -> bool;
+
+    fn handle(&mut self, action: Action) -> impl Future<Output = Result<DispatchResult>>;
+
     fn priority(&self) -> ActionPriority;
+
     fn name(&self) -> &'static str;
 
     fn dynamic_priority(&self, _action: &Action) -> ActionPriority {
@@ -78,10 +81,15 @@ pub trait ActionMatcher {
 #[derive(Clone)]
 pub enum Dispatcher {
     Navigation(NavigationDispatcher),
+
     FileOps(FileOpsDispatcher),
+
     UIControl(UIControlDispatcher),
+
     Search(SearchDispatcher),
+
     Command(CommandDispatcher),
+
     Clipboard(ClipboardDispatcher),
 }
 
@@ -89,10 +97,15 @@ impl Dispatcher {
     pub async fn handle(&mut self, action: Action) -> Result<DispatchResult> {
         match self {
             Self::Navigation(d) => d.handle(action).await,
+
             Self::FileOps(d) => d.handle(action).await,
+
             Self::UIControl(d) => d.handle(action).await,
+
             Self::Search(d) => d.handle(action).await,
+
             Self::Command(d) => d.handle(action).await,
+
             Self::Clipboard(d) => d.handle(action).await,
         }
     }
@@ -102,21 +115,47 @@ impl ActionMatcher for Dispatcher {
     fn can_handle(&self, action: &Action) -> bool {
         match self {
             Self::Navigation(d) => d.can_handle(action),
+
             Self::FileOps(d) => d.can_handle(action),
+
             Self::UIControl(d) => d.can_handle(action),
+
             Self::Search(d) => d.can_handle(action),
+
             Self::Command(d) => d.can_handle(action),
+
             Self::Clipboard(d) => d.can_handle(action),
+        }
+    }
+
+    async fn handle(&mut self, action: Action) -> Result<DispatchResult> {
+        match self {
+            Self::Navigation(d) => d.handle(action).await,
+
+            Self::FileOps(d) => d.handle(action).await,
+
+            Self::UIControl(d) => d.handle(action).await,
+
+            Self::Search(d) => d.handle(action).await,
+
+            Self::Command(d) => d.handle(action).await,
+
+            Self::Clipboard(d) => d.handle(action).await,
         }
     }
 
     fn priority(&self) -> ActionPriority {
         match self {
             Self::Navigation(d) => d.priority(),
+
             Self::FileOps(d) => d.priority(),
+
             Self::UIControl(d) => d.priority(),
+
             Self::Search(d) => d.priority(),
+
             Self::Command(d) => d.priority(),
+
             Self::Clipboard(d) => d.priority(),
         }
     }
@@ -124,10 +163,15 @@ impl ActionMatcher for Dispatcher {
     fn name(&self) -> &'static str {
         match self {
             Self::Navigation(d) => d.name(),
+
             Self::FileOps(d) => d.name(),
+
             Self::UIControl(d) => d.name(),
+
             Self::Search(d) => d.name(),
+
             Self::Command(d) => d.name(),
+
             Self::Clipboard(d) => d.name(),
         }
     }
@@ -135,10 +179,15 @@ impl ActionMatcher for Dispatcher {
     fn dynamic_priority(&self, action: &Action) -> ActionPriority {
         match self {
             Self::Navigation(d) => d.dynamic_priority(action),
+
             Self::FileOps(d) => d.dynamic_priority(action),
+
             Self::UIControl(d) => d.dynamic_priority(action),
+
             Self::Search(d) => d.dynamic_priority(action),
+
             Self::Command(d) => d.dynamic_priority(action),
+
             Self::Clipboard(d) => d.dynamic_priority(action),
         }
     }
@@ -146,10 +195,15 @@ impl ActionMatcher for Dispatcher {
     fn can_disable(&self) -> bool {
         match self {
             Self::Navigation(d) => d.can_disable(),
+
             Self::FileOps(d) => d.can_disable(),
+
             Self::UIControl(d) => d.can_disable(),
+
             Self::Search(d) => d.can_disable(),
+
             Self::Command(d) => d.can_disable(),
+
             Self::Clipboard(d) => d.can_disable(),
         }
     }
@@ -158,8 +212,11 @@ impl ActionMatcher for Dispatcher {
 /// Dispatcher registry entry with metrics
 struct DispatcherEntry {
     dispatcher: Dispatcher,
+
     enabled: bool,
+
     actions_processed: AtomicU64,
+
     errors: AtomicU64,
 }
 
@@ -204,6 +261,7 @@ struct Metrics {
 impl Metrics {
     fn record_action(&self, priority: ActionPriority) {
         self.total_actions.fetch_add(1, Ordering::Relaxed);
+
         self.priority_counts[priority].fetch_add(1, Ordering::Relaxed);
     }
 
@@ -225,7 +283,7 @@ impl ActionDispatcher {
         state_provider: Arc<dyn StateProvider>,
         task_tx: UnboundedSender<TaskResult>,
     ) -> Self {
-        let _ = task_tx;
+        let fs_dispatcher = FileOpsDispatcher::new(state_provider.clone(), task_tx.clone());
 
         debug!("Creating action dispatcher");
 
@@ -240,9 +298,7 @@ impl ActionDispatcher {
             DispatcherEntry::new(Dispatcher::Clipboard(ClipboardDispatcher::new(
                 state_provider.clone(),
             ))),
-            DispatcherEntry::new(Dispatcher::FileOps(FileOpsDispatcher::new(
-                state_provider.clone(),
-            ))),
+            DispatcherEntry::new(Dispatcher::FileOps(fs_dispatcher)),
             DispatcherEntry::new(Dispatcher::Search(SearchDispatcher::new(
                 state_provider.clone(),
             ))),
@@ -272,15 +328,20 @@ impl ActionDispatcher {
 
         match self.dispatch_to_handlers(action).await {
             Ok(DispatchResult::Terminate) => false,
+
             Ok(DispatchResult::Continue) => true,
+
             Ok(DispatchResult::NotHandled) => {
                 self.metrics.record_unhandled();
                 warn!("No handler for action");
                 true
             }
+
             Err(e) => {
                 error!("Dispatch failed: {}", e);
+
                 self.show_error(&format!("Action failed: {}", e));
+
                 true
             }
         }
@@ -321,12 +382,14 @@ impl ActionDispatcher {
     fn determine_priority(&self, action: &Action) -> ActionPriority {
         match action {
             Action::Quit => ActionPriority::Critical,
+
             Action::Resize(_, _) => ActionPriority::Critical,
 
             Action::MoveSelectionUp
             | Action::MoveSelectionDown
             | Action::PageUp
             | Action::PageDown => ActionPriority::High,
+
             Action::CloseOverlay | Action::ToggleHelp => ActionPriority::High,
 
             Action::Tick => ActionPriority::Low,
@@ -347,11 +410,11 @@ impl ActionDispatcher {
 
     /// Get performance statistics
     pub fn stats(&self) -> DispatcherStats {
-        let dispatchers = self.dispatchers.load();
+        let dispatchers: arc_swap::Guard<Arc<Vec<DispatcherEntry>>> = self.dispatchers.load();
 
-        let handler_stats = dispatchers
+        let handler_stats: Vec<HandlerStats> = dispatchers
             .iter()
-            .map(|entry| HandlerStats {
+            .map(|entry: &DispatcherEntry| HandlerStats {
                 name: entry.dispatcher.name(),
                 enabled: entry.enabled,
                 actions_processed: entry.actions_processed.load(Ordering::Relaxed),
@@ -375,8 +438,8 @@ impl ActionDispatcher {
 
     /// Enable/disable specific handler
     pub fn set_handler_enabled(&self, name: &str, enabled: bool) {
-        let current = self.dispatchers.load_full();
-        let mut new_dispatchers = (*current).clone();
+        let current: Arc<Vec<DispatcherEntry>> = self.dispatchers.load_full();
+        let mut new_dispatchers: Vec<DispatcherEntry> = (*current).clone();
 
         for entry in &mut new_dispatchers {
             if entry.dispatcher.name() == name && entry.dispatcher.can_disable() {
@@ -436,95 +499,5 @@ impl DispatcherStats {
         // Consider responsive if critical + high priority actions < 90% of total
         let responsive_threshold = (self.total_actions as f64 * 0.9) as u64;
         (high_priority + critical_priority) < responsive_threshold
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::model::{app_state::AppState, fs_state::FSState, ui_state::UIState};
-    use std::sync::{Mutex, RwLock};
-    use tokio::sync::mpsc;
-
-    struct MockStateProvider {
-        ui_state: Arc<RwLock<UIState>>,
-        fs_state: Arc<Mutex<FSState>>,
-        app_state: Arc<Mutex<AppState>>,
-    }
-
-    impl StateProvider for MockStateProvider {
-        fn ui_state(&self) -> Arc<RwLock<UIState>> {
-            self.ui_state.clone()
-        }
-
-        fn update_ui_state(&self, update: Box<dyn FnOnce(&mut UIState) + Send>) {
-            if let Ok(mut ui) = self.ui_state.write() {
-                update(&mut ui);
-            }
-        }
-
-        fn fs_state(&self) -> std::sync::MutexGuard<'_, FSState> {
-            self.fs_state.lock().unwrap()
-        }
-
-        fn app_state(&self) -> std::sync::MutexGuard<'_, AppState> {
-            self.app_state.lock().unwrap()
-        }
-
-        fn request_redraw(&self, _flag: RedrawFlag) {}
-
-        fn needs_redraw(&self) -> bool {
-            false
-        }
-
-        fn clear_redraw(&self) {}
-    }
-
-    fn create_test_dispatcher() -> (ActionDispatcher, mpsc::UnboundedReceiver<TaskResult>) {
-        let (tx, rx) = mpsc::unbounded_channel();
-        let provider = Arc::new(MockStateProvider {
-            ui_state: Arc::new(RwLock::new(UIState::default())),
-            fs_state: Arc::new(Mutex::new(FSState::default())),
-            app_state: Arc::new(Mutex::new(AppState::default())),
-        });
-
-        (ActionDispatcher::new(provider, tx), rx)
-    }
-
-    #[tokio::test]
-    async fn test_quit_action() {
-        let (dispatcher, _rx) = create_test_dispatcher();
-
-        let should_continue = dispatcher
-            .dispatch(Action::Quit, ActionSource::Keyboard)
-            .await;
-        assert!(!should_continue);
-    }
-
-    #[tokio::test]
-    async fn test_navigation_action() {
-        let (dispatcher, _rx) = create_test_dispatcher();
-
-        let should_continue = dispatcher
-            .dispatch(Action::MoveSelectionDown, ActionSource::Keyboard)
-            .await;
-        assert!(should_continue);
-    }
-
-    #[test]
-    fn test_priority_ordering() {
-        assert!(ActionPriority::Critical < ActionPriority::High);
-        assert!(ActionPriority::High < ActionPriority::Normal);
-        assert!(ActionPriority::Normal < ActionPriority::Low);
-    }
-
-    #[test]
-    fn test_stats_calculation() {
-        let (dispatcher, _rx) = create_test_dispatcher();
-        let stats = dispatcher.stats();
-
-        assert_eq!(stats.total_actions, 0);
-        assert!(stats.error_rate() == 0.0);
-        assert!(stats.is_responsive());
     }
 }

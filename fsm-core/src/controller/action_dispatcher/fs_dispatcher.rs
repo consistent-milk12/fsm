@@ -2,14 +2,21 @@
 // File operations with async safety
 
 use anyhow::{Context, Result};
-use std::path::PathBuf;
-use std::sync::Arc;
+use dashmap::DashMap;
+use std::ffi::OsStr;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
+use std::sync::{Arc, MutexGuard};
 use tokio::fs as TokioFs;
+use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
-use crate::controller::Action;
+use crate::FSState;
+use crate::controller::actions::OperationId;
 use crate::controller::state_provider::StateProvider;
+use crate::controller::{Action, TaskResult};
 use crate::fs::object_info::ObjectInfo;
+use crate::model::PaneState;
 use crate::model::ui_state::{RedrawFlag, UIState};
 
 use super::{ActionMatcher, ActionPriority, DispatchResult};
@@ -17,11 +24,20 @@ use super::{ActionMatcher, ActionPriority, DispatchResult};
 #[derive(Clone)]
 pub struct FileOpsDispatcher {
     state_provider: Arc<dyn StateProvider>,
+    task_tx: mpsc::UnboundedSender<TaskResult>,
+    active_operations: DashMap<OperationId, CancellationToken>,
 }
 
 impl FileOpsDispatcher {
-    pub fn new(state_provider: Arc<dyn StateProvider>) -> Self {
-        Self { state_provider }
+    pub fn new(
+        state_provider: Arc<dyn StateProvider>,
+        task_tx: mpsc::UnboundedSender<TaskResult>,
+    ) -> Self {
+        Self {
+            state_provider,
+            task_tx,
+            active_operations: DashMap::new(),
+        }
     }
 
     async fn navigate_to(&self, target: PathBuf) -> Result<DispatchResult> {
@@ -30,11 +46,11 @@ impl FileOpsDispatcher {
             return Ok(DispatchResult::Continue);
         }
 
-        let entries = self.load_directory(&target).await?;
+        let entries: Vec<ObjectInfo> = self.load_directory(&target).await?;
 
         {
-            let mut fs = self.state_provider.fs_state();
-            let pane = fs.active_pane_mut();
+            let mut fs: MutexGuard<'_, crate::FSState> = self.state_provider.fs_state();
+            let pane: &mut PaneState = fs.active_pane_mut();
             pane.cwd = target;
             pane.entries = entries;
             pane.selected.store(0, Ordering::Relaxed);
@@ -45,19 +61,19 @@ impl FileOpsDispatcher {
     }
 
     async fn load_directory(&self, dir: &std::path::Path) -> Result<Vec<ObjectInfo>> {
-        let mut entries = Vec::new();
-        let mut dir_reader = TokioFs::read_dir(dir)
+        let mut entries: Vec<ObjectInfo> = Vec::new();
+        let mut dir_reader: TokioFs::ReadDir = TokioFs::read_dir(dir)
             .await
             .with_context(|| format!("Failed to read directory: {}", dir.display()))?;
 
         while let Some(entry) = dir_reader.next_entry().await? {
-            let path = entry.path();
-            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                if !name.starts_with('.') {
-                    if let Ok(info) = ObjectInfo::from_path_light(&path).await {
-                        entries.push(ObjectInfo::with_placeholder_metadata(info));
-                    }
-                }
+            let path: PathBuf = entry.path();
+
+            if let Some(name) = path.file_name().and_then(|n: &OsStr| n.to_str())
+                && !name.starts_with('.')
+                && let Ok(info) = ObjectInfo::from_path_light(&path).await
+            {
+                entries.push(ObjectInfo::with_placeholder_metadata(info));
             }
         }
 
@@ -65,15 +81,15 @@ impl FileOpsDispatcher {
     }
 
     async fn handle_enter_selected(&self) -> Result<DispatchResult> {
-        let target = {
-            let fs = self.state_provider.fs_state();
-            let pane = fs.active_pane();
-            let current = pane.selected.load(Ordering::Relaxed);
+        let target: Option<PathBuf> = {
+            let fs: MutexGuard<'_, FSState> = self.state_provider.fs_state();
+            let pane: &PaneState = fs.active_pane();
+            let current: usize = pane.selected.load(Ordering::Relaxed);
 
             pane.entries
                 .get(current)
-                .filter(|entry| entry.is_dir)
-                .map(|entry| entry.path.clone())
+                .filter(|entry: &&ObjectInfo| entry.is_dir)
+                .map(|entry: &ObjectInfo| entry.path.clone())
         };
 
         if let Some(path) = target {
@@ -84,9 +100,12 @@ impl FileOpsDispatcher {
     }
 
     async fn handle_go_to_parent(&self) -> Result<DispatchResult> {
-        let parent = {
-            let fs = self.state_provider.fs_state();
-            fs.active_pane().cwd.parent().map(|p| p.to_path_buf())
+        let parent: Option<PathBuf> = {
+            let fs: MutexGuard<'_, FSState> = self.state_provider.fs_state();
+            fs.active_pane()
+                .cwd
+                .parent()
+                .map(|p: &Path| p.to_path_buf())
         };
 
         if let Some(path) = parent {
@@ -98,18 +117,23 @@ impl FileOpsDispatcher {
 
     async fn create_file(&self, name: &str) -> Result<DispatchResult> {
         let (current_dir, file_path) = {
-            let fs = self.state_provider.fs_state();
-            let current_dir = fs.active_pane().cwd.clone();
+            let fs: MutexGuard<'_, FSState> = self.state_provider.fs_state();
+
+            let current_dir: PathBuf = fs.active_pane().cwd.clone();
+
             (current_dir.clone(), current_dir.join(name))
         };
 
         match TokioFs::File::create(&file_path).await {
             Ok(_) => {
                 self.success(&format!("Created file: {}", name));
+
                 self.navigate_to(current_dir).await
             }
+
             Err(e) => {
                 self.error(&format!("Failed to create file: {}", e));
+
                 Ok(DispatchResult::Continue)
             }
         }
@@ -117,18 +141,20 @@ impl FileOpsDispatcher {
 
     async fn create_directory(&self, name: &str) -> Result<DispatchResult> {
         let (current_dir, dir_path) = {
-            let fs = self.state_provider.fs_state();
-            let current_dir = fs.active_pane().cwd.clone();
+            let fs: MutexGuard<'_, FSState> = self.state_provider.fs_state();
+            let current_dir: PathBuf = fs.active_pane().cwd.clone();
+
             (current_dir.clone(), current_dir.join(name))
         };
 
         match TokioFs::create_dir(&dir_path).await {
             Ok(_) => {
-                self.success(&format!("Created directory: {}", name));
+                self.success(&format!("Created directory: {name}"));
                 self.navigate_to(current_dir).await
             }
+
             Err(e) => {
-                self.error(&format!("Failed to create directory: {}", e));
+                self.error(&format!("Failed to create directory: {e}"));
                 Ok(DispatchResult::Continue)
             }
         }
@@ -137,16 +163,23 @@ impl FileOpsDispatcher {
     pub async fn handle(&mut self, action: Action) -> Result<DispatchResult> {
         match action {
             Action::EnterSelected => self.handle_enter_selected().await,
+
             Action::GoToParent => self.handle_go_to_parent().await,
+
             Action::CreateFileWithName(name) => self.create_file(&name).await,
+
             Action::CreateDirectoryWithName(name) => self.create_directory(&name).await,
+
             Action::ReloadDirectory => {
-                let current = {
-                    let fs = self.state_provider.fs_state();
+                let current: PathBuf = {
+                    let fs: MutexGuard<'_, FSState> = self.state_provider.fs_state();
+
                     fs.active_pane().cwd.clone()
                 };
+
                 self.navigate_to(current).await
             }
+
             _ => Ok(DispatchResult::NotHandled),
         }
     }
@@ -178,6 +211,10 @@ impl ActionMatcher for FileOpsDispatcher {
                 | Action::CreateDirectoryWithName(_)
                 | Action::ReloadDirectory
         )
+    }
+
+    async fn handle(&mut self, action: Action) -> Result<DispatchResult> {
+        self.handle(action).await
     }
 
     fn priority(&self) -> ActionPriority {

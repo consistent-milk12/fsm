@@ -304,6 +304,10 @@ impl ActionMatcher for CommandDispatcher {
         matches!(action, Action::SubmitInputPrompt(_))
     }
 
+    async fn handle(&mut self, action: Action) -> Result<DispatchResult> {
+        self.handle(action).await
+    }
+
     fn priority(&self) -> ActionPriority {
         ActionPriority::Normal
     }

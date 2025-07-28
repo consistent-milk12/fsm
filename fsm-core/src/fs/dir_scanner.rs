@@ -282,7 +282,7 @@ pub fn spawn_two_phase_directory_scan(
 
         // Phase 2: Background metadata loading
         if !light_entries.is_empty() {
-            crate::tasks::metadata_task::spawn_batch_metadata_load(
+            crate::operators::metadata_task::spawn_batch_metadata_load(
                 task_id + 1000, // Different task ID for metadata
                 path.clone(),
                 light_entries,

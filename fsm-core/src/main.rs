@@ -44,6 +44,7 @@ async fn main() -> Result<()> {
     app.run().await.context("Application runtime error")?;
 
     info!("FSM-Core exited cleanly");
+
     Ok(())
 }
 
@@ -56,7 +57,8 @@ struct App {
 
 impl App {
     async fn new() -> Result<Self> {
-        Logger::init_tracing();
+        Logger::init()?;
+
         info!("Starting FSM-Core");
 
         let terminal: Terminal<Backend<Stdout>> = setup_terminal()?;
@@ -69,7 +71,6 @@ impl App {
 
         let cache: Arc<ObjectInfoCache> =
             Arc::new(ObjectInfoCache::with_config(config.cache.clone()));
-        let (task_tx, task_rx) = mpsc::unbounded_channel::<TaskResult>();
 
         // Get current directory
         let current_dir: PathBuf = tokio::fs::canonicalize(".")
@@ -85,7 +86,7 @@ impl App {
         let state_coordinator: Arc<StateCoordinator> =
             Arc::new(StateCoordinator::new(app_state, ui_state, fs_state));
 
-        let event_loop: EventLoop = EventLoop::new(task_rx, state_coordinator.clone());
+        let (event_loop, task_tx) = EventLoop::new(state_coordinator.clone());
 
         // Load initial directory
         Self::load_directory(&state_coordinator, current_dir, task_tx).await?;

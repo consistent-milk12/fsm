@@ -26,7 +26,6 @@ thiserror = "2.0.12"
 anyhow = "1.0.98"
 
 # Utilities
-uuid = "1.17.0"
 tracing = "0.1.41"
 tokio-util = { version = "0.7.15", features = ["codec", "io"] }
 
@@ -47,6 +46,7 @@ tracing-subscriber = { version = "0.3.19", features = [
     "json",
     "serde",
     "serde_json",
+    "time",
 ] }
 ansi-to-tui = "7.0.0"
 futures = "0.3.31"
@@ -57,45 +57,16 @@ sys-info = "0.9.1"
 # Memory optimization and zero-copy
 smallvec = { version = "1.15.1", features = ["union", "const_generics"] }
 compact_str = { version = "0.9.0", features = ["serde"] }
-bytes = "1.10.1"
-memmap2 = "0.9.7"
-
-# Fast hashing and collections
-ahash = "0.8.12"
-hashbrown = { version = "0.15.4", features = ["rayon"] }
-indexmap = "2.10.0"
 
 # Fast serialization
 rmp-serde = "1.3.0" # MessagePack (faster than JSON/TOML)
 bincode = "2.0.1"
 
-# SIMD and CPU optimization
-bytemuck = "1.21.0"
-memchr = "2.7.4"
-
-# File system optimization
-io-uring = { version = "0.7.9", optional = true }
-libc = "0.2.174"
-
 # Lock-free data structures
-lockfree = "0.5.1"
-atomic = "0.6.1"
 crossbeam = { version = "0.8.4", features = ["crossbeam-channel"] }
-
-# Zero-allocation string formatting
-heapless = "0.8.0"
-
-# Atomic Arc replacement
-arc-swap = "1.7.1"
-
-# Faster Mutex
-parking_lot = { version = "0.12.4", features = ["arc_lock", "nightly", "serde"] }
 
 # Concurrent HashMap
 dashmap = "6.1.0"
-
-# Fashter MPMC channels
-flume = "0.11.1"
 
 # Data parallelism
 rayon = "1.10.0"
@@ -104,14 +75,14 @@ rayon = "1.10.0"
 once_cell = "1.21.3"
 
 # Even faster hashing for small keys
-rustc-hash = "2.1.1"
-crossfire = "2.0.13"
 enum-map = "2.7.3"
 kanal = "0.1.1"
 nanoid = "0.4.0"
-async-trait = "0.1.88"
 regex = "1.11.1"
+tempfile = "3.20.0"
 futures-lite = "2.6.0"
+parking_lot = "0.12.4"
+arc-swap = "1.7.1"
 
 [[bin]]
 name = "fs"

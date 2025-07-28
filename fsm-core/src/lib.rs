@@ -84,7 +84,7 @@ pub mod fs {
     pub mod object_info;
 }
 
-pub mod tasks {
+pub mod operators {
     pub mod filename_search_task;
 
     pub mod metadata_task;
@@ -93,7 +93,7 @@ pub mod tasks {
 
     pub mod size_task;
 
-    pub mod file_ops_task;
+    pub mod file_system_operator;
 }
 
 pub mod logging;
