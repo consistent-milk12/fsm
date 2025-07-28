@@ -1,6 +1,7 @@
 //! High-performance directory size calculation with progress reporting
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::{debug, info, warn};
@@ -66,7 +67,7 @@ pub fn spawn_size_calculation(
 
                 let task_result = TaskResult::Generic {
                     task_id,
-                    result: Err(AppError::Io(e)),
+                    result: Err(Arc::new(AppError::Io(e))),
                     msg: Some(format!("Size calculation failed for {}", path.display())),
                     exec: start_time.elapsed(),
                 };
@@ -82,9 +83,9 @@ pub fn spawn_size_calculation(
 
                 let task_result = TaskResult::Generic {
                     task_id,
-                    result: Err(AppError::Io(std::io::Error::other(format!(
+                    result: Err(Arc::new(AppError::Io(std::io::Error::other(format!(
                         "Task panicked: {e}"
-                    )))),
+                    ))))),
                     msg: Some(format!(
                         "Size calculation task failed for {}",
                         path.display()
@@ -102,8 +103,8 @@ pub fn spawn_size_calculation(
 fn calculate_directory_size(path: &PathBuf) -> Result<(u64, usize), std::io::Error> {
     use std::fs;
 
-    let mut total_size = 0u64;
-    let mut items_count = 0usize;
+    let mut total_size: u64 = 0u64;
+    let mut items_count: usize = 0usize;
 
     // Use walkdir for efficient recursive traversal
     let walker = walkdir::WalkDir::new(path)
@@ -112,7 +113,7 @@ fn calculate_directory_size(path: &PathBuf) -> Result<(u64, usize), std::io::Err
         .filter_map(|e| e.ok()); // Skip errors to continue processing
 
     for entry in walker {
-        let entry_path = entry.path();
+        let entry_path: &Path = entry.path();
 
         if entry_path.is_file() {
             // Add file size to total
@@ -246,7 +247,7 @@ pub fn spawn_progressive_size_calculation(
 
                 let task_result = TaskResult::Generic {
                     task_id,
-                    result: Err(AppError::Io(e)),
+                    result: Err(Arc::new(AppError::Io(e))),
                     msg: Some(format!("Size calculation failed for {}", path.display())),
                     exec: start_time.elapsed(),
                 };
@@ -262,9 +263,9 @@ pub fn spawn_progressive_size_calculation(
 
                 let task_result = TaskResult::Generic {
                     task_id,
-                    result: Err(AppError::Io(std::io::Error::other(format!(
+                    result: Err(Arc::new(AppError::Io(std::io::Error::other(format!(
                         "Task panicked: {e}"
-                    )))),
+                    ))))),
                     msg: Some(format!(
                         "Size calculation task failed for {}",
                         path.display()

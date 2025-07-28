@@ -21,6 +21,7 @@ use crate::model::ui_state::{RedrawFlag, UIState};
 
 use super::{ActionMatcher, ActionPriority, DispatchResult};
 
+#[allow(unused)]
 #[derive(Clone)]
 pub struct FileOpsDispatcher {
     state_provider: Arc<dyn StateProvider>,

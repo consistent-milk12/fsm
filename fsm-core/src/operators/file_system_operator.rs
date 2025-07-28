@@ -3,6 +3,7 @@ use crate::controller::event_loop::{FileOperationType, TaskResult};
 use crate::error::AppError;
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::fs as TokioFs;
 use tokio::sync::mpsc::UnboundedSender;
@@ -178,8 +179,9 @@ impl FileSystemOperator {
         let completion: TaskResult = TaskResult::FileOperation {
             op_id: OperationId::from_string(self.operation_id.clone()),
             op_kind: operation_type,
-            result: result
-                .map_err(|e: anyhow::Error| AppError::Io(StdIoError::other(e.to_string()))),
+            result: result.map_err(|e: anyhow::Error| {
+                Arc::new(AppError::Io(StdIoError::other(e.to_string())))
+            }),
             exec,
         };
 

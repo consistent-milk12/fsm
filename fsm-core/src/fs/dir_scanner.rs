@@ -3,6 +3,7 @@
 use anyhow::Result;
 use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::fs;
 use tokio::sync::mpsc::{self, UnboundedSender};
@@ -52,15 +53,16 @@ pub fn spawn_directory_scan(
                 };
 
                 let _ = task_tx.send(task_result);
+
                 Ok(entries)
             }
             Err(e) => {
-                let app_error = AppError::Io(std::io::Error::other(e.to_string()));
+                let app_error: AppError = AppError::Io(std::io::Error::other(e.to_string()));
 
-                let task_result = TaskResult::DirectoryLoad {
+                let task_result: TaskResult = TaskResult::DirectoryLoad {
                     task_id,
                     path: path.clone(),
-                    result: Err(app_error.clone()),
+                    result: Err(Arc::new(app_error)),
                     exec: start_time.elapsed(),
                 };
 
@@ -75,8 +77,8 @@ pub fn spawn_directory_scan(
 async fn scan_directory_fast(path: &Path, show_hidden: bool) -> Result<Vec<ObjectInfo>> {
     debug!("Fast scanning directory: {}", path.display());
 
-    let mut entries = Vec::new();
-    let mut read_dir = fs::read_dir(path).await?;
+    let mut entries: Vec<ObjectInfo> = Vec::new();
+    let mut read_dir: fs::ReadDir = fs::read_dir(path).await?;
 
     while let Some(entry) = read_dir.next_entry().await? {
         let entry_path = entry.path();
@@ -141,9 +143,10 @@ pub fn spawn_streaming_directory_scan(
                 let task_result = TaskResult::DirectoryLoad {
                     task_id,
                     path: path.clone(),
-                    result: Err(app_error.clone()),
+                    result: Err(Arc::new(app_error)),
                     exec: start_time.elapsed(),
                 };
+
                 let _ = task_tx.send(task_result);
 
                 return Err(anyhow::anyhow!("Directory read failed"));
@@ -151,11 +154,14 @@ pub fn spawn_streaming_directory_scan(
         };
 
         while let Some(entry_result) = read_dir.next_entry().await.transpose() {
-            let entry = match entry_result {
+            let entry: fs::DirEntry = match entry_result {
                 Ok(e) => e,
+
                 Err(e) => {
-                    let error_msg = format!("Failed to read entry: {e}");
+                    let error_msg: String = format!("Failed to read entry: {e}");
+
                     let _ = update_tx.send(ScanUpdate::ScanError(error_msg));
+
                     continue;
                 }
             };
@@ -173,7 +179,7 @@ pub fn spawn_streaming_directory_scan(
 
             match ObjectInfo::from_path_light(&entry_path).await {
                 Ok(light_info) => {
-                    let object_info = ObjectInfo::with_placeholder_metadata(light_info);
+                    let object_info: ObjectInfo = ObjectInfo::with_placeholder_metadata(light_info);
 
                     // Send immediate update for UI
                     let _ = update_tx.send(ScanUpdate::EntryAdded(object_info.clone()));
@@ -189,11 +195,12 @@ pub fn spawn_streaming_directory_scan(
 
                         // TODO: Fix percentage here
                         // Report progress to task system
-                        let progress_result = TaskResult::Progress {
+                        let progress_result: TaskResult = TaskResult::Progress {
                             task_id,
                             pct: processed as f32,
                             msg: Some(format!("Scanned {processed} entries")),
                         };
+
                         let _ = task_tx.send(progress_result);
 
                         // Yield for responsiveness
@@ -223,7 +230,7 @@ pub fn spawn_streaming_directory_scan(
         });
 
         // Send task completion
-        let task_result = TaskResult::DirectoryLoad {
+        let task_result: TaskResult = TaskResult::DirectoryLoad {
             task_id,
             path: path.clone(),
             result: Ok(entries.clone()),
@@ -262,7 +269,7 @@ pub fn spawn_two_phase_directory_scan(
                 let task_result = TaskResult::DirectoryLoad {
                     task_id,
                     path: path.clone(),
-                    result: Err(app_error),
+                    result: Err(app_error.into()),
                     exec: start_time.elapsed(),
                 };
                 let _ = task_tx.send(task_result);

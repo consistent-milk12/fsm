@@ -1,5 +1,6 @@
 //! Optimized metadata loading with batch processing and caching
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::{debug, info};
@@ -42,7 +43,7 @@ pub fn spawn_metadata_load(
 
                 let task_result: TaskResult = TaskResult::Generic {
                     task_id,
-                    result: Err(AppError::Io(std::io::Error::other(e.to_string()))),
+                    result: Err(Arc::new(AppError::Io(std::io::Error::other(e.to_string())))),
                     msg: Some(format!("Metadata load failed for {}", path.display())),
                     exec: start_time.elapsed(),
                 };

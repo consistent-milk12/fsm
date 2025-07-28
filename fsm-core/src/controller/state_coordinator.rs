@@ -15,9 +15,9 @@ use crate::{
 
 /// Centralized state coordinator with clean access patterns  
 pub struct StateCoordinator {
-    app_state: Arc<Mutex<AppState>>,
-    fs_state: Arc<Mutex<FSState>>,
-    ui_state: Arc<RwLock<UIState>>,
+    pub app_state: Arc<Mutex<AppState>>,
+    pub fs_state: Arc<Mutex<FSState>>,
+    pub ui_state: Arc<RwLock<UIState>>,
 }
 
 impl StateCoordinator {

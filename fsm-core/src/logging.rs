@@ -1,9 +1,8 @@
-//! State-of-the-art logging with comprehensive tracing support
-//! Features: structured logging, performance metrics, OpenTelemetry ready, async-safe
+//! Practical logging with comprehensive tracing support
+//! Simple, effective tracing without over-engineering
 
 use std::{
     borrow::Cow,
-    collections::HashMap,
     fs,
     io::{self, Write},
     path::{Path, PathBuf},
@@ -25,7 +24,6 @@ use tracing_appender::{
 };
 use tracing_subscriber::{
     EnvFilter, Registry,
-    filter::LevelFilter,
     fmt::{
         self, FmtContext,
         format::{FormatEvent, FormatFields, Writer},
@@ -36,33 +34,32 @@ use tracing_subscriber::{
     util::SubscriberInitExt,
 };
 
-/// High-performance logger with multiple output formats and targets
+/// Simple logger with file and console output
 pub struct Logger {
-    _guards: Vec<WorkerGuard>, // Keep guards alive
+    _guards: Vec<WorkerGuard>,
 }
 
 impl Logger {
-    /// Initialize comprehensive tracing system
+    /// Initialize basic tracing system
     pub fn init() -> io::Result<Self> {
         Self::init_with_config(LoggingConfig::default())
     }
 
     /// Initialize with custom configuration
     pub fn init_with_config(config: LoggingConfig) -> io::Result<Self> {
-        // Initialize global state
+        // Initialize global counters
         SEQ.get_or_init(|| AtomicUsize::new(1));
         METRICS.get_or_init(|| RwLock::new(LogMetrics::default()));
         PROJECT_ROOT.get_or_init(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
-        let mut guards = Vec::new();
+        let mut guards: Vec<WorkerGuard> = Vec::new();
 
-        // Clean and create log directories
+        // Setup log directory
         Self::setup_log_directories(&config)?;
 
-        // Build subscriber layers
         let registry = Registry::default();
 
-        // Create console layer
+        // Console layer
         let console_layer = if config.enable_console {
             let (non_blocking, guard) = tracing_appender::non_blocking(io::stdout());
             guards.push(guard);
@@ -73,32 +70,17 @@ impl Logger {
                     .with_writer(non_blocking)
                     .with_ansi(config.enable_colors)
                     .with_filter(
-                        EnvFilter::from_default_env()
-                            .add_directive(tracing::Level::from(config.console_level).into()),
+                        EnvFilter::from_default_env().add_directive(config.console_level.into()),
                     ),
             )
         } else {
             None
         };
 
-        // Create file layer
+        // File layer
         let file_layer = if config.enable_file_logging {
-            let file_appender = match config.rotation {
-                RotationPolicy::Daily => {
-                    RollingFileAppender::new(Rotation::DAILY, &config.log_dir, "fsm-core")
-                }
-                RotationPolicy::Hourly => {
-                    RollingFileAppender::new(Rotation::HOURLY, &config.log_dir, "fsm-core")
-                }
-                RotationPolicy::SizeBased(_size) => RollingFileAppender::new(
-                    Rotation::DAILY, // Fallback to daily for now
-                    &config.log_dir,
-                    "fsm-core",
-                ),
-                RotationPolicy::Never => {
-                    RollingFileAppender::new(Rotation::NEVER, &config.log_dir, "fsm-core")
-                }
-            };
+            let file_appender =
+                RollingFileAppender::new(Rotation::DAILY, &config.log_dir, "fsm-core");
 
             let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
             guards.push(guard);
@@ -109,17 +91,16 @@ impl Logger {
                     .with_writer(non_blocking)
                     .with_ansi(false)
                     .with_filter(
-                        EnvFilter::from_default_env()
-                            .add_directive(tracing::Level::from(config.file_level).into()),
+                        EnvFilter::from_default_env().add_directive(config.file_level.into()),
                     ),
             )
         } else {
             None
         };
 
-        // Performance metrics layer
+        // Metrics layer
         let metrics_layer = if config.enable_metrics {
-            Some(MetricsLayer::new())
+            Some(MetricsLayer)
         } else {
             None
         };
@@ -131,7 +112,7 @@ impl Logger {
             None
         };
 
-        // Build and initialize subscriber
+        // Build subscriber
         let subscriber = registry
             .with(console_layer)
             .with(file_layer)
@@ -142,7 +123,6 @@ impl Logger {
 
         tracing::info!(
             version = env!("CARGO_PKG_VERSION"),
-            config = ?config,
             "Tracing system initialized"
         );
 
@@ -158,7 +138,7 @@ impl Logger {
         Ok(())
     }
 
-    /// Get current logging metrics
+    /// Get current metrics
     pub fn metrics() -> LogMetrics {
         METRICS
             .get()
@@ -167,14 +147,15 @@ impl Logger {
             .unwrap_or_default()
     }
 
-    /// Flush all async writers
+    /// Flush logs
     pub fn flush() {
-        // Force flush by dropping and recreating (tracing-appender limitation)
         tracing::info!("Flushing log buffers");
+        // Force a small delay to allow async writers to flush
+        std::thread::sleep(std::time::Duration::from_millis(100));
     }
 }
 
-/// Logging configuration
+/// Simple logging configuration
 #[derive(Debug, Clone)]
 pub struct LoggingConfig {
     pub log_dir: PathBuf,
@@ -184,10 +165,8 @@ pub struct LoggingConfig {
     pub enable_error_tracking: bool,
     pub enable_colors: bool,
     pub clean_on_startup: bool,
-    pub console_level: LogLevel,
-    pub file_level: LogLevel,
-    pub rotation: RotationPolicy,
-    pub max_file_size_mb: u64,
+    pub console_level: Level,
+    pub file_level: Level,
 }
 
 impl Default for LoggingConfig {
@@ -200,53 +179,28 @@ impl Default for LoggingConfig {
             enable_error_tracking: true,
             enable_colors: true,
             clean_on_startup: true,
-            console_level: LogLevel::Info,
-            file_level: LogLevel::Debug,
-            rotation: RotationPolicy::Daily,
-            max_file_size_mb: 100,
+            console_level: Level::INFO,
+            file_level: Level::DEBUG,
         }
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-pub enum LogLevel {
-    Trace,
-    Debug,
-    Info,
-    Warn,
-    Error,
-}
-
-impl From<LogLevel> for tracing::Level {
-    fn from(level: LogLevel) -> Self {
-        match level {
-            LogLevel::Trace => Level::TRACE,
-            LogLevel::Debug => Level::DEBUG,
-            LogLevel::Info => Level::INFO,
-            LogLevel::Warn => Level::WARN,
-            LogLevel::Error => Level::ERROR,
-        }
-    }
-}
-
-impl From<LogLevel> for LevelFilter {
-    fn from(level: LogLevel) -> Self {
-        match level {
-            LogLevel::Trace => LevelFilter::TRACE,
-            LogLevel::Debug => LevelFilter::DEBUG,
-            LogLevel::Info => LevelFilter::INFO,
-            LogLevel::Warn => LevelFilter::WARN,
-            LogLevel::Error => LevelFilter::ERROR,
-        }
-    }
-}
-
+/// Simple metrics tracking
 #[derive(Debug, Clone)]
-pub enum RotationPolicy {
-    Daily,
-    Hourly,
-    SizeBased(u64), // MB
-    Never,
+pub struct LogMetrics {
+    pub total_events: u64,
+    pub errors_count: u64,
+    pub start_time: SystemTime,
+}
+
+impl Default for LogMetrics {
+    fn default() -> Self {
+        Self {
+            total_events: 0,
+            errors_count: 0,
+            start_time: SystemTime::now(),
+        }
+    }
 }
 
 /// Global state
@@ -254,47 +208,7 @@ static SEQ: OnceLock<AtomicUsize> = OnceLock::new();
 static PROJECT_ROOT: OnceLock<PathBuf> = OnceLock::new();
 static METRICS: OnceLock<RwLock<LogMetrics>> = OnceLock::new();
 
-/// Logging metrics
-#[derive(Debug, Clone)]
-pub struct LogMetrics {
-    pub total_events: u64,
-    pub events_by_level: HashMap<String, u64>,
-    pub errors_last_hour: u64,
-    pub avg_event_size_bytes: f64,
-    pub start_time: SystemTime,
-    pub last_error: Option<String>,
-}
-
-impl Default for LogMetrics {
-    fn default() -> Self {
-        Self {
-            total_events: 0,
-            events_by_level: HashMap::new(),
-            errors_last_hour: 0,
-            avg_event_size_bytes: 0.0,
-            start_time: SystemTime::now(),
-            last_error: None,
-        }
-    }
-}
-
-impl LogMetrics {
-    fn record_event(&mut self, level: &Level, size: usize) {
-        self.total_events += 1;
-        *self.events_by_level.entry(level.to_string()).or_insert(0) += 1;
-
-        // Update average size with exponential moving average
-        let alpha = 0.1;
-        self.avg_event_size_bytes = self.avg_event_size_bytes * (1.0 - alpha) + size as f64 * alpha;
-    }
-
-    fn record_error(&mut self, error: String) {
-        self.errors_last_hour += 1;
-        self.last_error = Some(error);
-    }
-}
-
-/// Custom compact formatter: [SEQ] LEVEL [file:line] target message
+/// Compact formatter for console
 struct CompactFormatter;
 
 impl<S, N> FormatEvent<S, N> for CompactFormatter
@@ -331,12 +245,17 @@ where
             meta.target()
         )?;
 
+        // Add span context if available
+        if let Some(span) = ctx.lookup_current() {
+            write!(writer, "[{}] ", span.name())?;
+        }
+
         ctx.field_format().format_fields(writer.by_ref(), event)?;
         writeln!(writer)
     }
 }
 
-/// Structured formatter for file logging
+/// Structured formatter for files
 struct StructuredFormatter;
 
 impl<S, N> FormatEvent<S, N> for StructuredFormatter
@@ -371,8 +290,81 @@ where
             write!(writer, "line={} ", line)?;
         }
 
+        // Add span context
+        if let Some(span) = ctx.lookup_current() {
+            write!(writer, "span={} ", span.name())?;
+        }
+
         ctx.field_format().format_fields(writer.by_ref(), event)?;
         writeln!(writer)
+    }
+}
+
+/// Simple metrics collection layer
+struct MetricsLayer;
+
+impl<S> tracing_subscriber::Layer<S> for MetricsLayer
+where
+    S: Subscriber + for<'lookup> LookupSpan<'lookup>,
+{
+    fn on_event(&self, event: &Event<'_>, _ctx: tracing_subscriber::layer::Context<'_, S>) {
+        if let Some(metrics) = METRICS.get() {
+            if let Ok(mut m) = metrics.write() {
+                m.total_events += 1;
+                if event.metadata().level() == &Level::ERROR {
+                    m.errors_count += 1;
+                }
+            }
+        }
+    }
+}
+
+/// Error tracking layer
+struct ErrorTrackingLayer {
+    error_file: PathBuf,
+}
+
+impl ErrorTrackingLayer {
+    fn new(log_dir: &Path) -> io::Result<Self> {
+        Ok(Self {
+            error_file: log_dir.join("errors").join("errors.jsonl"),
+        })
+    }
+}
+
+impl<S> tracing_subscriber::Layer<S> for ErrorTrackingLayer
+where
+    S: Subscriber + for<'lookup> LookupSpan<'lookup>,
+{
+    fn on_event(&self, event: &Event<'_>, ctx: tracing_subscriber::layer::Context<'_, S>) {
+        if event.metadata().level() == &Level::ERROR {
+            let mut visitor = JsonVisitor::new();
+            event.record(&mut visitor);
+
+            let span_context = ctx.lookup_current().map(|span| span.name());
+
+            let error_record = json!({
+                "timestamp": SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs(),
+                "level": "ERROR",
+                "target": event.metadata().target(),
+                "file": event.metadata().file(),
+                "line": event.metadata().line(),
+                "span": span_context,
+                "fields": visitor.fields,
+            });
+
+            // Write to error file (best effort)
+            if let Ok(mut file) = fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&self.error_file)
+            {
+                let _ = writeln!(file, "{}", error_record);
+            }
+        }
     }
 }
 
@@ -412,82 +404,12 @@ impl Visit for JsonVisitor {
     }
 }
 
-/// Metrics collection layer
-struct MetricsLayer;
-
-impl MetricsLayer {
-    fn new() -> Self {
-        Self
-    }
-}
-
-impl<S> tracing_subscriber::Layer<S> for MetricsLayer
-where
-    S: Subscriber + for<'lookup> LookupSpan<'lookup>,
-{
-    fn on_event(&self, event: &Event<'_>, _ctx: tracing_subscriber::layer::Context<'_, S>) {
-        if let Some(metrics) = METRICS.get() {
-            if let Ok(mut m) = metrics.write() {
-                m.record_event(event.metadata().level(), 100); // Estimate size
-            }
-        }
-    }
-}
-
-/// Error tracking layer
-struct ErrorTrackingLayer {
-    error_file: PathBuf,
-}
-
-impl ErrorTrackingLayer {
-    fn new(log_dir: &Path) -> io::Result<Self> {
-        Ok(Self {
-            error_file: log_dir.join("errors").join("errors.jsonl"),
-        })
-    }
-}
-
-impl<S> tracing_subscriber::Layer<S> for ErrorTrackingLayer
-where
-    S: Subscriber + for<'lookup> LookupSpan<'lookup>,
-{
-    fn on_event(&self, event: &Event<'_>, _ctx: tracing_subscriber::layer::Context<'_, S>) {
-        if event.metadata().level() == &Level::ERROR {
-            let mut visitor = JsonVisitor::new();
-            event.record(&mut visitor);
-
-            let error_record = json!({
-                "timestamp": SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs(),
-                "level": "ERROR",
-                "target": event.metadata().target(),
-                "fields": visitor.fields,
-            });
-
-            // Write to error file (best effort)
-            if let Ok(mut file) = fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&self.error_file)
-            {
-                let _ = writeln!(file, "{}", error_record);
-            }
-
-            // Update metrics
-            if let Some(metrics) = METRICS.get() {
-                if let Ok(mut m) = metrics.write() {
-                    m.record_error(format!("{:?}", visitor.fields));
-                }
-            }
-        }
-    }
-}
-
 /// Convenience macros for operation tracing
 #[macro_export]
 macro_rules! trace_operation {
+    ($operation_name:expr) => {
+        tracing::info_span!($operation_name).entered()
+    };
     ($operation_name:expr, $($field:tt)*) => {
         tracing::info_span!($operation_name, $($field)*).entered()
     };
@@ -508,6 +430,16 @@ macro_rules! measure_time {
     }};
 }
 
+#[macro_export]
+macro_rules! trace_fn {
+    ($fn_name:expr) => {
+        tracing::info_span!("fn", name = $fn_name).entered()
+    };
+    ($fn_name:expr, $($field:tt)*) => {
+        tracing::info_span!("fn", name = $fn_name, $($field)*).entered()
+    };
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -525,26 +457,11 @@ mod tests {
 
         let _logger = Logger::init_with_config(config).unwrap();
 
-        // Test logging
         info!("Test info message");
         error!(error_code = 404, "Test error message");
         debug!(user_id = 123, action = "test", "Debug message");
 
-        // Check metrics
         let metrics = Logger::metrics();
         assert!(metrics.total_events > 0);
-    }
-
-    #[test]
-    fn test_custom_formatter() {
-        let temp_dir = TempDir::new().unwrap();
-        let config = LoggingConfig {
-            log_dir: temp_dir.path().to_path_buf(),
-            ..Default::default()
-        };
-
-        let _logger = Logger::init_with_config(config).unwrap();
-
-        info!(operation_id = "test-123", "Custom format test");
     }
 }

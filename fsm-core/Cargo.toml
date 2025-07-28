@@ -83,6 +83,8 @@ tempfile = "3.20.0"
 futures-lite = "2.6.0"
 parking_lot = "0.12.4"
 arc-swap = "1.7.1"
+ahash = "0.8.12"
+crossbeam-channel = "0.5.15"
 
 [[bin]]
 name = "fs"

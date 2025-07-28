@@ -4,6 +4,7 @@ use ansi_to_tui::IntoText;
 use anyhow::Result;
 use ratatui::text::Text;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
@@ -48,7 +49,7 @@ pub fn spawn_content_search(
             Err(e) => {
                 let task_result = TaskResult::Generic {
                     task_id,
-                    result: Err(AppError::Ripgrep(e.to_string())),
+                    result: Err(Arc::new(AppError::Ripgrep(e.to_string()))),
                     msg: Some(format!("Search failed: {e}")),
                     exec: start_time.elapsed(),
                 };
@@ -89,7 +90,7 @@ pub fn spawn_filename_search(
             Err(e) => {
                 let task_result = TaskResult::Generic {
                     task_id,
-                    result: Err(AppError::Ripgrep(e.to_string())),
+                    result: Err(Arc::new(AppError::Ripgrep(e.to_string()))),
                     msg: Some(format!("Filename search failed: {e}")),
                     exec: start_time.elapsed(),
                 };

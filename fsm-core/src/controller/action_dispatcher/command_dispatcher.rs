@@ -2,9 +2,10 @@
 // Unified command execution with validation
 
 use anyhow::{Context, Result};
+use std::ffi::OsStr;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::{Arc, MutexGuard, RwLock, RwLockReadGuard};
 use tokio::fs as TokioFs;
 
 use crate::controller::Action;
@@ -162,12 +163,12 @@ impl CommandDispatcher {
             anyhow::bail!("Usage: find <pattern>");
         }
 
-        let pattern = &args[0];
-        let results = self.search_files(pattern);
-        let count = results.len();
+        let pattern: &String = &args[0];
+        let results: Vec<ObjectInfo> = self.search_files(pattern);
+        let count: usize = results.len();
 
         {
-            let mut fs = self.state_provider.fs_state();
+            let mut fs: MutexGuard<'_, crate::FSState> = self.state_provider.fs_state();
             fs.active_pane_mut().search_results = results;
         }
 
@@ -182,17 +183,17 @@ impl CommandDispatcher {
     }
 
     async fn load_directory(&self, dir: &std::path::Path) -> Result<Vec<ObjectInfo>> {
-        let mut entries = Vec::new();
-        let mut dir_reader = TokioFs::read_dir(dir).await?;
+        let mut entries: Vec<ObjectInfo> = Vec::new();
+        let mut dir_reader: TokioFs::ReadDir = TokioFs::read_dir(dir).await?;
 
         while let Some(entry) = dir_reader.next_entry().await? {
-            let path = entry.path();
-            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                if !name.starts_with('.') {
-                    if let Ok(info) = ObjectInfo::from_path_light(&path).await {
-                        entries.push(ObjectInfo::with_placeholder_metadata(info));
-                    }
-                }
+            let path: PathBuf = entry.path();
+
+            if let Some(name) = path.file_name().and_then(|n: &OsStr| n.to_str())
+                && !name.starts_with('.')
+                && let Ok(info) = ObjectInfo::from_path_light(&path).await
+            {
+                entries.push(ObjectInfo::with_placeholder_metadata(info));
             }
         }
 
@@ -200,22 +201,22 @@ impl CommandDispatcher {
     }
 
     fn search_files(&self, query: &str) -> Vec<ObjectInfo> {
-        let fs = self.state_provider.fs_state();
-        let query_lower = query.to_lowercase();
+        let fs: MutexGuard<'_, crate::FSState> = self.state_provider.fs_state();
+        let query_lower: String = query.to_lowercase();
 
         fs.active_pane()
             .entries
             .iter()
-            .filter(|entry| entry.name.to_lowercase().contains(&query_lower))
+            .filter(|entry: &&ObjectInfo| entry.name.to_lowercase().contains(&query_lower))
             .cloned()
             .collect()
     }
 
     async fn handle_submit_input(&self, input: String) -> Result<DispatchResult> {
-        let prompt_type = {
-            let binding = self.state_provider.ui_state();
+        let prompt_type: Option<InputPromptType> = {
+            let binding: Arc<RwLock<UIState>> = self.state_provider.ui_state();
 
-            let ui = binding.read().expect("UI lock poisoned");
+            let ui: RwLockReadGuard<'_, UIState> = binding.read().expect("UI lock poisoned");
 
             ui.input_prompt_type.clone()
         };

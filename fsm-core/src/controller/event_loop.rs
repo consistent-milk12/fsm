@@ -29,48 +29,64 @@ use crate::{
 };
 
 /// Task results from background operations - matches dir_scanner.rs TaskResult
+/// Task results from background operations - now cloneable.
+/// We wrap `AppError` in `Arc` so the error payload itself
+/// need not be `Clone`.
 #[derive(Debug, Clone)]
 pub enum TaskResult {
+    /// Directory load (scan) result.
     DirectoryLoad {
-        task_id: u64,
-        path: PathBuf,
-        result: Result<Vec<ObjectInfo>, AppError>,
-        exec: Duration,
+        task_id: u64,                                   // unique task identifier
+        path: PathBuf,                                  // directory scanned
+        result: Result<Vec<ObjectInfo>, Arc<AppError>>, // wrapped error
+        exec: Duration,                                 // execution time
     },
+
+    /// File operation (create/delete/etc.).
     FileOperation {
-        op_id: OperationId,
-        op_kind: FileOperationType,
-        result: Result<(), AppError>,
-        exec: Duration,
+        op_id: OperationId,                // operation identifier
+        op_kind: FileOperationType,        // kind of file op
+        result: Result<(), Arc<AppError>>, // wrapped error
+        exec: Duration,                    // execution time
     },
+
+    /// Name‑based search completed.
     SearchDone {
-        task_id: u64,
-        query: String,
-        results: Vec<ObjectInfo>,
-        exec: Duration,
+        task_id: u64,             // search task id
+        query: String,            // search pattern
+        results: Vec<ObjectInfo>, // matched entries
+        exec: Duration,           // execution time
     },
+
+    /// Content‑based search completed.
     ContentSearchDone {
-        task_id: u64,
-        query: String,
-        results: Vec<String>,
-        exec: Duration,
+        task_id: u64,         // content search id
+        query: String,        // search pattern
+        results: Vec<String>, // matching lines/snippets
+        exec: Duration,       // execution time
     },
+
+    /// Progress update for a long‑running task.
     Progress {
-        task_id: u64,
-        pct: f32,
-        msg: Option<String>,
+        task_id: u64,        // refers to which task
+        pct: f32,            // percentage 0.0–100.0
+        msg: Option<String>, // optional message
     },
+
+    /// Clipboard operation via Clipr.
     Clipboard {
-        op_id: OperationId,
-        op_kind: String,
-        result: Result<u32, AppError>,
-        exec: Duration,
+        op_id: OperationId,                 // clipboard op id
+        op_kind: String,                    // e.g. "copy" / "paste"
+        result: Result<u32, Arc<AppError>>, // bytes transferred or err
+        exec: Duration,                     // execution time
     },
+
+    /// A generic catch‑all task result.
     Generic {
-        task_id: u64,
-        result: Result<(), AppError>,
-        msg: Option<String>,
-        exec: Duration,
+        task_id: u64,                      // generic task id
+        result: Result<(), Arc<AppError>>, // wrapped error
+        msg: Option<String>,               // optional info
+        exec: Duration,                    // execution time
     },
 }
 

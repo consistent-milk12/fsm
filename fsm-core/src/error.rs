@@ -1,18 +1,19 @@
-//! Enhanced AppError with comprehensive error handling and clipboard support
+//! Enhanced AppError with practical tracing integration
 
 use clipr::ClipError;
 use serde_json;
 use std::{io, path::PathBuf};
 use thiserror::Error;
+use tracing::Span;
 
-/// Unified error type for all file manager operations including clipboard.
+/// Enhanced error type with tracing support
 #[derive(Debug, Error)]
 pub enum AppError {
-    /// Standard IO error, auto-converted from `io::Error`.
+    /// Standard IO error
     #[error("I/O error: {0}")]
     Io(#[from] io::Error),
 
-    /// Error retrieving file or directory metadata.
+    /// Filesystem metadata error
     #[error("Filesystem metadata error on {path:?}: {source}")]
     FsMetadata {
         path: PathBuf,
@@ -20,23 +21,23 @@ pub enum AppError {
         source: io::Error,
     },
 
-    /// Permissions error for file/directory access.
+    /// Permission denied
     #[error("Permission denied: {0:?}")]
     PermissionDenied(PathBuf),
 
-    /// Requested file or directory does not exist.
+    /// File not found
     #[error("File or directory not found: {0:?}")]
     NotFound(PathBuf),
 
-    /// Caching layer error.
+    /// Cache error
     #[error("Cache error: {0}")]
     Cache(String),
 
-    /// TOML config parsing error.
+    /// Config error
     #[error("Config parse error: {0}")]
     Config(#[from] toml::de::Error),
 
-    /// Config file I/O error with path.
+    /// Config file I/O error
     #[error("Failed to read config file {path:?}: {source}")]
     ConfigIo {
         path: PathBuf,
@@ -44,11 +45,11 @@ pub enum AppError {
         source: io::Error,
     },
 
-    /// Serialization or deserialization error (e.g., JSON).
+    /// Serialization error
     #[error("Serialization error: {0}")]
     Serde(#[from] serde_json::Error),
 
-    /// External process/command failure (e.g., ripgrep).
+    /// External command failure
     #[error("External command failed: {cmd} (exit code: {code:?})\n{stderr}")]
     ExternalCmd {
         cmd: String,
@@ -56,15 +57,15 @@ pub enum AppError {
         stderr: String,
     },
 
-    /// Ripgrep-specific error.
+    /// Ripgrep error
     #[error("Ripgrep search error: {0}")]
     Ripgrep(String),
 
-    /// Search operation specific errors
+    /// Search operation error
     #[error("Search failed in {path:?}: {reason}")]
     SearchFailed { path: PathBuf, reason: String },
 
-    /// File operation specific errors  
+    /// File operation error
     #[error("File operation '{operation}' failed on {path:?}: {reason}")]
     FileOperationFailed {
         operation: String,
@@ -72,30 +73,30 @@ pub enum AppError {
         reason: String,
     },
 
-    /// Directory navigation errors
+    /// Navigation error
     #[error("Navigation failed: cannot access {path:?}: {reason}")]
     NavigationFailed { path: PathBuf, reason: String },
 
-    /// UI component errors
+    /// UI component error
     #[error("UI component error in {component}: {message}")]
     UiComponent { component: String, message: String },
 
-    /// Input validation errors
+    /// Input validation error
     #[error("Invalid input: {field} - {message}")]
     InvalidInput { field: String, message: String },
 
-    /// Task management errors  
+    /// Task failure
     #[error("Task {task_id} failed: {reason}")]
     TaskFailed { task_id: u64, reason: String },
 
-    /// Background task timeout
+    /// Task timeout
     #[error("Task {task_type} timed out after {timeout_secs}s")]
     TaskTimeout {
         task_type: String,
         timeout_secs: u64,
     },
 
-    /// Cache operation errors (more specific than generic Cache)
+    /// Cache operation error
     #[error("Cache operation failed: {operation} on key '{key}': {reason}")]
     CacheOperation {
         operation: String,
@@ -103,7 +104,7 @@ pub enum AppError {
         reason: String,
     },
 
-    /// Clipboard operation errors
+    /// Clipboard operation error
     #[error("Clipboard operation '{operation}' failed: {reason}")]
     ClipboardOperation { operation: String, reason: String },
 
@@ -111,7 +112,7 @@ pub enum AppError {
     #[error("Clipboard item not found: {item_id}")]
     ClipboardItemNotFound { item_id: u64 },
 
-    /// Clipboard serialization/persistence error
+    /// Clipboard persistence error
     #[error("Clipboard persistence failed: {reason}")]
     ClipboardPersistence { reason: String },
 
@@ -119,46 +120,62 @@ pub enum AppError {
     #[error("Clipboard memory mapping failed: {reason}")]
     ClipboardMemoryMap { reason: String },
 
-    /// Action dispatcher errors
+    /// Action dispatch error
     #[error("Action dispatch failed for {action}: {reason}")]
     ActionDispatch { action: String, reason: String },
 
-    /// State coordinator lock errors
+    /// State lock error
     #[error("State lock error in {component}: {reason}")]
     StateLock { component: String, reason: String },
 
-    /// Rendering errors
+    /// Render error
     #[error("Render error in {component}: {reason}")]
     Render { component: String, reason: String },
 
-    /// Operation cancelled by user or system.
+    /// Operation cancelled
     #[error("Operation was cancelled")]
     Cancelled,
 
-    /// Terminal I/O or rendering error.
+    /// Terminal error
     #[error("Terminal error: {0}")]
     Terminal(String),
 
-    /// Terminal resize failure.
+    /// Resize error
     #[error("Resize error: {0}")]
     Resize(String),
 
-    /// Plugin/extension error.
+    /// Plugin error
     #[error("Plugin error: {0}")]
     Plugin(String),
 
-    /// Any other error, with description.
+    /// Other error
     #[error("Unexpected error: {0}")]
     Other(String),
 }
 
 impl AppError {
-    /// Attach extra context to an error.
+    /// Log error with tracing context
+    pub fn trace_error(self, span: &Span) -> Self {
+        // Record error in current span
+        span.record("error", &tracing::field::display(&self));
+        span.record("error_type", std::any::type_name::<Self>());
+
+        // Log structured error
+        tracing::error!(
+            error = %self,
+            error_type = std::any::type_name::<Self>(),
+            "Error occurred"
+        );
+
+        self
+    }
+
+    /// Add context to error
     pub fn with_context<S: Into<String>>(self, ctx: S) -> AppError {
         AppError::Other(format!("{}: {}", ctx.into(), self))
     }
 
-    /// Create a search failure error
+    // Convenience constructors
     pub fn search_failed<P: Into<PathBuf>, S: Into<String>>(path: P, reason: S) -> Self {
         AppError::SearchFailed {
             path: path.into(),
@@ -166,7 +183,6 @@ impl AppError {
         }
     }
 
-    /// Create a file operation failure error
     pub fn file_operation_failed<S1, P, S2>(operation: S1, path: P, reason: S2) -> Self
     where
         S1: Into<String>,
@@ -180,7 +196,6 @@ impl AppError {
         }
     }
 
-    /// Create a navigation failure error
     pub fn navigation_failed<P: Into<PathBuf>, S: Into<String>>(path: P, reason: S) -> Self {
         AppError::NavigationFailed {
             path: path.into(),
@@ -188,7 +203,6 @@ impl AppError {
         }
     }
 
-    /// Create a UI component error
     pub fn ui_component_error<S1: Into<String>, S2: Into<String>>(
         component: S1,
         message: S2,
@@ -199,45 +213,6 @@ impl AppError {
         }
     }
 
-    /// Create an input validation error
-    pub fn invalid_input<S1: Into<String>, S2: Into<String>>(field: S1, message: S2) -> Self {
-        AppError::InvalidInput {
-            field: field.into(),
-            message: message.into(),
-        }
-    }
-
-    /// Create a task failure error
-    pub fn task_failed<S: Into<String>>(task_id: u64, reason: S) -> Self {
-        AppError::TaskFailed {
-            task_id,
-            reason: reason.into(),
-        }
-    }
-
-    /// Create a task timeout error
-    pub fn task_timeout<S: Into<String>>(task_type: S, timeout_secs: u64) -> Self {
-        AppError::TaskTimeout {
-            task_type: task_type.into(),
-            timeout_secs,
-        }
-    }
-
-    /// Create a cache operation error
-    pub fn cache_operation_failed<S1, S2, S3>(operation: S1, key: S2, reason: S3) -> Self
-    where
-        S1: Into<String>,
-        S2: Into<String>,
-        S3: Into<String>,
-    {
-        AppError::CacheOperation {
-            operation: operation.into(),
-            key: key.into(),
-            reason: reason.into(),
-        }
-    }
-
-    /// Create a clipboard operation error
     pub fn clipboard_operation<S1, S2>(operation: S1, reason: S2) -> Self
     where
         S1: Into<String>,
@@ -249,26 +224,6 @@ impl AppError {
         }
     }
 
-    /// Create a clipboard item not found error
-    pub fn clipboard_item_not_found(item_id: u64) -> Self {
-        AppError::ClipboardItemNotFound { item_id }
-    }
-
-    /// Create a clipboard persistence error
-    pub fn clipboard_persistence<S: Into<String>>(reason: S) -> Self {
-        AppError::ClipboardPersistence {
-            reason: reason.into(),
-        }
-    }
-
-    /// Create a clipboard memory mapping error
-    pub fn clipboard_memory_map<S: Into<String>>(reason: S) -> Self {
-        AppError::ClipboardMemoryMap {
-            reason: reason.into(),
-        }
-    }
-
-    /// Create an action dispatch error
     pub fn action_dispatch<S1, S2>(action: S1, reason: S2) -> Self
     where
         S1: Into<String>,
@@ -279,149 +234,98 @@ impl AppError {
             reason: reason.into(),
         }
     }
-
-    /// Create a state lock error
-    pub fn state_lock<S1, S2>(component: S1, reason: S2) -> Self
-    where
-        S1: Into<String>,
-        S2: Into<String>,
-    {
-        AppError::StateLock {
-            component: component.into(),
-            reason: reason.into(),
-        }
-    }
-
-    /// Create a render error
-    pub fn render_error<S1, S2>(component: S1, reason: S2) -> Self
-    where
-        S1: Into<String>,
-        S2: Into<String>,
-    {
-        AppError::Render {
-            component: component.into(),
-            reason: reason.into(),
-        }
-    }
 }
 
-// Optimized Clone implementation
-impl Clone for AppError {
-    fn clone(&self) -> Self {
-        match self {
-            AppError::Io(e) => AppError::Io(io::Error::new(e.kind(), e.to_string())),
-            AppError::FsMetadata { path, source } => AppError::FsMetadata {
-                path: path.clone(),
-                source: io::Error::new(source.kind(), source.to_string()),
-            },
-            AppError::PermissionDenied(path) => AppError::PermissionDenied(path.clone()),
-            AppError::NotFound(path) => AppError::NotFound(path.clone()),
-            AppError::Cache(msg) => AppError::Cache(msg.clone()),
-            AppError::Config(e) => AppError::Other(format!("Config error: {e}")),
-            AppError::ConfigIo { path, source } => AppError::ConfigIo {
-                path: path.clone(),
-                source: io::Error::new(source.kind(), source.to_string()),
-            },
-            AppError::Serde(e) => AppError::Other(format!("Serde error: {e}")),
-            AppError::ExternalCmd { cmd, code, stderr } => AppError::ExternalCmd {
-                cmd: cmd.clone(),
-                code: *code,
-                stderr: stderr.clone(),
-            },
-            AppError::Ripgrep(msg) => AppError::Ripgrep(msg.clone()),
-            AppError::SearchFailed { path, reason } => AppError::SearchFailed {
-                path: path.clone(),
-                reason: reason.clone(),
-            },
-            AppError::FileOperationFailed {
-                operation,
-                path,
-                reason,
-            } => AppError::FileOperationFailed {
-                operation: operation.clone(),
-                path: path.clone(),
-                reason: reason.clone(),
-            },
-            AppError::NavigationFailed { path, reason } => AppError::NavigationFailed {
-                path: path.clone(),
-                reason: reason.clone(),
-            },
-            AppError::UiComponent { component, message } => AppError::UiComponent {
-                component: component.clone(),
-                message: message.clone(),
-            },
-            AppError::InvalidInput { field, message } => AppError::InvalidInput {
-                field: field.clone(),
-                message: message.clone(),
-            },
-            AppError::TaskFailed { task_id, reason } => AppError::TaskFailed {
-                task_id: *task_id,
-                reason: reason.clone(),
-            },
-            AppError::TaskTimeout {
-                task_type,
-                timeout_secs,
-            } => AppError::TaskTimeout {
-                task_type: task_type.clone(),
-                timeout_secs: *timeout_secs,
-            },
-            AppError::CacheOperation {
-                operation,
-                key,
-                reason,
-            } => AppError::CacheOperation {
-                operation: operation.clone(),
-                key: key.clone(),
-                reason: reason.clone(),
-            },
-            AppError::ClipboardOperation { operation, reason } => AppError::ClipboardOperation {
-                operation: operation.clone(),
-                reason: reason.clone(),
-            },
-            AppError::ClipboardItemNotFound { item_id } => {
-                AppError::ClipboardItemNotFound { item_id: *item_id }
-            }
-            AppError::ClipboardPersistence { reason } => AppError::ClipboardPersistence {
-                reason: reason.clone(),
-            },
-            AppError::ClipboardMemoryMap { reason } => AppError::ClipboardMemoryMap {
-                reason: reason.clone(),
-            },
-            AppError::ActionDispatch { action, reason } => AppError::ActionDispatch {
-                action: action.clone(),
-                reason: reason.clone(),
-            },
-            AppError::StateLock { component, reason } => AppError::StateLock {
-                component: component.clone(),
-                reason: reason.clone(),
-            },
-            AppError::Render { component, reason } => AppError::Render {
-                component: component.clone(),
-                reason: reason.clone(),
-            },
-            AppError::Cancelled => AppError::Cancelled,
-            AppError::Terminal(msg) => AppError::Terminal(msg.clone()),
-            AppError::Resize(msg) => AppError::Resize(msg.clone()),
-            AppError::Plugin(msg) => AppError::Plugin(msg.clone()),
-            AppError::Other(msg) => AppError::Other(msg.clone()),
-        }
-    }
-}
-
+// Standard conversions
 impl From<anyhow::Error> for AppError {
     fn from(e: anyhow::Error) -> Self {
         AppError::Other(e.to_string())
     }
 }
 
-// Clipboard error conversions
 impl From<ClipError> for AppError {
     fn from(e: ClipError) -> Self {
         match e {
-            ClipError::ItemNotFound(id) => AppError::clipboard_item_not_found(id),
-            ClipError::SerializationError(msg) => AppError::clipboard_persistence(msg.to_string()),
-            ClipError::MemoryMapError { .. } => AppError::clipboard_memory_map(e.to_string()),
-            _ => AppError::clipboard_operation("unknown", e.to_string()),
+            ClipError::ItemNotFound(id) => AppError::ClipboardItemNotFound { item_id: id },
+            ClipError::SerializationError(msg) => AppError::ClipboardPersistence {
+                reason: msg.to_string(),
+            },
+            ClipError::MemoryMapError { .. } => AppError::ClipboardMemoryMap {
+                reason: e.to_string(),
+            },
+            _ => AppError::ClipboardOperation {
+                operation: "unknown".to_string(),
+                reason: e.to_string(),
+            },
         }
     }
+}
+
+/// Result type alias
+pub type AppResult<T> = Result<T, AppError>;
+
+/// Trait for adding tracing to results
+pub trait TracedResult<T> {
+    /// Add tracing context to result
+    fn trace_err(self, operation: &str) -> AppResult<T>;
+
+    /// Add tracing with custom fields
+    fn trace_err_with<F>(self, operation: &str, field_fn: F) -> AppResult<T>
+    where
+        F: FnOnce(&Span);
+}
+
+impl<T> TracedResult<T> for AppResult<T> {
+    fn trace_err(self, operation: &str) -> AppResult<T> {
+        match self {
+            Ok(value) => Ok(value),
+            Err(error) => {
+                tracing::error!(
+                    operation = operation,
+                    error = %error,
+                    "Operation failed"
+                );
+                Err(error)
+            }
+        }
+    }
+
+    fn trace_err_with<F>(self, operation: &str, field_fn: F) -> AppResult<T>
+    where
+        F: FnOnce(&Span),
+    {
+        match self {
+            Ok(value) => Ok(value),
+            Err(error) => {
+                let span = tracing::error_span!("error_context", operation = operation);
+                let _enter = span.enter();
+                field_fn(&span);
+
+                tracing::error!(
+                    operation = operation,
+                    error = %error,
+                    "Operation failed with context"
+                );
+
+                Err(error)
+            }
+        }
+    }
+}
+
+/// Convenient error creation macros
+#[macro_export]
+macro_rules! trace_error {
+    ($error:expr) => {{
+        let span = tracing::Span::current();
+        $error.trace_error(&span)
+    }};
+    ($error:expr, $($field:tt)*) => {{
+        tracing::error!(
+            error = %$error,
+            $($field)*,
+            "Error occurred"
+        );
+        $error
+    }};
 }

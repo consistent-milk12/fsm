@@ -2,6 +2,7 @@
 use anyhow::Result;
 use std::path::PathBuf;
 use std::process::{ExitStatus, Stdio};
+use std::sync::Arc;
 use std::time::Instant;
 use tokio::io::{AsyncBufReadExt, BufReader, Lines};
 use tokio::process::{Child, ChildStdout, Command};
@@ -39,7 +40,7 @@ pub fn spawn_content_search(
             Err(e) => {
                 let task_result: TaskResult = TaskResult::Generic {
                     task_id,
-                    result: Err(AppError::Ripgrep(e.to_string())),
+                    result: Err(Arc::new(AppError::Ripgrep(e.to_string()))),
                     msg: Some(format!("Content search failed: {e}")),
                     exec: start_time.elapsed(),
                 };
@@ -79,7 +80,7 @@ pub fn spawn_filename_search(
             Err(e) => {
                 let task_result: TaskResult = TaskResult::Generic {
                     task_id,
-                    result: Err(AppError::Ripgrep(e.to_string())),
+                    result: Err(Arc::new(AppError::Ripgrep(e.to_string()))),
                     msg: Some(format!("Filename search failed: {e}")),
                     exec: start_time.elapsed(),
                 };
