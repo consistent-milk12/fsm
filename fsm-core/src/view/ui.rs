@@ -5,7 +5,7 @@ use ratatui::{
     prelude::*,
     widgets::{Block, Borders},
 };
-use std::{collections::HashMap, time::Instant};
+use std::{collections::HashMap, sync::atomic::Ordering, time::Instant};
 use tracing::instrument;
 
 use crate::{
@@ -319,6 +319,9 @@ impl UIRenderer {
             cursor: 0,
             results: std::sync::Arc::from([]),
             mode: ui_snapshot.search_mode,
+            is_searching: active_pane.is_loading.load(Ordering::Relaxed),
+            total_matches: 0,
+            selected_idx: 0,
         })
     }
 

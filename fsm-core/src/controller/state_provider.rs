@@ -22,15 +22,6 @@ pub trait StateProvider: Send + Sync {
     /// Get mutable access to application state
     fn app_state(&self) -> MutexGuard<'_, AppState>;
 
-    /// Update task progress
-    fn update_task_progress(
-        &self,
-        task_id: String,
-        current: u64,
-        total: u64,
-        message: Option<String>,
-    );
-
     /// Request UI redraw for specific component
     fn request_redraw(&self, flag: crate::model::ui_state::RedrawFlag);
 

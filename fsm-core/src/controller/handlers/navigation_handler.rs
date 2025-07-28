@@ -1,14 +1,13 @@
 // fsm-core/src/controller/handlers/navigation_handler.rs
-// Fixed to work with your FSState atomic operations
+// Core navigation with vim keys and sequences
 
-use crate::controller::{
-    actions::Action,
-    event_processor::{Event, EventHandler},
-};
+use crate::controller::actions::Action;
 use crate::error::AppError;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::collections::HashMap;
-use tracing::{debug, trace};
+use tracing::trace;
+
+use super::*;
 
 pub struct NavigationHandler {
     bindings: HashMap<KeyEvent, Action>,
@@ -23,15 +22,15 @@ impl Default for NavigationHandler {
 
 impl NavigationHandler {
     pub fn new() -> Self {
-        let mut bindings = HashMap::with_capacity(25);
+        let mut bindings = HashMap::with_capacity(20);
 
-        // Arrow keys - work with FSState atomic operations
+        // Arrow keys
         bindings.insert(arrow_key(KeyCode::Up), Action::MoveSelectionUp);
         bindings.insert(arrow_key(KeyCode::Down), Action::MoveSelectionDown);
         bindings.insert(arrow_key(KeyCode::Left), Action::GoToParent);
         bindings.insert(arrow_key(KeyCode::Right), Action::EnterSelected);
 
-        // Page navigation - compatible with PaneState methods
+        // Page navigation
         bindings.insert(arrow_key(KeyCode::PageUp), Action::PageUp);
         bindings.insert(arrow_key(KeyCode::PageDown), Action::PageDown);
         bindings.insert(arrow_key(KeyCode::Home), Action::SelectFirst);
@@ -61,22 +60,17 @@ impl NavigationHandler {
     }
 
     fn handle_key(&mut self, key_event: KeyEvent) -> Result<Vec<Action>, AppError> {
-        trace!("NavigationHandler: processing key {key_event:?}");
+        trace!("NavigationHandler: key {:?}", key_event);
 
         // Check sequences
         if let Some(action) = self.check_sequences(key_event) {
-            debug!("NavigationHandler: sequence matched: {action:?}");
             return Ok(vec![action]);
         }
 
         // Direct lookup
         if let Some(action) = self.bindings.get(&key_event).cloned() {
-            debug!("NavigationHandler: matched key to action {action:?}");
-            let result = vec![action];
-            debug!("NavigationHandler: returning {} actions", result.len());
-            Ok(result)
+            Ok(vec![action])
         } else {
-            debug!("NavigationHandler: no match, returning empty");
             Ok(vec![])
         }
     }
@@ -152,25 +146,4 @@ impl EventHandler for NavigationHandler {
     fn name(&self) -> &'static str {
         "NavigationHandler"
     }
-}
-
-// Helper functions
-fn key(c: char) -> KeyEvent {
-    KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
-}
-
-fn ctrl(c: char) -> KeyEvent {
-    KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
-}
-
-fn arrow_key(code: KeyCode) -> KeyEvent {
-    KeyEvent::new(code, KeyModifiers::NONE)
-}
-
-fn enter_key() -> KeyEvent {
-    KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)
-}
-
-fn backspace_key() -> KeyEvent {
-    KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE)
 }

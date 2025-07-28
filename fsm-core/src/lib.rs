@@ -20,19 +20,11 @@ pub mod controller {
 
     pub mod state_provider;
 
-    pub mod handler_registry;
-    pub mod handlers {
-        pub mod clipboard_handler;
-        pub mod file_ops_handler;
-        pub mod keyboard_handler;
-        pub mod navigation_handler;
-        pub mod search_handler;
-    }
+    pub mod handlers;
 }
 
 pub mod model {
     pub mod app_state;
-    pub use app_state::{AppHistoryEvent, AppState, PluginInfo};
 
     pub mod command_palette;
     pub use command_palette::{Command, CommandAction, CommandPaletteState};
@@ -93,7 +85,6 @@ pub mod fs {
 }
 
 pub mod tasks {
-
     pub mod filename_search_task;
 
     pub mod metadata_task;

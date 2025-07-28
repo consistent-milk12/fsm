@@ -1,15 +1,11 @@
-// fsm-core/src/controller/handlers/clipboard_handler.rs
-// Fixed to work with UIState clipboard integration
-
-use crate::controller::{
-    actions::Action,
-    event_processor::{Event, EventHandler},
-};
+use crate::controller::actions::Action;
 use crate::error::AppError;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use tracing::{debug, trace};
+use tracing::trace;
+
+use super::*;
 
 pub struct ClipboardHandler {
     bindings: HashMap<KeyEvent, Action>,
@@ -30,14 +26,12 @@ impl Default for ClipboardHandler {
 
 impl ClipboardHandler {
     pub fn new() -> Self {
-        let mut bindings = HashMap::with_capacity(15);
+        let mut bindings = HashMap::with_capacity(8);
 
-        // Basic clipboard operations - compatible with UIState async methods
+        // Core operations
         bindings.insert(key('c'), Action::Copy(PathBuf::new()));
         bindings.insert(key('x'), Action::Cut(PathBuf::new()));
         bindings.insert(key('v'), Action::Paste);
-
-        // Clipboard overlay toggle - matches UIState::toggle_clipboard_overlay
         bindings.insert(tab_key(), Action::ToggleClipboardOverlay);
 
         // Ctrl alternatives
@@ -52,10 +46,7 @@ impl ClipboardHandler {
     }
 
     fn handle_key(&mut self, key_event: KeyEvent) -> Result<Vec<Action>, AppError> {
-        trace!(
-            "ClipboardHandler: processing key {:?} in mode {:?}",
-            key_event, self.mode
-        );
+        trace!("ClipboardHandler: key {:?} mode {:?}", key_event, self.mode);
 
         match self.mode {
             ClipboardMode::Normal => self.handle_normal_mode(key_event),
@@ -65,13 +56,9 @@ impl ClipboardHandler {
 
     fn handle_normal_mode(&mut self, key_event: KeyEvent) -> Result<Vec<Action>, AppError> {
         if let Some(action) = self.bindings.get(&key_event).cloned() {
-            debug!("ClipboardHandler: action {:?}", action);
-
-            // Update mode for overlay
             if matches!(action, Action::ToggleClipboardOverlay) {
                 self.mode = ClipboardMode::OverlayActive;
             }
-
             Ok(vec![action])
         } else {
             Ok(vec![])
@@ -80,42 +67,24 @@ impl ClipboardHandler {
 
     fn handle_overlay_mode(&mut self, key_event: KeyEvent) -> Result<Vec<Action>, AppError> {
         match key_event.code {
-            // Navigation - compatible with UIState selection methods
             KeyCode::Up | KeyCode::Char('k') => Ok(vec![Action::ClipboardUp]),
             KeyCode::Down | KeyCode::Char('j') => Ok(vec![Action::ClipboardDown]),
-
-            // Selection
             KeyCode::Enter => {
                 self.mode = ClipboardMode::Normal;
-                Ok(vec![Action::SelectClipboardItem(0)]) // Index will be filled by dispatcher
+                Ok(vec![Action::SelectClipboardItem(0)])
             }
-
-            // Toggle overlay
             KeyCode::Tab => {
-                self.mode = if self.mode == ClipboardMode::OverlayActive {
-                    ClipboardMode::Normal
-                } else {
-                    ClipboardMode::OverlayActive
-                };
+                self.mode = ClipboardMode::Normal;
                 Ok(vec![Action::ToggleClipboardOverlay])
             }
-
-            // Close overlay
             KeyCode::Esc => {
                 self.mode = ClipboardMode::Normal;
                 Ok(vec![Action::CloseOverlay])
             }
-
-            // Remove item - compatible with UIState::clear_clipboard
-            KeyCode::Delete => {
-                Ok(vec![Action::RemoveFromClipboard(0)]) // ID will be filled by dispatcher
-            }
-
-            // Clear all - matches UIState::clear_clipboard
+            KeyCode::Delete => Ok(vec![Action::RemoveFromClipboard(0)]),
             KeyCode::Char('C') if key_event.modifiers.contains(KeyModifiers::SHIFT) => {
                 Ok(vec![Action::ClearClipboard])
             }
-
             _ => Ok(vec![]),
         }
     }
@@ -135,18 +104,16 @@ impl EventHandler for ClipboardHandler {
                     ) || (key_event.modifiers.contains(KeyModifiers::CONTROL)
                         && matches!(key_event.code, KeyCode::Char('c' | 'x' | 'v')))
                 }
-                ClipboardMode::OverlayActive => {
-                    matches!(
-                        key_event.code,
-                        KeyCode::Up
-                            | KeyCode::Down
-                            | KeyCode::Enter
-                            | KeyCode::Tab
-                            | KeyCode::Esc
-                            | KeyCode::Delete
-                            | KeyCode::Char('k' | 'j' | 'C')
-                    )
-                }
+                ClipboardMode::OverlayActive => matches!(
+                    key_event.code,
+                    KeyCode::Up
+                        | KeyCode::Down
+                        | KeyCode::Enter
+                        | KeyCode::Tab
+                        | KeyCode::Esc
+                        | KeyCode::Delete
+                        | KeyCode::Char('k' | 'j' | 'C')
+                ),
             }
         } else {
             false
@@ -166,24 +133,12 @@ impl EventHandler for ClipboardHandler {
 
     fn priority(&self) -> u8 {
         match self.mode {
-            ClipboardMode::Normal => 5,
-            ClipboardMode::OverlayActive => 1, // Highest when overlay active
+            ClipboardMode::Normal => 40,
+            ClipboardMode::OverlayActive => 1,
         }
     }
 
     fn name(&self) -> &'static str {
         "ClipboardHandler"
     }
-}
-
-fn key(c: char) -> KeyEvent {
-    KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
-}
-
-fn ctrl(c: char) -> KeyEvent {
-    KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
-}
-
-fn tab_key() -> KeyEvent {
-    KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)
 }

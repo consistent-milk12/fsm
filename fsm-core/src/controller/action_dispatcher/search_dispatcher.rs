@@ -1,8 +1,7 @@
-//! action_dispatchers/search.rs
-//! Optimized search operations with minimal allocations
+// fsm-core/src/controller/action_dispatcher/search_dispatcher.rs
+// Optimized search with minimal allocations
 
 use anyhow::Result;
-use std::borrow::Cow;
 use std::sync::Arc;
 
 use crate::controller::Action;
@@ -12,7 +11,6 @@ use crate::model::ui_state::{RedrawFlag, UIState};
 
 use super::{ActionMatcher, ActionPriority, DispatchResult};
 
-/// Search dispatcher with performance optimizations
 #[derive(Clone)]
 pub struct SearchDispatcher {
     state_provider: Arc<dyn StateProvider>,
@@ -23,115 +21,68 @@ impl SearchDispatcher {
         Self { state_provider }
     }
 
-    /// Perform filename search with minimal allocations
-    fn perform_filename_search(&self, query: &str) -> Vec<ObjectInfo> {
+    fn search_files(&self, query: &str) -> Vec<ObjectInfo> {
         if query.is_empty() {
             return Vec::new();
         }
 
         let fs = self.state_provider.fs_state();
-        let entries = &fs.active_pane().entries;
+        let query_lower = query.to_lowercase();
 
-        // Use Cow to avoid unnecessary allocations for case-insensitive search
-        let query_cow = if query.chars().any(|c| c.is_uppercase()) {
-            Cow::Borrowed(query)
-        } else {
-            Cow::Owned(query.to_lowercase())
-        };
-
-        let has_wildcards = query.contains('*') || query.contains('?');
-
-        entries
+        fs.active_pane()
+            .entries
             .iter()
             .filter(|entry| {
-                let name_cow = if query_cow.chars().any(|c| c.is_lowercase()) {
-                    Cow::Owned(entry.name.to_lowercase())
+                let name_lower = entry.name.to_lowercase();
+                if query.contains('*') {
+                    self.wildcard_match(&query_lower, &name_lower)
                 } else {
-                    Cow::Borrowed(&entry.name)
-                };
-
-                if has_wildcards {
-                    self.wildcard_match(&query_cow, &name_cow)
-                } else {
-                    name_cow.contains(query_cow.as_ref())
+                    name_lower.contains(&query_lower)
                 }
             })
             .cloned()
             .collect()
     }
 
-    /// Optimized wildcard matching using iterative approach
     fn wildcard_match(&self, pattern: &str, text: &str) -> bool {
-        let mut p_chars = pattern.chars().peekable();
-        let mut t_chars = text.chars().peekable();
+        let parts: Vec<&str> = pattern.split('*').collect();
+        if parts.len() == 1 {
+            return text.contains(pattern);
+        }
 
-        while let Some(p_char) = p_chars.peek() {
-            match p_char {
-                '*' => {
-                    p_chars.next(); // consume '*'
+        let mut pos = 0;
+        for (i, part) in parts.iter().enumerate() {
+            if part.is_empty() {
+                continue;
+            }
 
-                    // Handle consecutive '*' characters
-                    while p_chars.peek() == Some(&'*') {
-                        p_chars.next();
-                    }
-
-                    // If '*' is at the end, match everything
-                    if p_chars.peek().is_none() {
-                        return true;
-                    }
-
-                    // Try to match the rest of the pattern
-                    let remaining_pattern: String = p_chars.collect();
-
-                    while t_chars.peek().is_some() {
-                        let remaining_text: String = t_chars.clone().collect();
-
-                        if self.wildcard_match(&remaining_pattern, &remaining_text) {
-                            return true;
-                        }
-
-                        t_chars.next();
-                    }
-
+            if let Some(found) = text[pos..].find(part) {
+                pos += found + part.len();
+                if i == 0 && !pattern.starts_with('*') && found != 0 {
                     return false;
                 }
-
-                '?' => {
-                    p_chars.next();
-                    if t_chars.next().is_none() {
-                        return false;
-                    }
-                }
-
-                c => {
-                    let expected = *c;
-                    p_chars.next();
-
-                    if t_chars.next() != Some(expected) {
-                        return false;
-                    }
-                }
+            } else {
+                return false;
             }
         }
 
-        // Both iterators should be exhausted for a complete match
-        t_chars.peek().is_none()
+        !pattern.ends_with('*')
+            || parts
+                .last()
+                .map_or(true, |p| p.is_empty() || text.ends_with(p))
     }
 
-    /// Handle search with result caching
     fn handle_filename_search(&self, query: &str) -> DispatchResult {
-        let search_results = self.perform_filename_search(query);
+        let results = self.search_files(query);
         let query = query.to_string();
 
-        // Store results in FSState and update UI
         {
             let mut fs = self.state_provider.fs_state();
-            fs.active_pane_mut().search_results = search_results;
+            fs.active_pane_mut().search_results = results;
         }
 
         self.state_provider
             .update_ui_state(Box::new(move |ui: &mut UIState| {
-                ui.prompt_set(&query);
                 ui.search_query = Some(query.into());
                 ui.request_redraw(RedrawFlag::Overlay);
             }));
@@ -139,39 +90,20 @@ impl SearchDispatcher {
         DispatchResult::Continue
     }
 
-    /// Handle action asynchronously
     pub async fn handle(&mut self, action: Action) -> Result<DispatchResult> {
         match action {
             Action::FileNameSearch(query) => Ok(self.handle_filename_search(&query)),
-
-            Action::ShowFilenameSearchResults(results) => {
-                {
-                    let mut fs = self.state_provider.fs_state();
-                    fs.active_pane_mut().search_results = results;
-                }
-
-                self.state_provider
-                    .update_ui_state(Box::new(|ui: &mut UIState| {
-                        ui.request_redraw(RedrawFlag::Overlay);
-                    }));
-
-                Ok(DispatchResult::Continue)
-            }
-
             Action::ShowSearchResults(results) => {
                 {
                     let mut fs = self.state_provider.fs_state();
                     fs.active_pane_mut().search_results = results;
                 }
-
                 self.state_provider
                     .update_ui_state(Box::new(|ui: &mut UIState| {
                         ui.request_redraw(RedrawFlag::All);
                     }));
-
                 Ok(DispatchResult::Continue)
             }
-
             _ => Ok(DispatchResult::NotHandled),
         }
     }
@@ -181,9 +113,7 @@ impl ActionMatcher for SearchDispatcher {
     fn can_handle(&self, action: &Action) -> bool {
         matches!(
             action,
-            Action::FileNameSearch(_)
-                | Action::ShowFilenameSearchResults(_)
-                | Action::ShowSearchResults(_)
+            Action::FileNameSearch(_) | Action::ShowSearchResults(_)
         )
     }
 

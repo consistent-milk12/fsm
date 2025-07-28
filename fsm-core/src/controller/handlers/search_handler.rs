@@ -1,11 +1,13 @@
 // fsm-core/src/controller/handlers/search_handler.rs
-// Fixed to work with UIState overlay system and input management
+// Search and command mode handler
 
 use crate::controller::actions::Action;
 use crate::error::AppError;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::collections::HashMap;
-use tracing::{debug, trace};
+use tracing::trace;
+
+use super::*;
 
 pub struct SearchHandler {
     bindings: HashMap<KeyEvent, Action>,
@@ -16,9 +18,8 @@ pub struct SearchHandler {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SearchMode {
     Normal,
-    FileNameSearch,
-    ContentSearch,
-    CommandMode,
+    SearchInput,
+    CommandInput,
 }
 
 impl Default for SearchHandler {
@@ -29,9 +30,9 @@ impl Default for SearchHandler {
 
 impl SearchHandler {
     pub fn new() -> Self {
-        let mut bindings = HashMap::with_capacity(12);
+        let mut bindings = HashMap::with_capacity(8);
 
-        // Search triggers - compatible with UIState overlay modes
+        // Search triggers
         bindings.insert(key('/'), Action::ToggleFileNameSearch);
         bindings.insert(ctrl('f'), Action::ToggleContentSearch);
         bindings.insert(key(':'), Action::EnterCommandMode);
@@ -49,50 +50,35 @@ impl SearchHandler {
     }
 
     fn handle_key(&mut self, key_event: KeyEvent) -> Result<Vec<Action>, AppError> {
-        trace!(
-            "SearchHandler: processing key {:?} in mode {:?}",
-            key_event, self.mode
-        );
+        trace!("SearchHandler: key {:?} mode {:?}", key_event, self.mode);
 
         match self.mode {
             SearchMode::Normal => self.handle_normal_mode(key_event),
-            SearchMode::FileNameSearch => self.handle_filename_search_mode(key_event),
-            SearchMode::ContentSearch => self.handle_content_search_mode(key_event),
-            SearchMode::CommandMode => self.handle_command_mode(key_event),
+            SearchMode::SearchInput => self.handle_search_input(key_event),
+            SearchMode::CommandInput => self.handle_command_input(key_event),
         }
     }
 
     fn handle_normal_mode(&mut self, key_event: KeyEvent) -> Result<Vec<Action>, AppError> {
         if let Some(action) = self.bindings.get(&key_event).cloned() {
-            debug!("SearchHandler: action {:?}", action);
-
-            // Update mode based on action
             match &action {
-                Action::ToggleFileNameSearch => {
-                    self.mode = SearchMode::FileNameSearch;
-                    self.input_buffer.clear();
-                }
-                Action::ToggleContentSearch => {
-                    self.mode = SearchMode::ContentSearch;
+                Action::ToggleFileNameSearch | Action::ToggleContentSearch => {
+                    self.mode = SearchMode::SearchInput;
                     self.input_buffer.clear();
                 }
                 Action::EnterCommandMode => {
-                    self.mode = SearchMode::CommandMode;
+                    self.mode = SearchMode::CommandInput;
                     self.input_buffer.clear();
                 }
                 _ => {}
             }
-
             Ok(vec![action])
         } else {
             Ok(vec![])
         }
     }
 
-    fn handle_filename_search_mode(
-        &mut self,
-        key_event: KeyEvent,
-    ) -> Result<Vec<Action>, AppError> {
+    fn handle_search_input(&mut self, key_event: KeyEvent) -> Result<Vec<Action>, AppError> {
         match key_event.code {
             KeyCode::Esc => {
                 self.mode = SearchMode::Normal;
@@ -117,32 +103,7 @@ impl SearchHandler {
         }
     }
 
-    fn handle_content_search_mode(&mut self, key_event: KeyEvent) -> Result<Vec<Action>, AppError> {
-        match key_event.code {
-            KeyCode::Esc => {
-                self.mode = SearchMode::Normal;
-                self.input_buffer.clear();
-                Ok(vec![Action::CloseOverlay])
-            }
-            KeyCode::Enter => {
-                let query = self.input_buffer.clone();
-                self.mode = SearchMode::Normal;
-                self.input_buffer.clear();
-                Ok(vec![Action::ContentSearch(query)])
-            }
-            KeyCode::Backspace => {
-                self.input_buffer.pop();
-                Ok(vec![Action::UpdateInput(self.input_buffer.clone())])
-            }
-            KeyCode::Char(c) => {
-                self.input_buffer.push(c);
-                Ok(vec![Action::UpdateInput(self.input_buffer.clone())])
-            }
-            _ => Ok(vec![]),
-        }
-    }
-
-    fn handle_command_mode(&mut self, key_event: KeyEvent) -> Result<Vec<Action>, AppError> {
+    fn handle_command_input(&mut self, key_event: KeyEvent) -> Result<Vec<Action>, AppError> {
         match key_event.code {
             KeyCode::Esc => {
                 self.mode = SearchMode::Normal;
@@ -153,7 +114,7 @@ impl SearchHandler {
                 let command = self.input_buffer.clone();
                 self.mode = SearchMode::Normal;
                 self.input_buffer.clear();
-                self.parse_command(command)
+                Ok(vec![Action::SubmitInputPrompt(command)])
             }
             KeyCode::Backspace => {
                 self.input_buffer.pop();
@@ -164,28 +125,6 @@ impl SearchHandler {
                 Ok(vec![Action::UpdateInput(self.input_buffer.clone())])
             }
             _ => Ok(vec![]),
-        }
-    }
-
-    fn parse_command(&self, command: String) -> Result<Vec<Action>, AppError> {
-        let cmd = command.trim();
-
-        match cmd {
-            "q" | "quit" => Ok(vec![Action::Quit]),
-            "reload" | "r" => Ok(vec![Action::ReloadDirectory]),
-            cmd if cmd.starts_with("cd ") => {
-                let path = cmd.strip_prefix("cd ").unwrap_or("");
-                Ok(vec![Action::GoToPath(path.to_string())])
-            }
-            cmd if cmd.starts_with("find ") => {
-                let pattern = cmd.strip_prefix("find ").unwrap_or("");
-                Ok(vec![Action::FileNameSearch(pattern.to_string())])
-            }
-            cmd if cmd.starts_with("grep ") => {
-                let pattern = cmd.strip_prefix("grep ").unwrap_or("");
-                Ok(vec![Action::ContentSearch(pattern.to_string())])
-            }
-            _ => Ok(vec![Action::NoOp]),
         }
     }
 }
@@ -202,7 +141,7 @@ impl EventHandler for SearchHandler {
                         || (key_event.modifiers.contains(KeyModifiers::CONTROL)
                             && matches!(key_event.code, KeyCode::Char('f')))
                 }
-                _ => true, // Handle all keys in input modes
+                _ => true,
             }
         } else {
             false
@@ -223,19 +162,11 @@ impl EventHandler for SearchHandler {
     fn priority(&self) -> u8 {
         match self.mode {
             SearchMode::Normal => 100,
-            _ => 5, // High priority in input modes
+            _ => 5,
         }
     }
 
     fn name(&self) -> &'static str {
         "SearchHandler"
     }
-}
-
-fn key(c: char) -> KeyEvent {
-    KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
-}
-
-fn ctrl(c: char) -> KeyEvent {
-    KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
 }
