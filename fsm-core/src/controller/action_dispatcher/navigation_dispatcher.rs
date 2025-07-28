@@ -205,6 +205,7 @@ mod tests {
 
         fn clear_redraw(&self) {}
 
+        #[allow(unused)]
         fn update_task_progress(
             &self,
             task_id: String,
