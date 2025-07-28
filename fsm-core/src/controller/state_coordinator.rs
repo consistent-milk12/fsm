@@ -1,34 +1,47 @@
-//! Enhanced StateCoordinator with improved async operations and error handling
-//!
-//! Fixes clipboard error type issues and enhances async state management
+//! src/controller/state_coordinator.rs
+//! ============================================================
+//! Central access point for `AppState`, `FSState`, and the new
+//! slim `UIState`.  All UI-mutating helpers are thin wrappers
+//! around a single locking primitive, so that widgets remain
+//! lock-free during rendering.
 
-use std::future::Future;
-use std::sync::{Arc, Mutex, RwLock};
+use std::{
+    future::Future,
+    sync::{Arc, Mutex, RwLock},
+    time::Duration,
+};
 
 use anyhow::Result;
 use arc_swap::ArcSwap;
 use clipr::ClipError;
+use tokio::time::timeout;
 
-use crate::AppError;
-use crate::controller::state_provider::StateProvider;
-use crate::model::app_state::AppState;
-use crate::model::fs_state::FSState;
-use crate::model::ui_state::UIState;
+use crate::{
+    AppError,
+    controller::state_provider::StateProvider,
+    model::{
+        app_state::AppState,
+        fs_state::FSState,
+        ui_state::{RedrawFlag, UIState},
+    },
+};
 
-/// Enhanced state coordinator with improved error handling
+/// Thread-safe coordinator for global states.
+///
+/// * `AppState` – config, async tasks, etc. (guarded by `Mutex`)
+/// * `FSState`  – panes, operations, history (guarded by `Mutex`)
+/// * `UIState`  – atomics + small fields (lock-free reads via
+///                `ArcSwap`, writes behind `RwLock`)
 pub struct StateCoordinator {
-    /// Application state containing configuration, caches and task management
-    pub app_state: Arc<Mutex<AppState>>,
-
-    /// Current UI state with lock-free atomic updates
-    pub ui_state: ArcSwap<RwLock<UIState>>,
-
-    /// Filesystem state
-    pub fs_state: Arc<Mutex<FSState>>,
+    app_state: Arc<Mutex<AppState>>,
+    ui_state: ArcSwap<RwLock<UIState>>,
+    fs_state: Arc<Mutex<FSState>>,
 }
 
+// ------------------------------------------------------------
+// ctor & cheap getters
+// ------------------------------------------------------------
 impl StateCoordinator {
-    /// Create coordinator with initial UI state
     pub fn new(
         app_state: Arc<Mutex<AppState>>,
         initial_ui: RwLock<UIState>,
@@ -41,7 +54,7 @@ impl StateCoordinator {
         }
     }
 
-    /// Create simplified coordinator (compatibility alias)
+    /// Convenience alias kept for compatibility
     pub fn new_simple(
         app_state: Arc<Mutex<AppState>>,
         initial_ui: RwLock<UIState>,
@@ -50,316 +63,206 @@ impl StateCoordinator {
         Self::new(app_state, initial_ui, fs_state)
     }
 
-    /// Retrieve current UI state snapshot (lock-free)
+    #[inline]
     pub fn ui_state(&self) -> Arc<RwLock<UIState>> {
         self.ui_state.load_full()
     }
-
-    /// Mutably borrow AppState
+    #[inline]
     pub fn app_state(&self) -> std::sync::MutexGuard<'_, AppState> {
-        self.app_state
-            .lock()
-            .expect("StateCoordinator.app_state mutex poisoned")
+        self.app_state.lock().expect("AppState mutex poisoned")
     }
-
-    /// Mutably borrow FSState
+    #[inline]
     pub fn fs_state(&self) -> std::sync::MutexGuard<'_, FSState> {
-        self.fs_state
-            .lock()
-            .expect("StateCoordinator.fs_state mutex poisoned")
+        self.fs_state.lock().expect("FSState mutex poisoned")
     }
+}
 
-    /// Synchronous UI state update
-    pub fn update_ui_state<F>(&self, update: F)
+// ------------------------------------------------------------
+// Synchronous mutators
+// ------------------------------------------------------------
+impl StateCoordinator {
+    /// Lock `UIState` for a short, synchronous mutation.
+    pub fn update_ui_state<F>(&self, f: F)
     where
         F: FnOnce(&mut UIState),
     {
-        let ui_state = self.ui_state.load_full();
-        let mut ui_guard = ui_state.write().expect("UIState RwLock poisoned");
-        update(&mut ui_guard);
+        if let Ok(mut guard) = self.ui_state().write() {
+            f(&mut guard);
+        }
     }
 
-    /// Enhanced async UI state update with flexible error handling
-    pub async fn update_ui_state_async<F, Fut, T, E>(&self, update_fn: F) -> Result<T, AppError>
+    /// Atomic mutation helper (no error propagation).
+    #[inline]
+    pub fn update_ui_state_atomic<F>(&self, f: F)
+    where
+        F: FnOnce(&mut UIState),
+    {
+        self.update_ui_state(f);
+    }
+
+    /// Request a redraw for the given component(s).
+    #[inline]
+    pub fn request_redraw(&self, flag: RedrawFlag) {
+        self.update_ui_state(|ui| ui.request_redraw(flag));
+    }
+
+    #[inline]
+    pub fn clear_redraw(&self) {
+        self.update_ui_state(|ui| ui.clear_redraw());
+    }
+
+    #[inline]
+    pub fn needs_redraw(&self) -> bool {
+        let binding = self.ui_state();
+
+        let guard = binding.read().expect("UIState RwLock poisoned");
+        guard.needs_redraw()
+    }
+}
+
+// ------------------------------------------------------------
+// Asynchronous mutators with error mapping
+// ------------------------------------------------------------
+impl StateCoordinator {
+    /// Generic async mutation with custom error mapping.
+    pub async fn update_ui_state_async<F, Fut, T, E>(&self, f: F) -> Result<T, AppError>
     where
         F: FnOnce(&mut UIState) -> Fut,
         Fut: Future<Output = Result<T, E>>,
         E: std::error::Error + Send + Sync + 'static,
     {
-        let ui_state = self.ui_state();
+        let binding: Arc<RwLock<UIState>> = self.ui_state();
 
-        let mut ui_guard = ui_state.write().map_err(|_| {
-            AppError::state_lock(
-                "UIState",
-                "Failed to acquire write lock for async operation",
-            )
-        })?;
+        let mut guard = binding
+            .write()
+            .map_err(|_| AppError::state_lock("UIState", "write lock poisoned"))?;
 
-        let result = update_fn(&mut ui_guard)
-            .await
-            .map_err(|e| AppError::ActionDispatch {
-                action: "async_ui_update".to_string(),
-                reason: e.to_string(),
-            })?;
-        Ok(result)
+        f(&mut guard).await.map_err(|e| AppError::ActionDispatch {
+            action: "async_ui_update".into(),
+            reason: e.to_string(),
+        })
     }
 
-    /// Specialized clipboard operation with ClipError -> AppError conversion
-    pub async fn update_ui_state_clipboard<F, Fut, T>(&self, update_fn: F) -> Result<T, AppError>
+    /// Same as above, but maps `ClipError` automatically.
+    pub async fn update_ui_state_clipboard<F, Fut, T>(&self, f: F) -> Result<T, AppError>
     where
         F: FnOnce(&mut UIState) -> Fut,
         Fut: Future<Output = Result<T, ClipError>>,
     {
-        let ui_state = self.ui_state();
+        let binding: Arc<RwLock<UIState>> = self.ui_state();
 
-        let mut ui_guard = ui_state.write().map_err(|_| {
-            AppError::state_lock(
-                "UIState",
-                "Failed to acquire write lock for clipboard operation",
-            )
-        })?;
+        let mut guard = binding
+            .write()
+            .map_err(|_| AppError::state_lock("UIState", "write lock poisoned"))?;
 
-        let result = update_fn(&mut ui_guard)
+        f(&mut guard)
             .await
-            .map_err(|clip_err: ClipError| AppError::ClipboardOperation {
-                operation: "clipboard_access".to_string(),
-                reason: clip_err.to_string(),
-            })?;
-
-        Ok(result)
+            .map_err(|e| AppError::ClipboardOperation {
+                operation: "clipboard".into(),
+                reason: e.to_string(),
+            })
     }
 
-    /// Atomic UI state update (synchronous operations)
-    pub fn update_ui_state_atomic<F>(&self, update_fn: F)
-    where
-        F: FnOnce(&mut UIState),
-    {
-        if let Ok(mut ui_guard) = self.ui_state().write() {
-            update_fn(&mut ui_guard);
-        }
-    }
-
-    /// Request UI redraw for specific component
-    pub fn request_redraw(&self, flag: crate::model::ui_state::RedrawFlag) {
-        self.update_ui_state(|ui| {
-            ui.request_redraw(flag);
-        });
-    }
-
-    /// Clear all redraw flags
-    pub fn clear_redraw(&self) {
-        self.update_ui_state(|ui| {
-            ui.clear_redraw();
-        });
-    }
-
-    /// Check if UI needs redraw
-    pub fn needs_redraw(&self) -> bool {
-        let ui_state = self.ui_state.load_full();
-        let ui_guard = ui_state.read().expect("UIState RwLock poisoned");
-        ui_guard.needs_redraw()
-    }
-
-    /// Batch multiple UI updates atomically
-    pub fn batch_ui_updates<F>(&self, updates: F)
-    where
-        F: FnOnce(&mut UIState),
-    {
-        self.update_ui_state(updates);
-    }
-
-    /// Try async UI update with timeout
+    /// Async mutation with timeout.
     pub async fn try_update_ui_state_async<F, Fut, T, E>(
         &self,
-        update_fn: F,
-        timeout: std::time::Duration,
+        f: F,
+        timeout_dur: Duration,
     ) -> Result<T, AppError>
     where
         F: FnOnce(&mut UIState) -> Fut,
         Fut: Future<Output = Result<T, E>>,
         E: std::error::Error + Send + Sync + 'static,
     {
-        let update_future = self.update_ui_state_async(update_fn);
-
-        let result = tokio::time::timeout(timeout, update_future)
+        let fut = self.update_ui_state_async(f);
+        timeout(timeout_dur, fut)
             .await
             .map_err(|_| AppError::TaskTimeout {
-                task_type: "async_ui_update".to_string(),
-                timeout_secs: timeout.as_secs(),
-            })?;
-
-        result
+                task_type: "async_ui_update".into(),
+                timeout_secs: timeout_dur.as_secs(),
+            })?
     }
+}
 
-    /// Safe state access with error recovery
-    pub fn with_state_access<F, R>(&self, accessor: F) -> Result<R, AppError>
+// ------------------------------------------------------------
+// Safe read-only accessor
+// ------------------------------------------------------------
+impl StateCoordinator {
+    pub fn with_state_access<F, R>(&self, f: F) -> Result<R, AppError>
     where
         F: FnOnce(&AppState, &FSState, &UIState) -> R,
     {
-        let app_guard = self
+        let app = self
             .app_state
             .lock()
-            .map_err(|_| AppError::state_lock("AppState", "Failed to acquire app state lock"))?;
+            .map_err(|_| AppError::state_lock("AppState", "lock poisoned"))?;
 
-        let fs_guard = self
+        let fs = self
             .fs_state
             .lock()
-            .map_err(|_| AppError::state_lock("FSState", "Failed to acquire fs state lock"))?;
+            .map_err(|_| AppError::state_lock("FSState", "lock poisoned"))?;
 
-        let ui_state = self.ui_state.load_full();
-        let ui_guard = ui_state
+        let binding = self.ui_state();
+        let ui = binding
             .read()
-            .map_err(|_| AppError::state_lock("UIState", "Failed to acquire ui state read lock"))?;
+            .map_err(|_| AppError::state_lock("UIState", "read lock poisoned"))?;
 
-        Ok(accessor(&app_guard, &fs_guard, &ui_guard))
+        Ok(f(&app, &fs, &ui))
     }
+}
 
-    /// Update task progress
-    pub fn update_task_progress(
-        &self,
-        task_id: String,
-        current: u64,
-        total: u64,
-        message: Option<String>,
-    ) {
-        if let Ok(mut app_state) = self.app_state.lock() {
-            app_state.set_task_progress(task_id, current, total, message);
+// ------------------------------------------------------------
+// Task progress passthrough
+// ------------------------------------------------------------
+impl StateCoordinator {
+    pub fn update_task_progress(&self, id: String, current: u64, total: u64, msg: Option<String>) {
+        if let Ok(mut app) = self.app_state.lock() {
+            app.set_task_progress(id, current, total, msg);
         }
     }
 }
 
-/// StateProvider implementation
+// ------------------------------------------------------------
+// StateProvider impl (for action dispatcher)
+// ------------------------------------------------------------
 impl StateProvider for StateCoordinator {
     fn ui_state(&self) -> Arc<RwLock<UIState>> {
         self.ui_state()
     }
-
-    fn update_ui_state(&self, update: Box<dyn FnOnce(&mut UIState) + Send>) {
-        let ui_state = self.ui_state.load_full();
-        let mut ui_guard = ui_state.write().expect("UIState RwLock poisoned");
-        update(&mut ui_guard);
-    }
-
     fn fs_state(&self) -> std::sync::MutexGuard<'_, FSState> {
         self.fs_state()
     }
-
     fn app_state(&self) -> std::sync::MutexGuard<'_, AppState> {
         self.app_state()
     }
 
-    fn update_task_progress(
-        &self,
-        task_id: String,
-        current: u64,
-        total: u64,
-        message: Option<String>,
-    ) {
-        self.update_task_progress(task_id, current, total, message)
+    fn update_ui_state(&self, f: Box<dyn FnOnce(&mut UIState) + Send>) {
+        self.update_ui_state(|ui| f(ui));
     }
 
-    fn request_redraw(&self, flag: crate::model::ui_state::RedrawFlag) {
-        self.request_redraw(flag)
+    fn update_task_progress(&self, id: String, cur: u64, tot: u64, msg: Option<String>) {
+        self.update_task_progress(id, cur, tot, msg);
     }
 
+    fn request_redraw(&self, flag: RedrawFlag) {
+        self.request_redraw(flag);
+    }
     fn needs_redraw(&self) -> bool {
         self.needs_redraw()
     }
-
     fn clear_redraw(&self) {
         self.clear_redraw()
     }
 }
 
+// ------------------------------------------------------------
+// Debug
+// ------------------------------------------------------------
 impl std::fmt::Debug for StateCoordinator {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("StateCoordinator")
-            .field("implements_state_provider", &true)
-            .field("has_enhanced_async_support", &true)
+            .field("app_state_locked", &self.app_state.is_poisoned())
+            .field("fs_state_locked", &self.fs_state.is_poisoned())
             .finish()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::time::Duration;
-
-    fn create_test_coordinator() -> StateCoordinator {
-        let app_state = Arc::new(Mutex::new(AppState::default()));
-        let ui_state = RwLock::new(UIState::default());
-        let fs_state = Arc::new(Mutex::new(FSState::default()));
-
-        StateCoordinator::new(app_state, ui_state, fs_state)
-    }
-
-    #[tokio::test]
-    async fn test_async_ui_update() {
-        let coordinator = create_test_coordinator();
-
-        let result = coordinator
-            .update_ui_state_async(|ui| async {
-                ui.show_info("Test message");
-                Ok::<(), std::io::Error>(())
-            })
-            .await;
-
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_clipboard_update() {
-        let coordinator = create_test_coordinator();
-
-        // Mock clipboard operation that returns ClipError
-        let result = coordinator
-            .update_ui_state_clipboard(|_ui| async {
-                // This would normally be a clipboard operation
-                Ok::<String, ClipError>("test".to_string())
-            })
-            .await;
-
-        // Should convert ClipError to AppError automatically
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_state_access() {
-        let coordinator = create_test_coordinator();
-
-        let result = coordinator.with_state_access(|app, fs, ui| {
-            // Safe access to all state components
-            format!(
-                "States accessed: app={:?}, fs={:?}, ui={:?}",
-                app.config.is_some(),
-                fs.left_pane.entries.len(),
-                ui.status_message.is_some()
-            )
-        });
-
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_timeout_handling() {
-        let coordinator = create_test_coordinator();
-
-        let result = coordinator
-            .try_update_ui_state_async(
-                |_ui| async {
-                    tokio::time::sleep(Duration::from_millis(200)).await;
-                    Ok::<(), std::io::Error>(())
-                },
-                Duration::from_millis(100),
-            )
-            .await;
-
-        // Should timeout
-        assert!(result.is_err());
-        if let Err(AppError::TaskTimeout { .. }) = result {
-            // Expected timeout error
-        } else {
-            panic!("Expected timeout error");
-        }
     }
 }

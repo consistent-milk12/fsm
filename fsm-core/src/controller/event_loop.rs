@@ -1,65 +1,76 @@
-//! Enhanced event loop with enhanced state integration
+//! src/controller/event_loop.rs
+//! ============================================================
+//! Task / action multiplexer that feeds the reducer.  It is
+//! fully aware of the new slim UIState design and writes search
+//! results directly into `PaneState`.
 
-use std::collections::VecDeque;
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::{
+    collections::VecDeque,
+    path::PathBuf,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use anyhow::Result;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tracing::{debug, error, info};
 
-use crate::controller::actions::{Action, OperationId};
-use crate::controller::state_coordinator::StateCoordinator;
-use crate::error::AppError;
+use crate::{
+    controller::{
+        actions::{Action, OperationId},
+        state_coordinator::StateCoordinator,
+    },
+    error::AppError,
+    fs::object_info::ObjectInfo,
+    model::{
+        fs_state::PaneState,
+        ui_state::{LoadingState, RedrawFlag, UIState},
+    },
+};
 
-use crate::fs::object_info::ObjectInfo;
-use crate::model::{RedrawFlag, ui_state::UIState};
-
-/// Enhanced task result with operation tracking
+/// ---------- task result types -------------------------------------------------
 #[derive(Debug, Clone)]
 pub enum TaskResult {
     DirectoryLoad {
         task_id: u64,
         path: PathBuf,
         result: Result<Vec<ObjectInfo>, AppError>,
-        execution_time: Duration,
+        exec: Duration,
     },
     FileOperation {
-        operation_id: OperationId,
-        operation_type: FileOperationType,
+        op_id: OperationId,
+        op_kind: FileOperationType,
         result: Result<(), AppError>,
-        execution_time: Duration,
+        exec: Duration,
     },
-    SearchComplete {
+    SearchDone {
         task_id: u64,
         query: String,
         results: Vec<ObjectInfo>,
-        execution_time: Duration,
+        exec: Duration,
     },
-    ContentSearchComplete {
+    ContentSearchDone {
         task_id: u64,
         query: String,
         results: Vec<String>,
-        execution_time: Duration,
+        exec: Duration,
     },
     Progress {
         task_id: u64,
-        current: u64,
-        total: u64,
-        message: Option<String>,
+        pct: f32,
+        msg: Option<String>,
     },
-    ClipboardOperation {
-        operation_id: OperationId,
-        operation_type: String,
-        result: Result<u32, AppError>, // items processed
-        execution_time: Duration,
+    Clipboard {
+        op_id: OperationId,
+        op_kind: String,
+        result: Result<u32, AppError>,
+        exec: Duration,
     },
     Generic {
         task_id: u64,
         result: Result<(), AppError>,
-        message: Option<String>,
-        execution_time: Duration,
+        msg: Option<String>,
+        exec: Duration,
     },
 }
 
@@ -72,548 +83,324 @@ pub enum FileOperationType {
     Rename,
 }
 
+/// ---------- event-loop struct --------------------------------------------------
 pub struct EventLoop {
-    state_coordinator: Arc<StateCoordinator>,
+    coord: Arc<StateCoordinator>,
     task_rx: UnboundedReceiver<TaskResult>,
     action_rx: UnboundedReceiver<Action>,
-    pending_actions: VecDeque<Action>,
-    metrics: EventLoopMetrics,
-    config: EventLoopConfig,
+
+    pending: VecDeque<Action>,
+    metrics: Metrics,
+    cfg: Config,
 }
 
+/// ---------- aux structs --------------------------------------------------------
 #[derive(Debug)]
-struct EventLoopMetrics {
-    tasks_processed: u64,
-    actions_processed: u64,
-    total_processing_time: Duration,
-    last_activity: Instant,
+struct Metrics {
+    tasks: u64,
+    actions: u64,
+    total: Duration,
+    last: Instant,
 }
 
 #[derive(Debug, Clone)]
-pub struct EventLoopConfig {
-    pub max_actions_per_batch: usize,
+pub struct Config {
+    pub max_batch: usize,
     pub task_timeout: Duration,
-    pub min_iteration_time: Duration,
+    pub min_iter: Duration,
 }
-
-impl Default for EventLoopConfig {
+impl Default for Config {
     fn default() -> Self {
         Self {
-            max_actions_per_batch: 10,
+            max_batch: 10,
             task_timeout: Duration::from_secs(30),
-            min_iteration_time: Duration::from_millis(16),
+            min_iter: Duration::from_millis(16),
         }
     }
 }
 
+/// ==============================================================================
+/// ctor
+/// ==============================================================================
 impl EventLoop {
     pub fn new(
         task_rx: UnboundedReceiver<TaskResult>,
         action_rx: UnboundedReceiver<Action>,
-        state_coordinator: Arc<StateCoordinator>,
+        coord: Arc<StateCoordinator>,
     ) -> Self {
-        info!("Creating enhanced event loop with state integration");
-
+        info!("~> event-loop initialised");
         Self {
-            state_coordinator,
+            coord,
             task_rx,
             action_rx,
-            pending_actions: VecDeque::with_capacity(32),
-            metrics: EventLoopMetrics {
-                tasks_processed: 0,
-                actions_processed: 0,
-                total_processing_time: Duration::ZERO,
-                last_activity: Instant::now(),
+            pending: VecDeque::with_capacity(32),
+            metrics: Metrics {
+                tasks: 0,
+                actions: 0,
+                total: Duration::ZERO,
+                last: Instant::now(),
             },
-            config: EventLoopConfig::default(),
+            cfg: Config::default(),
         }
     }
+}
 
+/// ==============================================================================
+/// public API
+/// ==============================================================================
+impl EventLoop {
+    /// Blocking until *one* action is ready.
     pub async fn next_action(&mut self) -> Action {
-        let iteration_start = Instant::now();
-
-        if let Some(action) = self.pending_actions.pop_front() {
-            return action;
+        if let Some(a) = self.pending.pop_front() {
+            return a;
         }
 
+        let start = Instant::now();
         tokio::select! {
-            task_result = self.task_rx.recv() => {
-                match task_result {
-                    Some(result) => {
-                        debug!("Processing task result: {:?}", result.kind());
-                        match self.process_task_result(result).await {
-                            Ok(actions) => {
-                                self.queue_actions(actions);
-                                self.metrics.tasks_processed += 1;
-                            }
-                            Err(e) => {
-                                error!("Failed to process task result: {}", e);
-                                self.show_error(&format!("Task processing failed: {}", e));
-                            }
-                        }
-                    }
-                    None => return Action::Quit,
-                }
+            Some(t) = self.task_rx.recv() => {
+                self.metrics.tasks += 1;
+                self.queue(self.handle_task(t).await);
             }
-
-            action = self.action_rx.recv() => {
-                match action {
-                    Some(action) => {
-                        debug!("Received external action: {:?}", action);
-                        self.metrics.actions_processed += 1;
-                        return action;
-                    }
-                    None => return Action::Quit,
-                }
+            Some(a) = self.action_rx.recv() => {
+                self.metrics.actions += 1;
+                return a;
             }
-
-            _ = tokio::time::sleep(self.config.min_iteration_time) => {
-                return Action::Tick;
-            }
+            _ = tokio::time::sleep(self.cfg.min_iter) => { /* idle tick */ }
         }
 
-        self.pending_actions.pop_front().unwrap_or_else(|| {
-            let elapsed = iteration_start.elapsed();
-            self.metrics.total_processing_time += elapsed;
-            self.metrics.last_activity = Instant::now();
-            Action::Tick
-        })
+        self.metrics.total += start.elapsed();
+        self.metrics.last = Instant::now();
+        self.pending.pop_front().unwrap_or(Action::Tick)
     }
 
-    async fn process_task_result(&self, task_result: TaskResult) -> Result<Vec<Action>> {
-        match task_result {
+    pub fn snapshot_metrics(&self) -> MetricsSnap {
+        MetricsSnap {
+            tasks: self.metrics.tasks,
+            actions: self.metrics.actions,
+            total: self.metrics.total,
+            avg: if self.metrics.tasks > 0 {
+                self.metrics.total / self.metrics.tasks as u32
+            } else {
+                Duration::ZERO
+            },
+            last: self.metrics.last,
+            queued: self.pending.len(),
+        }
+    }
+}
+
+/// ---------- task handling ------------------------------------------------------
+impl EventLoop {
+    async fn handle_task(&self, t: TaskResult) -> Vec<Action> {
+        match t {
             TaskResult::DirectoryLoad {
                 task_id,
                 path,
                 result,
-                execution_time,
-            } => {
-                self.handle_directory_load(task_id, path, result, execution_time)
-                    .await
-            }
+                exec,
+            } => self.on_dir_loaded(task_id, path, result, exec).await,
             TaskResult::FileOperation {
-                operation_id,
-                operation_type,
+                op_id,
+                op_kind,
                 result,
-                execution_time,
-            } => {
-                self.handle_file_operation(operation_id, operation_type, result, execution_time)
-                    .await
-            }
-            TaskResult::SearchComplete {
+                exec,
+            } => self.on_file_op(op_id, op_kind, result, exec).await,
+            TaskResult::SearchDone {
                 task_id,
                 query,
                 results,
-                execution_time,
-            } => {
-                self.handle_search_complete(task_id, query, results, execution_time)
-                    .await
-            }
-            TaskResult::ContentSearchComplete {
+                exec,
+            } => self.on_fname_search(task_id, query, results, exec).await,
+            TaskResult::ContentSearchDone {
                 task_id,
                 query,
                 results,
-                execution_time,
-            } => {
-                self.handle_content_search_complete(task_id, query, results, execution_time)
-                    .await
-            }
-            TaskResult::ClipboardOperation {
-                operation_id,
-                operation_type,
+                exec,
+            } => self.on_content_search(task_id, query, results, exec).await,
+            TaskResult::Clipboard {
+                op_id,
+                op_kind,
                 result,
-                execution_time,
-            } => {
-                self.handle_clipboard_operation(
-                    operation_id,
-                    operation_type,
-                    result,
-                    execution_time,
-                )
-                .await
-            }
-            TaskResult::Progress {
-                task_id,
-                current,
-                total,
-                message,
-            } => {
-                self.handle_progress_update(task_id, current, total, message)
-                    .await
-            }
+                exec,
+            } => self.on_clipboard(op_id, op_kind, result, exec).await,
+            TaskResult::Progress { task_id, pct, msg } => self.on_progress(task_id, pct, msg).await,
             TaskResult::Generic {
                 task_id,
                 result,
-                message,
-                execution_time,
-            } => {
-                self.handle_generic_task(task_id, result, message, execution_time)
-                    .await
-            }
+                msg,
+                exec,
+            } => self.on_generic(task_id, result, msg, exec).await,
         }
     }
 
-    async fn handle_directory_load(
+    async fn on_dir_loaded(
         &self,
-        task_id: u64,
+        id: u64,
         path: PathBuf,
-        result: Result<Vec<ObjectInfo>, AppError>,
-        execution_time: Duration,
-    ) -> Result<Vec<Action>> {
-        debug!(
-            "Processing directory load for {} ({}ms)",
-            path.display(),
-            execution_time.as_millis()
-        );
-
-        match result {
+        res: Result<Vec<ObjectInfo>, AppError>,
+        exec: Duration,
+    ) -> Vec<Action> {
+        debug!("dir-load {} ({}ms)", path.display(), exec.as_millis());
+        match res {
             Ok(entries) => {
-                // Update filesystem state
+                // update pane -------------------------------------------------
                 {
-                    let mut fs_state = self.state_coordinator.fs_state();
-                    let pane = fs_state.active_pane_mut();
-
-                    if pane.cwd == path {
-                        pane.set_entries(entries);
-                        debug!("Updated directory entries for {}", path.display());
+                    let mut fs = self.coord.fs_state();
+                    let p: &mut PaneState = fs.active_pane_mut();
+                    if p.cwd == path {
+                        p.set_entries(entries);
                     }
                 }
-
-                // Update UI and complete task
-                self.state_coordinator
-                    .update_ui_state(Box::new(move |ui: &mut UIState| {
-                        ui.show_success(&format!("Loaded directory: {}", path.display()));
-                        ui.request_redraw(RedrawFlag::All);
-                    }));
-
-                {
-                    let app_state = self.state_coordinator.app_state();
-                    app_state.complete_task(task_id, None);
-                }
-
-                Ok(vec![Action::ReloadDirectory])
+                // user feedback ----------------------------------------------
+                self.coord.update_ui_state(|ui| {
+                    ui.success(format!("Loaded {}", path.display()));
+                    ui.request_redraw(RedrawFlag::All);
+                });
+                // mark task done
+                self.coord.app_state().complete_task(id, None);
+                vec![Action::ReloadDirectory]
             }
             Err(e) => {
-                error!("Directory load failed for {}: {}", path.display(), e);
-
-                let err = e.clone();
-                self.state_coordinator
-                    .update_ui_state(Box::new(move |ui: &mut UIState| {
-                        ui.show_error(&format!("Failed to load directory: {err}"));
-                    }));
-
-                {
-                    let app_state = self.state_coordinator.app_state();
-                    app_state.complete_task(task_id, Some(e.to_string().into()));
-                }
-
-                Ok(vec![])
+                self.error(format!("Load {} failed: {}", path.display(), e));
+                self.coord
+                    .app_state()
+                    .complete_task(id, Some(e.to_string().into()));
+                vec![]
             }
         }
     }
 
-    async fn handle_file_operation(
+    async fn on_file_op(
         &self,
-        operation_id: OperationId,
-        operation_type: FileOperationType,
-        result: Result<(), AppError>,
-        execution_time: Duration,
-    ) -> Result<Vec<Action>> {
-        debug!(
-            "Processing file operation {:?} ({}ms)",
-            operation_type,
-            execution_time.as_millis()
-        );
-
-        match result {
-            Ok(()) => {
-                let op_name = format!("{:?}", operation_type);
-                self.state_coordinator
-                    .update_ui_state(Box::new(move |ui: &mut UIState| {
-                        ui.show_success(&format!("{} completed successfully", op_name));
-                    }));
-
-                // Update app state operation tracking
-                {
-                    let app_state = self.state_coordinator.app_state();
-
-                    if let Some(task_id) = app_state
-                        .operation_tasks
-                        .get(&operation_id)
-                        .map(|entry| *entry.value())
-                    {
-                        app_state.complete_task(task_id, None);
-                    }
-                }
-
-                Ok(vec![Action::ReloadDirectory])
+        op_id: OperationId,
+        kind: FileOperationType,
+        res: Result<(), AppError>,
+        exec: Duration,
+    ) -> Vec<Action> {
+        debug!("file-op {:?} ({}ms)", kind, exec.as_millis());
+        match res {
+            Ok(_) => {
+                self.coord.update_ui_state(|ui| {
+                    ui.success(format!("{kind:?} finished"));
+                });
+                vec![Action::ReloadDirectory]
             }
             Err(e) => {
-                error!("File operation {:?} failed: {}", operation_type, e);
-                let op_name = format!("{:?}", operation_type).to_lowercase();
-                self.state_coordinator
-                    .update_ui_state(Box::new(move |ui: &mut UIState| {
-                        ui.show_error(&format!("File {} failed: {}", op_name, e));
-                    }));
-
-                Ok(vec![])
+                self.error(format!("{kind:?} failed: {e}"));
+                vec![]
             }
         }
     }
 
-    async fn handle_clipboard_operation(
+    async fn on_clipboard(
         &self,
-        operation_id: OperationId,
-        operation_type: String,
-        result: Result<u32, AppError>,
-        execution_time: Duration,
-    ) -> Result<Vec<Action>> {
-        debug!(
-            "Processing clipboard {} ({}ms)",
-            operation_type,
-            execution_time.as_millis()
-        );
-
-        match result {
-            Ok(items_processed) => {
-                self.state_coordinator
-                    .update_ui_state(Box::new(move |ui: &mut UIState| {
-                        ui.show_success(&format!(
-                            "Clipboard {} completed: {} items",
-                            operation_type, items_processed
-                        ));
-                    }));
-
-                {
-                    let app_state = self.state_coordinator.app_state();
-                    app_state.complete_clipboard_operation(&operation_id);
-                }
-
-                Ok(vec![Action::ReloadDirectory])
-            }
-            Err(e) => {
-                error!("Clipboard operation {} failed: {}", operation_type, e);
-                self.state_coordinator
-                    .update_ui_state(Box::new(move |ui: &mut UIState| {
-                        ui.show_error(&format!("Clipboard {} failed: {}", operation_type, e));
-                    }));
-
-                Ok(vec![])
-            }
+        _id: OperationId,
+        kind: String,
+        res: Result<u32, AppError>,
+        exec: Duration,
+    ) -> Vec<Action> {
+        debug!("clipboard {kind} ({}ms)", exec.as_millis());
+        match res {
+            Ok(n) => self
+                .coord
+                .update_ui_state(|ui| ui.success(format!("{kind} ok ({n})"))),
+            Err(e) => self.error(format!("clipboard {kind} failed: {e}")),
         }
+        vec![Action::ReloadDirectory]
     }
 
-    async fn handle_search_complete(
+    async fn on_fname_search(
         &self,
-        task_id: u64,
-        query: String,
-        results: Vec<ObjectInfo>,
-        execution_time: Duration,
-    ) -> Result<Vec<Action>> {
+        id: u64,
+        q: String,
+        hits: Vec<ObjectInfo>,
+        exec: Duration,
+    ) -> Vec<Action> {
         debug!(
-            "Processing search completion for '{}' ({}ms, {} results)",
-            query,
-            execution_time.as_millis(),
-            results.len()
+            "search \"{q}\" {} hit(s) ({}ms)",
+            hits.len(),
+            exec.as_millis()
         );
-
-        let result_count = results.len();
-        self.state_coordinator
-            .update_ui_state(Box::new(move |ui: &mut UIState| {
-                ui.filename_search_results = results;
-                ui.show_info(&format!("Found {} matches for '{}'", result_count, query));
-            }));
-
         {
-            let app_state = self.state_coordinator.app_state();
-            app_state.complete_task(task_id, None);
-            app_state.complete_search(&format!("search_{}", task_id), result_count);
+            let mut fs = self.coord.fs_state();
+            fs.active_pane_mut().search_results = hits.clone();
         }
-
-        Ok(vec![Action::ShowFilenameSearchResults(
-            self.get_current_search_results().await,
-        )])
+        self.coord.update_ui_state(|ui| {
+            ui.info(format!("“{q}” → {} result(s)", hits.len()));
+        });
+        self.coord.app_state().complete_task(id, None);
+        vec![Action::ShowFilenameSearchResults(hits)]
     }
 
-    async fn handle_content_search_complete(
+    async fn on_content_search(
         &self,
-        task_id: u64,
-        query: String,
-        results: Vec<String>,
-        execution_time: Duration,
-    ) -> Result<Vec<Action>> {
+        id: u64,
+        q: String,
+        hits: Vec<String>,
+        exec: Duration,
+    ) -> Vec<Action> {
         debug!(
-            "Processing content search for '{}' ({}ms, {} results)",
-            query,
-            execution_time.as_millis(),
-            results.len()
+            "content-search \"{q}\" {} hit(s) ({}ms)",
+            hits.len(),
+            exec.as_millis()
         );
-
-        let result_count = results.len();
-        self.state_coordinator
-            .update_ui_state(Box::new(move |ui: &mut UIState| {
-                ui.show_info(&format!(
-                    "Content search found {} matches for '{}'",
-                    result_count, query
-                ));
-            }));
-
-        {
-            let app_state = self.state_coordinator.app_state();
-            app_state.complete_task(task_id, None);
-        }
-
-        Ok(vec![Action::ShowRichSearchResults(results)])
+        self.coord.update_ui_state(|ui| {
+            ui.info(format!("Content search done – {} file(s)", hits.len()));
+        });
+        self.coord.app_state().complete_task(id, None);
+        vec![Action::ShowRichSearchResults(hits)]
     }
 
-    async fn handle_progress_update(
-        &self,
-        task_id: u64,
-        current: u64,
-        total: u64,
-        message: Option<String>,
-    ) -> Result<Vec<Action>> {
-        debug!("Progress update for task {task_id}: {current}/{total}",);
-
-        let mut moved: Option<String> = None;
-
-        if let Some(ref tmp) = message {
-            moved = Some(tmp.clone());
-        }
-
-        self.state_coordinator
-            .update_ui_state(Box::new(move |ui: &mut UIState| {
-                if let Some(loading) = &ui.loading {
-                    loading.set_completion(current, total);
-                    if let Some(msg) = moved {
-                        loading.set_current_item(Some(msg));
-                    }
+    async fn on_progress(&self, id: u64, pct: f32, msg: Option<String>) -> Vec<Action> {
+        self.coord.update_ui_state(|ui| {
+            if let Some(ref mut l) = ui.loading {
+                l.set_progress(pct);
+                if let Some(m) = &msg {
+                    l.message = m.clone().into();
                 }
-            }));
-
-        // Update task progress via StateProvider
-        self.state_coordinator
-            .update_task_progress(task_id.to_string(), current, total, message);
-
-        Ok(vec![])
-    }
-
-    async fn handle_generic_task(
-        &self,
-        task_id: u64,
-        result: Result<(), AppError>,
-        message: Option<String>,
-        execution_time: Duration,
-    ) -> Result<Vec<Action>> {
-        debug!(
-            "Processing generic task {} ({}ms)",
-            task_id,
-            execution_time.as_millis()
-        );
-
-        match result {
-            Ok(()) => {
-                if let Some(msg) = message {
-                    self.state_coordinator
-                        .update_ui_state(Box::new(move |ui: &mut UIState| {
-                            ui.show_success(&msg);
-                        }));
-                }
-
-                {
-                    let app_state = self.state_coordinator.app_state();
-                    app_state.complete_task(task_id, None);
-                }
-
-                Ok(vec![])
             }
-            Err(e) => {
-                error!("Generic task {} failed: {}", task_id, e);
+        });
+        self.coord
+            .update_task_progress(id.to_string(), (pct * 100.0) as u64, 10_000, msg);
+        vec![]
+    }
 
-                let error_msg = message.unwrap_or_else(|| format!("Task {} failed", task_id));
-                let err_clone = e.clone();
-                self.state_coordinator
-                    .update_ui_state(Box::new(move |ui: &mut UIState| {
-                        ui.show_error(&format!("{}: {}", error_msg, err_clone));
-                    }));
-
-                {
-                    let app_state = self.state_coordinator.app_state();
-                    app_state.complete_task(task_id, Some(e.to_string().into()));
+    async fn on_generic(
+        &self,
+        id: u64,
+        res: Result<(), AppError>,
+        msg: Option<String>,
+        exec: Duration,
+    ) -> Vec<Action> {
+        debug!("generic task {id} ({}ms)", exec.as_millis());
+        match res {
+            Ok(_) => {
+                if let Some(m) = msg {
+                    self.coord.update_ui_state(|ui| ui.success(m));
                 }
-
-                Ok(vec![])
             }
+            Err(e) => self.error(format!("task {id} failed: {e}")),
         }
+        self.coord.app_state().complete_task(id, None);
+        vec![]
     }
 
-    fn queue_actions(&mut self, actions: Vec<Action>) {
-        for action in actions {
-            self.pending_actions.push_back(action);
-        }
+    fn error(&self, m: String) {
+        self.coord.update_ui_state(|ui| ui.error(m));
     }
 
-    async fn get_current_search_results(&self) -> Vec<ObjectInfo> {
-        let ui_state = self.state_coordinator.ui_state();
-        let ui = ui_state.read().expect("UI state lock poisoned");
-        ui.filename_search_results.clone()
-    }
-
-    fn show_error(&self, message: &str) {
-        let msg = message.to_string();
-        self.state_coordinator
-            .update_ui_state(Box::new(move |ui: &mut UIState| {
-                ui.show_error(&msg);
-            }));
-    }
-
-    pub fn get_metrics(&self) -> EventLoopMetricsSnapshot {
-        EventLoopMetricsSnapshot {
-            tasks_processed: self.metrics.tasks_processed,
-            actions_processed: self.metrics.actions_processed,
-            total_processing_time: self.metrics.total_processing_time,
-            average_processing_time: if self.metrics.tasks_processed > 0 {
-                self.metrics.total_processing_time / self.metrics.tasks_processed as u32
-            } else {
-                Duration::ZERO
-            },
-            last_activity: self.metrics.last_activity,
-            pending_actions: self.pending_actions.len(),
-        }
+    fn queue(&mut self, v: Vec<Action>) {
+        self.pending.extend(v);
     }
 }
 
+/// ---------- metrics snapshot ---------------------------------------------------
 #[derive(Debug, Clone)]
-pub struct EventLoopMetricsSnapshot {
-    pub tasks_processed: u64,
-    pub actions_processed: u64,
-    pub total_processing_time: Duration,
-    pub average_processing_time: Duration,
-    pub last_activity: Instant,
-    pub pending_actions: usize,
-}
-
-impl TaskResult {
-    pub fn kind(&self) -> &'static str {
-        match self {
-            TaskResult::DirectoryLoad { .. } => "directory_load",
-            TaskResult::FileOperation { .. } => "file_operation",
-            TaskResult::SearchComplete { .. } => "search_complete",
-            TaskResult::ContentSearchComplete { .. } => "content_search_complete",
-            TaskResult::ClipboardOperation { .. } => "clipboard_operation",
-            TaskResult::Progress { .. } => "progress",
-            TaskResult::Generic { .. } => "generic",
-        }
-    }
-
-    pub fn task_id(&self) -> Option<u64> {
-        match self {
-            TaskResult::DirectoryLoad { task_id, .. }
-            | TaskResult::SearchComplete { task_id, .. }
-            | TaskResult::ContentSearchComplete { task_id, .. }
-            | TaskResult::Progress { task_id, .. }
-            | TaskResult::Generic { task_id, .. } => Some(*task_id),
-            _ => None,
-        }
-    }
+pub struct MetricsSnap {
+    pub tasks: u64,
+    pub actions: u64,
+    pub total: Duration,
+    pub avg: Duration,
+    pub last: Instant,
+    pub queued: usize,
 }

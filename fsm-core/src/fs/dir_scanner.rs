@@ -26,7 +26,7 @@ pub enum ScanUpdate {
     /// Scanning completed
     ScanComplete {
         total_entries: usize,
-        execution_time: Duration,
+        exec: Duration,
     },
     /// Error during scanning
     ScanError(String),
@@ -48,7 +48,7 @@ pub fn spawn_directory_scan(
                     task_id,
                     path: path.clone(),
                     result: Ok(entries.clone()),
-                    execution_time: start_time.elapsed(),
+                    exec: start_time.elapsed(),
                 };
 
                 let _ = task_tx.send(task_result);
@@ -64,7 +64,7 @@ pub fn spawn_directory_scan(
                     task_id,
                     path: path.clone(),
                     result: Err(app_error.clone()),
-                    execution_time: start_time.elapsed(),
+                    exec: start_time.elapsed(),
                 };
 
                 let _ = task_tx.send(task_result);
@@ -145,7 +145,7 @@ pub fn spawn_streaming_directory_scan(
                     task_id,
                     path: path.clone(),
                     result: Err(app_error.clone()),
-                    execution_time: start_time.elapsed(),
+                    exec: start_time.elapsed(),
                 };
                 let _ = task_tx.send(task_result);
 
@@ -190,12 +190,12 @@ pub fn spawn_streaming_directory_scan(
                             total: None,
                         });
 
+                        // TODO: Fix percentage here
                         // Report progress to task system
                         let progress_result = TaskResult::Progress {
                             task_id,
-                            current: processed as u64,
-                            total: 0, // Unknown total
-                            message: Some(format!("Scanned {} entries", processed)),
+                            pct: processed as f32,
+                            msg: Some(format!("Scanned {} entries", processed)),
                         };
                         let _ = task_tx.send(progress_result);
 
@@ -217,12 +217,12 @@ pub fn spawn_streaming_directory_scan(
             _ => a.name.cmp(&b.name),
         });
 
-        let execution_time = start_time.elapsed();
+        let exec = start_time.elapsed();
 
         // Send completion update
         let _ = update_tx.send(ScanUpdate::ScanComplete {
             total_entries: entries.len(),
-            execution_time,
+            exec,
         });
 
         // Send task completion
@@ -230,14 +230,14 @@ pub fn spawn_streaming_directory_scan(
             task_id,
             path: path.clone(),
             result: Ok(entries.clone()),
-            execution_time,
+            exec,
         };
         let _ = task_tx.send(task_result);
 
         debug!(
             "Streaming scan completed: {} entries in {:?}",
             entries.len(),
-            execution_time
+            exec
         );
 
         Ok(entries)
@@ -269,7 +269,7 @@ pub fn spawn_two_phase_directory_scan(
                     task_id,
                     path: path.clone(),
                     result: Err(app_error),
-                    execution_time: start_time.elapsed(),
+                    exec: start_time.elapsed(),
                 };
                 let _ = task_tx.send(task_result);
 
@@ -282,7 +282,7 @@ pub fn spawn_two_phase_directory_scan(
             task_id,
             path: path.clone(),
             result: Ok(entries.clone()),
-            execution_time: start_time.elapsed(),
+            exec: start_time.elapsed(),
         };
         let _ = task_tx.send(quick_result);
 
