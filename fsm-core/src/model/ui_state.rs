@@ -2,12 +2,7 @@
 //! ============================================================
 //! *Slimmed-down* UIState that matches the new lock-free render
 //! pipeline.
-//!
-//! ‣ No `active_file_operations` – that now lives in `FSState`.  
-//! ‣ Keeps only data actually consumed by `UIRenderer` or the
-//!   widgets after they receive their immutable snapshots.  
-//! ‣ All write-heavy fields use atomics; read-heavy fields are
-//!   plain values.  Nothing here requires a mutex.
+//! Tracing added to notification & redraw helpers.
 
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::Instant;
@@ -20,6 +15,8 @@ use clipr::{ClipBoardConfig, ClipBoardItem, clipboard::ClipBoard};
 use crate::AppError;
 use crate::controller::actions::InputPromptType;
 use crate::model::fs_state::SearchMode;
+
+use tracing::{debug, instrument, trace};
 
 // ------------------------------------------------------------
 // Redraw bit-flags (atomic)
@@ -91,25 +88,16 @@ pub struct Notification {
 /// Lightweight loading descriptor
 #[derive(Clone, Debug)]
 pub struct LoadingState {
-    /// Short status message shown above the gauge
     pub message: CompactString,
-
-    /// Progress 0–10 000 ≈ 0.00 %–100.00 %
     pub progress_pct: u32,
-
-    /// When the task started (for elapsed-time display)
     pub start_time: Instant,
 }
 
 impl LoadingState {
-    /// Set progress in percent (0.0‒100.0). Stored with two
-    /// decimal places, so `42.37` becomes `4237`.
     #[inline]
     pub fn set_progress(&mut self, pct: f32) {
         self.progress_pct = (pct.clamp(0.0, 100.0) * 100.0) as u32;
     }
-
-    /// Return progress as 0.00‒100.00 floating-point percent.
     #[inline]
     pub fn progress(&self) -> f32 {
         self.progress_pct as f32 / 100.0
@@ -121,43 +109,25 @@ impl LoadingState {
 // ------------------------------------------------------------
 #[derive(Debug)]
 pub struct UIState {
-    /// Atomic “what to repaint” flags
     pub redraw_flags: AtomicU32,
-
-    /// Frame counter (for FPS)
     pub frame_count: AtomicU64,
-
-    /// Current high-level mode
     pub mode: UIMode,
-
-    /// Current modal overlay
     pub overlay: UIOverlay,
-
-    /// ***Prompt / command line*** ------------------------------
     pub input_prompt_type: Option<InputPromptType>,
     pub prompt_buffer: CompactString,
     pub prompt_cursor: usize,
     pub command_history: SmallVec<[CompactString; 32]>,
     pub history_index: Option<usize>,
-
-    /// ***Search*** ---------------------------------------------
     pub search_mode: SearchMode,
     pub search_query: Option<CompactString>,
-
-    /// ***Notifications & loading*** ----------------------------
     pub notification: Option<Notification>,
     pub loading: Option<LoadingState>,
     pub last_update: Instant,
-
-    /// ***Clipboard overlay*** ----------------------------------
     pub clipboard: ClipBoard,
     pub clipboard_overlay_active: bool,
     pub selected_clipboard_item_idx: usize,
 }
 
-// ------------------------------------------------------------
-// ctor / defaults
-// ------------------------------------------------------------
 impl Default for UIState {
     fn default() -> Self {
         Self {
@@ -187,22 +157,30 @@ impl Default for UIState {
 // ------------------------------------------------------------
 impl UIState {
     #[inline]
+    #[instrument(level = "trace", skip(self), fields(flag = ?flag))]
     pub fn request_redraw(&self, flag: RedrawFlag) {
+        trace!("requesting redraw");
         self.redraw_flags
             .fetch_or(flag.bits() as u32, Ordering::Relaxed);
     }
 
     #[inline]
+    #[instrument(level = "trace", skip(self))]
     pub fn needs_redraw(&self) -> bool {
-        self.redraw_flags.load(Ordering::Relaxed) != 0
+        let need = self.redraw_flags.load(Ordering::Relaxed) != 0;
+        trace!(needs = need, "needs_redraw");
+        need
     }
 
     #[inline]
+    #[instrument(level = "trace", skip(self))]
     pub fn clear_redraw(&self) {
+        trace!("clearing redraw flags");
         self.redraw_flags.store(0, Ordering::Relaxed);
     }
 
     #[inline]
+    #[instrument(level = "trace", skip(self))]
     pub fn inc_frame(&self) {
         self.frame_count.fetch_add(1, Ordering::Relaxed);
     }
@@ -213,12 +191,14 @@ impl UIState {
 // ------------------------------------------------------------
 impl UIState {
     #[inline]
+    #[instrument(level = "trace", skip(self, txt))]
     pub fn prompt_set(&mut self, txt: impl Into<CompactString>) {
         self.prompt_buffer = txt.into();
         self.prompt_cursor = self.prompt_buffer.len();
     }
 
     #[inline]
+    #[instrument(level = "trace", skip(self, ch))]
     pub fn prompt_insert(&mut self, ch: char) {
         let mut s = self.prompt_buffer.to_string();
         s.insert(self.prompt_cursor, ch);
@@ -227,6 +207,7 @@ impl UIState {
     }
 
     #[inline]
+    #[instrument(level = "trace", skip(self))]
     pub fn prompt_backspace(&mut self) -> bool {
         if self.prompt_cursor == 0 {
             return false;
@@ -245,6 +226,7 @@ impl UIState {
     }
 
     #[inline]
+    #[instrument(level = "trace", skip(self, entry))]
     pub fn history_push(&mut self, entry: impl Into<CompactString>) {
         self.command_history.push(entry.into());
         self.history_index = None;
@@ -255,14 +237,18 @@ impl UIState {
 // Notification helpers
 // ------------------------------------------------------------
 impl UIState {
+    #[instrument(level = "info", skip(self, msg))]
     pub fn notify(
         &mut self,
         msg: impl Into<CompactString>,
         lvl: NotificationLevel,
         ms: Option<u32>,
     ) {
+        // Convert message once to avoid moves
+        let cs: CompactString = msg.into();
+        debug!(level = ?lvl, message = %cs, "showing notification");
         self.notification = Some(Notification {
-            message: msg.into(),
+            message: cs.clone(),
             level: lvl,
             timestamp: Instant::now(),
             auto_dismiss_ms: ms,
@@ -270,36 +256,48 @@ impl UIState {
         self.request_redraw(RedrawFlag::Notification);
     }
 
+    #[instrument(level = "debug", skip(self, msg))]
     #[inline]
     pub fn info(&mut self, msg: impl Into<CompactString>) {
         self.notify(msg, NotificationLevel::Info, Some(3000));
     }
+    #[instrument(level = "debug", skip(self, msg))]
     #[inline]
     pub fn success(&mut self, msg: impl Into<CompactString>) {
         self.notify(msg, NotificationLevel::Success, Some(2000));
     }
+    #[instrument(level = "debug", skip(self, msg))]
     #[inline]
     pub fn warn(&mut self, msg: impl Into<CompactString>) {
         self.notify(msg, NotificationLevel::Warning, Some(5000));
     }
+    #[instrument(level = "debug", skip(self, msg))]
     #[inline]
     pub fn error(&mut self, msg: impl Into<CompactString>) {
         self.notify(msg, NotificationLevel::Error, None);
     }
 
     /// Returns `true` if a notification was auto-cleared
+    #[instrument(level = "debug", skip(self))]
     pub fn poll_notification(&mut self) -> bool {
-        match &self.notification {
-            Some(n)
-                if n.auto_dismiss_ms.is_some()
-                    && n.timestamp.elapsed().as_millis() > n.auto_dismiss_ms.unwrap() as u128 =>
+        trace!(
+            notification = ?self.notification.as_ref().map(|n| (&n.level, &n.timestamp, &n.auto_dismiss_ms))
+        );
+        if let Some(n) = &self.notification {
+            if let Some(auto_ms) = n.auto_dismiss_ms
+                && n.timestamp.elapsed().as_millis() > auto_ms as u128
             {
+                debug!(
+                    "auto-dismissing notification (level={:?}) after {}ms",
+                    n.level,
+                    n.timestamp.elapsed().as_millis()
+                );
                 self.notification = None;
                 self.request_redraw(RedrawFlag::Notification);
-                true
+                return true;
             }
-            _ => false,
         }
+        false
     }
 }
 

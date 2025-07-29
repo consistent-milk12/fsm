@@ -278,7 +278,7 @@ impl App {
         // Main render loop
         loop {
             tokio::select! {
-                // Check if event loop completed
+                // 1. Check if event loop completed
                 result = &mut event_loop_handle => {
                     match result {
                         Ok(Ok(_)) => {
@@ -296,8 +296,18 @@ impl App {
                     }
                 }
 
-                // Render cycle
+                // 2. Frame tick (~60 FPS)
                 _ = render_interval.tick() => {
+                    // ==== NEW: poll for notification expiry ====
+                    // Before drawing, clear any auto‑expired notification.
+                    self.state_coordinator.update_ui_state(Box::new(|ui: &mut UIState| {
+                        // If the banner has timed out, poll_notification()
+                        // will clear it and request a Notification redraw.
+                        ui.poll_notification();
+                    }));
+                    // ==== end new ====
+
+                    // Now render the full frame (status bar, overlays, etc.)
                     if let Err(e) = self.render_frame(frame_count).trace_err("frame_render") {
                         warn!(
                             frame = frame_count,
@@ -308,7 +318,7 @@ impl App {
                     frame_count += 1;
                 }
 
-                // Handle system signals
+                // 3. Handle system signals
                 _ = &mut ctrl_c => {
                     info!("Received Ctrl+C signal");
                     shutdown_handle.notify_one();
@@ -320,7 +330,7 @@ impl App {
                     break;
                 }
 
-                // Handle cancellation token
+                // 4. Handle cancellation token
                 _ = self.cancel_token.cancelled() => {
                     info!("Received cancellation signal, shutting down gracefully");
                     shutdown_handle.notify_one();
