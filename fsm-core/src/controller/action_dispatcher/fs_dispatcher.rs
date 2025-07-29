@@ -5,8 +5,8 @@ use anyhow::{Context, Result};
 use dashmap::DashMap;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, MutexGuard};
 use std::sync::atomic::Ordering;
+use std::sync::{Arc, MutexGuard};
 use tokio::fs as TokioFs;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -60,16 +60,22 @@ impl FileOpsDispatcher {
         // Load entries asynchronously
         let entries: Vec<ObjectInfo> = self.load_directory(&target).await?;
 
-        // Update FS state
+        // Update FS state using proper navigation method (includes sorting)
         {
             let mut fs: MutexGuard<'_, FSState> = self.state_provider.fs_state();
+            fs.navigate_to(target.clone());
+
+            // Set entries with proper sorting
             let pane: &mut PaneState = fs.active_pane_mut();
-            pane.cwd = target.clone();
-            pane.entries = entries;
-            pane.selected.store(0, Ordering::Relaxed);
+            pane.set_entries(entries);
+
+            debug!(
+                "Navigation completed with {} sorted entries",
+                pane.entries.len()
+            );
         }
 
-        info!("navigate_to: directory loaded, requesting full redraw");
+        info!("navigate_to: directory loaded with sorting, requesting full redraw");
         self.state_provider.request_redraw(RedrawFlag::All);
         Ok(DispatchResult::Continue)
     }
@@ -136,15 +142,53 @@ impl FileOpsDispatcher {
     /// Handle the GoToParent action by navigating to parent directory.
     #[instrument(level = "info", skip(self))]
     async fn handle_go_to_parent(&self) -> Result<DispatchResult> {
-        let parent = {
-            let fs = self.state_provider.fs_state();
-            fs.active_pane().cwd.parent().map(Path::to_path_buf)
+        let (parent_path, needs_reload) = {
+            let mut fs = self.state_provider.fs_state();
+
+            // Use FSState's navigation method which handles sorting
+            if let Some(parent_path) = fs.navigate_to_parent() {
+                // Check if we need to reload entries (entries might be cached/stale)
+                let current_entries_count = fs.active_pane().entries.len();
+                let needs_reload = current_entries_count == 0;
+
+                debug!(
+                    "Parent navigation completed, entries_count={}, needs_reload={}",
+                    current_entries_count, needs_reload
+                );
+
+                (Some(parent_path), needs_reload)
+            } else {
+                debug!("Already at root directory");
+                (None, false)
+            }
         };
 
-        match parent {
+        match parent_path {
+            Some(path) if needs_reload => {
+                info!(
+                    "handle_go_to_parent: reloading entries for {}",
+                    path.display()
+                );
+                // Reload entries if cache is empty
+                let entries: Vec<ObjectInfo> = self.load_directory(&path).await?;
+
+                {
+                    let mut fs = self.state_provider.fs_state();
+                    fs.active_pane_mut().set_entries(entries);
+                    info!("Parent directory entries reloaded and sorted");
+                }
+
+                self.state_provider.request_redraw(RedrawFlag::All);
+                Ok(DispatchResult::Continue)
+            }
             Some(path) => {
-                info!("handle_go_to_parent: navigating to {}", path.display());
-                self.navigate_to(path).await
+                info!(
+                    "handle_go_to_parent: using cached sorted entries for {}",
+                    path.display()
+                );
+                // Entries are already sorted by navigate_to_parent
+                self.state_provider.request_redraw(RedrawFlag::All);
+                Ok(DispatchResult::Continue)
             }
             None => {
                 debug!("handle_go_to_parent: already at root");

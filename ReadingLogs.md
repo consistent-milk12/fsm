@@ -511,4 +511,36 @@ jq 'select(.level == "ERROR")' logs/errors/errors.log 2>/dev/null | tail -5
 - `--color=always`: Force color output
 - `--follow`: Follow file like `tail -f`
 
+## Race Condition Diagnosis (UI Rendering Issues)
+
+**Navigation UI Update Problems:**
+```bash
+# Trace redraw request/processing race conditions
+rg 'request_redraw.*flag=(All|Main)' logs/fsm-core.log -A5 -B2 --color=always
+
+# Check needs_redraw timing vs clear_redraw cycles  
+rg 'needs_redraw.*needs=(true|false)' logs/fsm-core.log -C2 | head -20
+
+# Navigation action correlation with UI updates
+rg -A10 -B5 'dispatch_action.*GoToParent' logs/fsm-core.log
+
+# Find render cycle timing issues
+rg 'clear_redraw|request_redraw' logs/fsm-core.log -C1 | head -30
+
+# Atomic counter synchronization verification
+rg 'pending_requests=(\d+)' logs/fsm-core.log -o -r '$1' | awk '$1>0{print "Pending:", $1}'
+```
+
+**60fps Render Loop vs Action Timing:**
+```bash
+# Show race between render clearing and action requests
+rg '(clear_redraw|request_redraw|needs_redraw.*false)' logs/fsm-core.log -n | head -20
+
+# Navigation timing analysis
+rg 'navigation.*completed.*entries_count=(\d+)' logs/fsm-core.log -A3 -B1 -r 'Nav: $1 entries'
+
+# Render flag state transitions
+rg '(requesting redraw|clearing redraw flags|needs_redraw)' logs/fsm-core.log --color=always
+```
+
 This advanced ripgrep-based approach provides superior performance and flexibility compared to traditional grep-based log analysis, enabling professional-grade debugging and monitoring of FSM-Core applications.

@@ -170,6 +170,80 @@ impl PaneState {
         );
     }
 
+    /// Ensure current entries are properly sorted (for navigation cache consistency)
+    #[instrument(skip(self))]
+    pub fn ensure_entries_sorted(&mut self) {
+        let entries_len = self.entries.len();
+        if entries_len == 0 {
+            trace!("No entries to sort - skipping");
+            return;
+        }
+
+        let sort_start = Instant::now();
+        // Use the same sorting logic as sort_entries_optimized but inline to avoid borrowing issues
+        match self.sort {
+            EntrySort::NameAsc => {
+                self.entries
+                    .sort_unstable_by(|a, b| match (a.is_dir, b.is_dir) {
+                        (true, false) => std::cmp::Ordering::Less,
+                        (false, true) => std::cmp::Ordering::Greater,
+                        _ => a.name.cmp(&b.name),
+                    });
+            }
+            EntrySort::NameDesc => {
+                self.entries
+                    .sort_unstable_by(|a, b| match (a.is_dir, b.is_dir) {
+                        (true, false) => std::cmp::Ordering::Less,
+                        (false, true) => std::cmp::Ordering::Greater,
+                        _ => b.name.cmp(&a.name),
+                    });
+            }
+            EntrySort::SizeAsc => {
+                self.entries
+                    .sort_unstable_by(|a, b| match (a.is_dir, b.is_dir) {
+                        (true, false) => std::cmp::Ordering::Less,
+                        (false, true) => std::cmp::Ordering::Greater,
+                        _ => a.size.cmp(&b.size),
+                    });
+            }
+            EntrySort::SizeDesc => {
+                self.entries
+                    .sort_unstable_by(|a, b| match (a.is_dir, b.is_dir) {
+                        (true, false) => std::cmp::Ordering::Less,
+                        (false, true) => std::cmp::Ordering::Greater,
+                        _ => b.size.cmp(&a.size),
+                    });
+            }
+            EntrySort::ModifiedAsc => self.entries.sort_unstable_by_key(|e| e.modified),
+            EntrySort::ModifiedDesc => self
+                .entries
+                .sort_unstable_by(|a, b| b.modified.cmp(&a.modified)),
+            EntrySort::TypeAsc => {
+                self.entries.sort_unstable_by(|a, b| {
+                    a.extension
+                        .cmp(&b.extension)
+                        .then_with(|| a.name.cmp(&b.name))
+                });
+            }
+            EntrySort::TypeDesc => {
+                self.entries.sort_unstable_by(|a, b| {
+                    b.extension
+                        .cmp(&a.extension)
+                        .then_with(|| a.name.cmp(&b.name))
+                });
+            }
+        }
+
+        let sort_duration = sort_start.elapsed().as_micros() as u64;
+        self.last_sort_duration
+            .store(sort_duration, Ordering::Relaxed);
+
+        debug!(
+            "Navigation sort applied to {} entries in {} us",
+            entries_len, sort_duration
+        );
+    }
+
     /// Action-compatible selection movement
     #[instrument(skip(self), fields(current_selection = self.selected.load(Ordering::Relaxed)))]
     pub fn move_selection_up(&self) -> bool {
@@ -529,6 +603,54 @@ impl FSState {
         info!("Navigating to: {}.", path.display());
         self.add_to_history(path.clone());
         self.active_pane_mut().cwd = path;
+
+        // Ensure entries are sorted after directory change
+        self.active_pane_mut().ensure_entries_sorted();
+        trace!("Navigation completed with sorted entries");
+    }
+
+    /// Navigate to parent directory with proper sorting
+    #[instrument(skip(self), fields(current_dir = %self.active_pane().cwd.display()))]
+    pub fn navigate_to_parent(&mut self) -> Option<PathBuf> {
+        let current_path = self.active_pane().cwd.clone();
+
+        if let Some(parent) = current_path.parent() {
+            let parent_path = parent.to_path_buf();
+            info!("Navigating to parent: {}", parent_path.display());
+
+            self.add_to_history(parent_path.clone());
+            self.active_pane_mut().cwd = parent_path.clone();
+
+            // Critical: Ensure entries are sorted after parent navigation
+            self.active_pane_mut().ensure_entries_sorted();
+            debug!("Parent navigation completed with re-sorted entries");
+
+            Some(parent_path)
+        } else {
+            trace!("Already at root directory - cannot navigate to parent");
+            None
+        }
+    }
+
+    /// Invalidate directory cache and force fresh sort on next navigation
+    #[instrument(skip(self))]
+    pub fn invalidate_directory_cache(&mut self) {
+        let pane = self.active_pane_mut();
+        let entries_count = pane.entries.len();
+
+        // Mark entries as needing re-sort by clearing metadata timestamps
+        pane.entries.iter_mut().for_each(|entry| {
+            // Reset any cached sort indicators
+            entry.metadata_loaded = false;
+        });
+
+        // Force re-sort
+        pane.ensure_entries_sorted();
+
+        debug!(
+            "Directory cache invalidated and {} entries re-sorted",
+            entries_count
+        );
     }
 
     #[instrument(skip(self))]

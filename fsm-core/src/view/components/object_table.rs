@@ -48,7 +48,7 @@ impl OptimizedFileTable {
         let render_start = std::time::Instant::now();
         let entries = &pane_state.entries;
         let selected_index = pane_state.selected.load(Ordering::Relaxed);
-        
+
         info!(
             target: "fsm_core::view::object_table",
             entries_count = entries.len(),
@@ -59,7 +59,7 @@ impl OptimizedFileTable {
             "Rendering file table with {} entries",
             entries.len()
         );
-        
+
         trace!(
             target: "fsm_core::view::object_table",
             area_width = area.width,
@@ -77,7 +77,7 @@ impl OptimizedFileTable {
         let mut dirs_count = 0;
         let mut files_count = 0;
         let mut symlinks_count = 0;
-        
+
         let rows: Vec<Row> = entries
             .iter()
             .map(|obj| {
@@ -106,7 +106,7 @@ impl OptimizedFileTable {
                 .style(style)
             })
             .collect();
-            
+
         let row_build_time_us = row_build_start.elapsed().as_micros();
         trace!(
             target: "fsm_core::view::object_table",
@@ -127,7 +127,7 @@ impl OptimizedFileTable {
 
         // Table selection state based on pane's selected index
         let mut table_state = TableState::default().with_selected(Some(selected_index));
-        
+
         debug!(
             target: "fsm_core::view::object_table",
             selected_index = selected_index,
@@ -138,12 +138,18 @@ impl OptimizedFileTable {
 
         // Table title shows the current path
         let title = format!(" {} ", path.display());
-        
+
         trace!(
-            target: "fsm_core::view::object_table", 
+            target: "fsm_core::view::object_table",
             title = %title,
             path = %path.display(),
             "Table title generated from current path"
+        );
+
+        // Clear the area first to prevent UI corruption during navigation
+        frame.render_widget(
+            Block::default().style(Style::default().bg(theme::BACKGROUND)),
+            area,
         );
 
         let table = Table::new(rows, widths)
@@ -165,7 +171,7 @@ impl OptimizedFileTable {
             .highlight_spacing(HighlightSpacing::Always);
 
         frame.render_stateful_widget(table, area, &mut table_state);
-        
+
         let render_time_us = render_start.elapsed().as_micros();
         trace!(
             target: "fsm_core::view::object_table",
@@ -179,7 +185,7 @@ impl OptimizedFileTable {
             cwd = %path.display(),
             "File table render completed"
         );
-        
+
         // performance monitoring and alerting
         if render_time_us > 10000 {
             warn!(
@@ -191,7 +197,7 @@ impl OptimizedFileTable {
                 "Slow file table render detected"
             );
         }
-        
+
         // large directory handling monitoring
         if entries.len() > 1000 {
             debug!(
@@ -205,7 +211,7 @@ impl OptimizedFileTable {
                 "Large directory rendered"
             );
         }
-        
+
         // selection boundary validation
         if selected_index >= entries.len() && !entries.is_empty() {
             warn!(

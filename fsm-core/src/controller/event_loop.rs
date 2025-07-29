@@ -601,12 +601,14 @@ impl EventLoop {
                             let pane = fs.active_pane_mut();
 
                             if pane.cwd == path {
+                                // Use set_entries which includes proper sorting and filtering
                                 pane.set_entries(entries);
                                 pane.is_loading.store(false, Ordering::Relaxed);
 
                                 debug!(
                                     pane_path = %pane.cwd.display(),
-                                    "Filesystem state updated with new entries"
+                                    entries_final_count = pane.entries.len(),
+                                    "Filesystem state updated with sorted entries"
                                 );
                             } else {
                                 warn!(

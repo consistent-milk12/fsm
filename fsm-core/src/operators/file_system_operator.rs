@@ -548,12 +548,14 @@ impl FileSystemOperator {
             }
         }
 
-        // Sort: directories first, then alphabetical
+        // Sort: directories first, then alphabetical (consistent with FSState sorting)
         entries.sort_by(|a, b| match (a.is_dir, b.is_dir) {
             (true, false) => Ordering::Less,
             (false, true) => Ordering::Greater,
             _ => a.name.cmp(&b.name),
         });
+
+        debug!("Directory entries sorted - {} total entries", entries.len());
 
         let exec = start_time.elapsed();
 
@@ -681,12 +683,14 @@ impl FileSystemOperator {
             }
         }
 
-        // Sort entries
+        // Sort entries (consistent with FSState sorting)
         entries.sort_by(|a, b| match (a.is_dir, b.is_dir) {
             (true, false) => Ordering::Less,
             (false, true) => Ordering::Greater,
             _ => a.name.cmp(&b.name),
         });
+
+        debug!("Directory entries sorted - {} total entries", entries.len());
 
         let exec = start_time.elapsed();
 
@@ -843,12 +847,14 @@ impl FileSystemOperator {
             }
         }
 
-        // Sort entries
+        // Sort entries (consistent with FSState sorting)
         entries.sort_by(|a, b| match (a.is_dir, b.is_dir) {
             (true, false) => Ordering::Less,
             (false, true) => Ordering::Greater,
             _ => a.name.cmp(&b.name),
         });
+
+        debug!("Directory entries sorted - {} total entries", entries.len());
 
         span.record("entries_processed", processed);
         span.record("entries_filtered", filtered);

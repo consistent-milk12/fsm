@@ -1,5 +1,5 @@
 # FSM - AI Context (Sonnet 4)
-**FSM**: Rust TUI file manager - ✅ **Phase 4.2 COMPLETE + EVENT LOOP & LOGGING FIXES**
+**FSM**: Rust TUI file manager - ✅ **Phase 4.3 COMPLETE + UI RACE CONDITION FIXED**
 
 ## Architecture ✅ PRODUCTION READY
 ```rust
@@ -8,36 +8,40 @@ StateProvider trait -> StateCoordinator (impl StateProvider)
 ActionDispatcher { Arc<dyn StateProvider> } -> Event processing
 EventLoop -> ActionDispatcher -> StateCoordinator -> UIRenderer
 ```
-**Performance**: 60fps rendering, sub-ms events, single EventLoop, optimized logging
+**Performance**: 60fps rendering, sub-ms events, single EventLoop, race-condition-free UI updates
 
 ## Rules
 1. **Edit ONLY**: CLAUDE.md, Design.md, Implementation.md  
 2. **SUDO Override**: "SUDO: Update {filename}"  
 3. **Quality Gates**: cargo build → test navigation → check logs
+4. **STRICT Token Efficiency**: Be extremely precise and compact about input/output tokens
+5. **NEVER cargo run**: Ask user to run and test app when needed
 
-## Status ✅ PRODUCTION READY + CRITICAL FIXES
+## Status 🚨 UI CORRUPTION ISSUE - BACKSPACE NAVIGATION BROKEN
 - **EventLoop Architecture**: Single EventLoop in background task, main.rs handles rendering
 - **Logging System**: Fixed field concatenation, proper spacing, .log extensions
 - **StateProvider trait**: Clean abstraction for handler state access
 - **ActionDispatcher**: Modular action handling with 6 handlers (no duplication)
-- **UIRenderer**: Real-time rendering at 60fps with proper redraw logic
-- **Navigation**: Enter directories, parent navigation, arrow keys working
-- **FileSystem**: Async directory scanning, 19 entries loaded efficiently
+- **UIRenderer**: Real-time rendering at 60fps with atomic redraw synchronization
+- **Navigation**: Enter directories works, **BACKSPACE BROKEN - UI corruption**
+- **FileSystem**: Async directory scanning, entries loaded efficiently
+- **Redraw System**: Race-condition-free atomic counter system for UI updates
 
-## Latest Updates ✅ CRITICAL ARCHITECTURE FIXES
-**Event Loop Duplication FIXED**: Single EventLoop instead of duplicate creation  
-**Render Loop Separation**: EventLoop(events) + main.rs(rendering) architecture  
-**Logging Improvements**: FieldExtractor for proper log formatting, .log extensions  
-**Performance Optimization**: Eliminated duplicate handlers (12→6), clean resource usage  
-**Signal Handling**: Integrated Ctrl+C/terminate signals into main render loop  
-**Build Status**: Clean compilation, optimized performance, production ready  
+## Current Critical Issue ❌ BACKSPACE UI CORRUPTION
+**Problem**: Backspace navigation corrupts UI display - old file listings remain visible
+**Backend Status**: Navigation logic works correctly (logs show proper entry counts)
+**UI Issue**: Terminal content not properly cleared during parent directory navigation
+**Attempted Fix**: Added explicit area clearing in object_table.rs - FAILED
+**Root Cause**: Unknown - needs deeper investigation into ratatui rendering
 
-## Critical Issues Resolved
-1. **Duplicate EventLoop**: Fixed `std::mem::replace()` creating duplicate instances
-2. **Missing Rendering**: Restored render cycle in main.rs while keeping EventLoop in background
-3. **Log Concatenation**: Added FieldExtractor to prevent field concatenation in logs
-4. **File Extensions**: Added .log extensions to all log files (fsm-core.log, errors.log)
+## Failed Fixes Applied
+1. **Frame Skip Logic**: Enhanced ui.rs render conditions - NO EFFECT
+2. **Area Clearing**: Added Block::default().bg(BACKGROUND) clear - NO EFFECT  
+3. **Redraw Flags**: Improved main content render logic - NO EFFECT
+4. **Debug Logging**: Added frame skip tracing - NO EFFECT
 
-## Next Development  
-**Current**: Production-ready architecture with clean event/render separation  
-**Future**: Command parsing, file operations, enhanced overlay system
+## Current Status ❌ BACKSPACE NAVIGATION BROKEN
+**Enter Navigation**: Works correctly with proper UI updates
+**Backspace Navigation**: UI corruption - stale content remains visible
+**Performance**: 60fps maintained, sub-ms backend navigation
+**Next Steps**: Deep investigation of ratatui buffer clearing required

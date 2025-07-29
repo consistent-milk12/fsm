@@ -95,9 +95,15 @@ impl UIRenderer {
         // Create immutable UI snapshot
         let ui_snapshot = self.create_ui_snapshot(coord);
 
-        // Skip if no redraw needed
+        // Skip if no redraw needed (but always render on RedrawFlag::All)
         if self.frame_count > 0 && ui_snapshot.redraw_flags == 0 && self.dirty_flags == 0 {
             self.stats.frames_skipped += 1;
+            debug!(
+                frame = self.frame_count,
+                redraw_flags = ui_snapshot.redraw_flags,
+                dirty_flags = self.dirty_flags,
+                "Frame skipped - no redraw needed"
+            );
             return;
         }
 
@@ -167,8 +173,12 @@ impl UIRenderer {
         coord: &StateCoordinator,
         area: Rect,
     ) {
+        // Always render main content during navigation to prevent UI corruption
+        // Skip only if explicitly no Main redraw flag AND no dirty flags
         if ui_snapshot.redraw_flags & RedrawFlag::Main.bits() as u32 == 0
             && self.dirty_flags & 1 == 0
+            && ui_snapshot.redraw_flags == 0
+        // No redraw flags at all
         {
             return;
         }

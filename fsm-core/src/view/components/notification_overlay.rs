@@ -27,7 +27,7 @@ impl OptimizedNotificationOverlay {
         area: Rect,
     ) {
         let render_start = std::time::Instant::now();
-        
+
         info!(
             target: "fsm_core::view::notification_overlay",
             level = ?notification.level,
@@ -37,7 +37,7 @@ impl OptimizedNotificationOverlay {
             area_height = area.height,
             "Rendering notification overlay"
         );
-        
+
         frame.render_widget(Clear, area);
 
         let (border_style, title, icon) = match notification.level {
@@ -46,7 +46,7 @@ impl OptimizedNotificationOverlay {
             NotificationLevel::Error => (Style::default().fg(theme::RED), "Error", "✕"),
             NotificationLevel::Success => (Style::default().fg(theme::GREEN), "Success", "✓"),
         };
-        
+
         trace!(
             target: "fsm_core::view::notification_overlay",
             level = ?notification.level,
@@ -106,7 +106,7 @@ impl OptimizedNotificationOverlay {
             )
             .alignment(Alignment::Center);
         frame.render_widget(dismiss, layout[1]);
-        
+
         let render_time_us = render_start.elapsed().as_micros();
         trace!(
             target: "fsm_core::view::notification_overlay",
@@ -116,7 +116,7 @@ impl OptimizedNotificationOverlay {
             total_area = format!("{}x{}", area.width, area.height),
             "Notification overlay render completed"
         );
-        
+
         if render_time_us > 3000 {
             warn!(
                 target: "fsm_core::view::notification_overlay",
@@ -127,7 +127,7 @@ impl OptimizedNotificationOverlay {
                 "Slow notification overlay render detected"
             );
         }
-        
+
         // performance characteristics tracking
         match notification.level {
             NotificationLevel::Error => {
@@ -137,15 +137,15 @@ impl OptimizedNotificationOverlay {
                     render_time_us = render_time_us,
                     "Error notification displayed to user"
                 );
-            },
+            }
             NotificationLevel::Warning => {
                 debug!(
-                    target: "fsm_core::view::notification_overlay", 
+                    target: "fsm_core::view::notification_overlay",
                     message = %notification.message,
                     render_time_us = render_time_us,
                     "Warning notification displayed to user"
                 );
-            },
+            }
             _ => {}
         }
     }

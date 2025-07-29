@@ -110,6 +110,8 @@ impl LoadingState {
 #[derive(Debug)]
 pub struct UIState {
     pub redraw_flags: AtomicU32,
+    pub redraw_request_counter: AtomicU64, // Prevents race conditions in redraw requests
+    pub redraw_processed_counter: AtomicU64, // Tracks completed redraws
     pub frame_count: AtomicU64,
     pub mode: UIMode,
     pub overlay: UIOverlay,
@@ -132,6 +134,8 @@ impl Default for UIState {
     fn default() -> Self {
         Self {
             redraw_flags: AtomicU32::new(RedrawFlag::All.bits() as u32),
+            redraw_request_counter: AtomicU64::new(1), // Start with 1 to force initial render
+            redraw_processed_counter: AtomicU64::new(0), // Start with 0 to trigger first render
             frame_count: AtomicU64::new(0),
             mode: UIMode::Browse,
             overlay: UIOverlay::None,
@@ -160,6 +164,8 @@ impl UIState {
     #[instrument(level = "trace", skip(self), fields(flag = ?flag))]
     pub fn request_redraw(&self, flag: RedrawFlag) {
         trace!("requesting redraw");
+        // Atomically increment request counter and set flags
+        self.redraw_request_counter.fetch_add(1, Ordering::Relaxed);
         self.redraw_flags
             .fetch_or(flag.bits() as u32, Ordering::Relaxed);
     }
@@ -167,8 +173,21 @@ impl UIState {
     #[inline]
     #[instrument(level = "trace", skip(self))]
     pub fn needs_redraw(&self) -> bool {
-        let need = self.redraw_flags.load(Ordering::Relaxed) != 0;
-        trace!(needs = need, "needs_redraw");
+        // Check if there are pending redraw requests by comparing counters
+        let requests = self.redraw_request_counter.load(Ordering::Relaxed);
+        let processed = self.redraw_processed_counter.load(Ordering::Relaxed);
+        let has_pending_requests = requests > processed;
+
+        // Also check traditional flags for backward compatibility
+        let has_flags = self.redraw_flags.load(Ordering::Relaxed) != 0;
+
+        let need = has_pending_requests || has_flags;
+        trace!(
+            needs = need,
+            pending_requests = requests - processed,
+            has_flags,
+            "needs_redraw"
+        );
         need
     }
 
@@ -176,6 +195,12 @@ impl UIState {
     #[instrument(level = "trace", skip(self))]
     pub fn clear_redraw(&self) {
         trace!("clearing redraw flags");
+        // Sync processed counter to match requests to mark all requests as handled
+        let current_requests = self.redraw_request_counter.load(Ordering::Relaxed);
+        self.redraw_processed_counter
+            .store(current_requests, Ordering::Relaxed);
+
+        // Clear traditional flags
         self.redraw_flags.store(0, Ordering::Relaxed);
     }
 
@@ -373,6 +398,12 @@ impl Clone for UIState {
     fn clone(&self) -> Self {
         Self {
             redraw_flags: AtomicU32::new(self.redraw_flags.load(Ordering::Relaxed)),
+            redraw_request_counter: AtomicU64::new(
+                self.redraw_request_counter.load(Ordering::Relaxed),
+            ),
+            redraw_processed_counter: AtomicU64::new(
+                self.redraw_processed_counter.load(Ordering::Relaxed),
+            ),
             frame_count: AtomicU64::new(self.frame_count.load(Ordering::Relaxed)),
             mode: self.mode,
             overlay: self.overlay,
