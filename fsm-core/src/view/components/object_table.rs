@@ -126,11 +126,11 @@ impl OptimizedFileTable {
             .collect();
 
         let row_build_time_us = row_build_start.elapsed().as_micros();
-        
+
         // Count metadata loading status for live update tracking
         let metadata_loaded_count = entries.iter().filter(|e| e.metadata_loaded).count();
         let pending_metadata_count = entries.len() - metadata_loaded_count;
-        
+
         trace!(
             target: "fsm_core::view::object_table",
             row_build_time_us = row_build_time_us,
@@ -147,7 +147,7 @@ impl OptimizedFileTable {
         let widths = [
             Constraint::Fill(1),    // Name
             Constraint::Length(10), // Size
-            Constraint::Length(8),  // Count  
+            Constraint::Length(8),  // Count
             Constraint::Length(22), // Modified
         ];
 
@@ -223,10 +223,10 @@ impl OptimizedFileTable {
             symlinks_count = symlinks_count,
             metadata_loaded_count = metadata_loaded_count,
             pending_metadata_count = pending_metadata_count,
-            live_update_progress = if entries.len() > 0 { 
-                (metadata_loaded_count as f32 / entries.len() as f32 * 100.0) as u32 
-            } else { 
-                100 
+            live_update_progress = if entries.len() > 0 {
+                (metadata_loaded_count as f32 / entries.len() as f32 * 100.0) as u32
+            } else {
+                100
             },
             table_area = format!("{}x{}", area.width, area.height),
             cwd = %path.display(),

@@ -1,5 +1,6 @@
 pub mod clipboard_handler;
 pub mod file_ops_handler;
+pub mod key_handler_orchestrator;
 pub mod keyboard_handler;
 pub mod navigation_handler;
 pub mod search_handler;

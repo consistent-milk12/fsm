@@ -8,7 +8,7 @@ use std::{
 };
 
 use anyhow::Result;
-use crossterm::event::{Event as TerminalEvent, EventStream, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{Event as TerminalEvent, EventStream, KeyEvent};
 use tokio::{
     sync::{Notify, mpsc},
     time::{MissedTickBehavior, interval},
@@ -25,6 +25,7 @@ use crate::{
     controller::{
         action_dispatcher::{ActionDispatcher, ActionSource},
         actions::{Action, OperationId},
+        handlers::{Event, Priority, key_handler_orchestrator::KeyHandlerOrchestrator},
         state_coordinator::StateCoordinator,
     },
     error::AppError,
@@ -144,6 +145,7 @@ pub type MetricsSnap = MetricsSnapshot;
 pub struct EventLoop {
     state_coordinator: Arc<StateCoordinator>,
     action_dispatcher: ActionDispatcher,
+    key_orchestrator: KeyHandlerOrchestrator,
     task_rx: mpsc::UnboundedReceiver<TaskResult>,
     shutdown: Arc<Notify>,
 
@@ -216,9 +218,18 @@ impl EventLoop {
 
         let now = Instant::now();
 
+        // Initialize key handler orchestrator
+        let key_orchestrator = KeyHandlerOrchestrator::new();
+        debug!(
+            handlers_count = key_orchestrator.get_handler_names().len(),
+            handlers = ?key_orchestrator.get_handler_names(),
+            "Key handler orchestrator initialized"
+        );
+
         let event_loop = EventLoop {
             state_coordinator,
             action_dispatcher,
+            key_orchestrator,
             task_rx,
             shutdown: Arc::new(Notify::new()),
             tasks_processed: 0,
@@ -283,7 +294,8 @@ impl EventLoop {
                 maybe_event = event_stream.next() => {
                     match maybe_event {
                         Some(Ok(ev)) => {
-                            if let Some(action) = self.process_terminal_event(ev).await {
+                            let actions = self.process_terminal_event(ev).await;
+                            for action in actions {
                                 let continue_loop = self
                                     .dispatch_action(action, ActionSource::Keyboard)
                                     .await?;
@@ -335,28 +347,26 @@ impl EventLoop {
 
     /// Process terminal events with detailed tracing
     #[instrument(level = "trace", name = "process_terminal_event", skip(self, event))]
-    async fn process_terminal_event(&self, event: TerminalEvent) -> Option<Action> {
+    async fn process_terminal_event(&mut self, event: TerminalEvent) -> Vec<Action> {
         match event {
             TerminalEvent::Key(key) => {
-                let action = self.process_key_event(key).await;
+                let actions = self.process_key_event(key).await;
 
-                if let Some(ref action) = action {
+                if !actions.is_empty() {
                     debug!(
                         key = ?key,
-                        action = ?action,
-                        "Key event mapped to action"
+                        actions_count = actions.len(),
+                        actions = ?actions,
+                        "Key event mapped to actions"
                     );
                 }
 
-                action
+                actions
             }
 
             TerminalEvent::Resize(w, h) => {
-                let action: Option<Action> = Some(Action::Resize(w, h));
-
                 debug!(width = w, height = h, "Terminal resize event processed");
-
-                action
+                vec![Action::Resize(w, h)]
             }
 
             TerminalEvent::Mouse(mouse_event) => {
@@ -364,20 +374,17 @@ impl EventLoop {
                     mouse_event = ?mouse_event,
                     "Mouse event received but not handled"
                 );
-
-                None
+                vec![]
             }
 
             TerminalEvent::FocusGained => {
                 trace!("Terminal focus gained");
-
-                None
+                vec![]
             }
 
             TerminalEvent::FocusLost => {
                 trace!("Terminal focus lost");
-
-                None
+                vec![]
             }
 
             TerminalEvent::Paste(data) => {
@@ -385,105 +392,46 @@ impl EventLoop {
                     paste_length = data.len(),
                     "Paste event received but not implemented"
                 );
-
-                None
+                vec![]
             }
         }
     }
 
     #[instrument(level = "trace", name = "process_key_event", skip(self, key))]
-    async fn process_key_event(&self, key: KeyEvent) -> Option<Action> {
-        // Map key combinations to application actions
-        let action = match (key.code, key.modifiers) {
-            // Quit commands
-            (KeyCode::Char('q'), KeyModifiers::NONE)
-            | (KeyCode::Char('c'), KeyModifiers::CONTROL) => Some(Action::Quit),
-
-            // Navigation – Vertical
-            (KeyCode::Up, _) | (KeyCode::Char('k'), KeyModifiers::NONE) => {
-                Some(Action::MoveSelectionUp)
-            }
-
-            (KeyCode::Down, _) | (KeyCode::Char('j'), KeyModifiers::NONE) => {
-                Some(Action::MoveSelectionDown)
-            }
-
-            // Navigation – Horizontal
-            (KeyCode::Left, _) | (KeyCode::Char('h'), KeyModifiers::NONE) => {
-                Some(Action::GoToParent)
-            }
-
-            (KeyCode::Right, _) | (KeyCode::Char('l'), KeyModifiers::NONE) => {
-                Some(Action::EnterSelected)
-            }
-
-            // Special navigation
-            (KeyCode::Enter, _) => Some(Action::EnterSelected),
-
-            (KeyCode::Backspace, _) => Some(Action::GoToParent),
-
-            (KeyCode::PageUp, _) => Some(Action::PageUp),
-
-            (KeyCode::PageDown, _) => Some(Action::PageDown),
-
-            (KeyCode::Home, _) => Some(Action::SelectFirst),
-
-            (KeyCode::End, _) => Some(Action::SelectLast),
-
-            // File operations requiring a selection
-            (KeyCode::Char('c'), KeyModifiers::NONE) => {
-                self.get_selected_path().await.map(Action::Copy)
-            }
-
-            (KeyCode::Char('x'), KeyModifiers::NONE) => {
-                self.get_selected_path().await.map(Action::Cut)
-            }
-
-            (KeyCode::Char('v'), KeyModifiers::NONE) => Some(Action::Paste),
-
-            (KeyCode::Delete, _) => Some(Action::Delete),
-
-            (KeyCode::Char('n'), KeyModifiers::NONE) => Some(Action::CreateFile),
-
-            // 'm' now toggles the system monitor overlay
-            (KeyCode::Char('m'), KeyModifiers::NONE) => Some(Action::ToggleSystemMonitor),
-
-            // UI controls
-            (KeyCode::F(1), _) | (KeyCode::Char('?'), KeyModifiers::NONE) => {
-                Some(Action::ToggleHelp)
-            }
-
-            (KeyCode::Char('/'), KeyModifiers::NONE) => Some(Action::ToggleFileNameSearch),
-
-            (KeyCode::Char(':'), KeyModifiers::NONE) => Some(Action::EnterCommandMode),
-
-            (KeyCode::Esc, _) => Some(Action::CloseOverlay),
-
-            (KeyCode::F(5), _) => Some(Action::ReloadDirectory),
-
-            (KeyCode::Tab, _) => Some(Action::ToggleClipboardOverlay),
-
-            // Unmapped key combinations
-            _ => {
-                trace!(
-                    key_code = ?key.code,
-                    modifiers = ?key.modifiers,
-                    "Key combination not mapped to any action"
-                );
-                None
-            }
+    async fn process_key_event(&mut self, key: KeyEvent) -> Vec<Action> {
+        // Create event for orchestrator
+        let event = Event::Key {
+            event: key,
+            priority: Priority::High,
         };
 
-        // Trace successful mappings
-        if let Some(ref action) = action {
-            trace!(
-                key = ?key,
-                action = ?action,
-                "Key successfully mapped to action"
-            );
+        // Process through orchestrator
+        match self.key_orchestrator.handle_key_event(event) {
+            Ok(actions) => {
+                if !actions.is_empty() {
+                    trace!(
+                        key = ?key,
+                        actions_count = actions.len(),
+                        actions = ?actions,
+                        "Key successfully processed by orchestrator"
+                    );
+                } else {
+                    trace!(
+                        key = ?key,
+                        "No actions generated by orchestrator"
+                    );
+                }
+                actions
+            }
+            Err(e) => {
+                warn!(
+                    key = ?key,
+                    error = %e,
+                    "Orchestrator failed to process key event"
+                );
+                vec![]
+            }
         }
-
-        action
     }
 
     /// Get selected file path with tracing

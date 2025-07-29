@@ -465,6 +465,14 @@ pub enum Action {
 
     /// Kill process by PID
     KillProcess(u32),
+
+    // ===== Metadata Updates =====
+    /// Update entry metadata (from background loading task)
+    UpdateEntryMetadata {
+        directory_path: PathBuf,
+        entry_path: PathBuf,
+        updated_entry: ObjectInfo,
+    },
 }
 
 impl Action {

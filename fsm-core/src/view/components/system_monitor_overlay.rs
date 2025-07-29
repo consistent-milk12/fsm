@@ -80,7 +80,10 @@ impl OptimizedSystemMonitorOverlay {
         frame.render_widget(block, area);
 
         // Inner area for gauges
-        let inner = area.inner(Margin { vertical: 1, horizontal: 1 });
+        let inner = area.inner(Margin {
+            vertical: 1,
+            horizontal: 1,
+        });
         let gauge_chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -101,7 +104,9 @@ impl OptimizedSystemMonitorOverlay {
 
         // Memory Usage Gauge
         let mem_ratio = if data.total_mem > 0 {
-            (data.mem_usage as f64 / data.total_mem as f64).min(1.0).max(0.0)
+            (data.mem_usage as f64 / data.total_mem as f64)
+                .min(1.0)
+                .max(0.0)
         } else {
             0.0
         };
@@ -117,7 +122,9 @@ impl OptimizedSystemMonitorOverlay {
 
         // Swap Usage Gauge
         let swap_ratio = if data.total_swap > 0 {
-            (data.swap_usage as f64 / data.total_swap as f64).min(1.0).max(0.0)
+            (data.swap_usage as f64 / data.total_swap as f64)
+                .min(1.0)
+                .max(0.0)
         } else {
             0.0
         };
@@ -181,10 +188,14 @@ impl OptimizedSystemMonitorOverlay {
     /// Update cached process items
     fn update_process_cache(&mut self, processes: &[ProcessData]) {
         let now = std::time::Instant::now();
-        
+
         // Sort processes by CPU usage (descending)
         let mut sorted_processes = processes.to_vec();
-        sorted_processes.sort_by(|a, b| b.cpu_usage.partial_cmp(&a.cpu_usage).unwrap_or(std::cmp::Ordering::Equal));
+        sorted_processes.sort_by(|a, b| {
+            b.cpu_usage
+                .partial_cmp(&a.cpu_usage)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         // Take top 50 processes to avoid UI clutter
         sorted_processes.truncate(50);
@@ -222,7 +233,7 @@ impl OptimizedSystemMonitorOverlay {
             .collect();
 
         self.last_update = now;
-        
+
         debug!(
             processes_count = sorted_processes.len(),
             cache_size = self.cached_process_items.len(),
@@ -240,7 +251,10 @@ impl OptimizedSystemMonitorOverlay {
 
         frame.render_widget(block, area);
 
-        let inner = area.inner(Margin { vertical: 2, horizontal: 2 });
+        let inner = area.inner(Margin {
+            vertical: 2,
+            horizontal: 2,
+        });
         let text = Text::from(vec![
             Line::from("System monitoring not available"),
             Line::from("Press 'S' to enable system monitoring"),

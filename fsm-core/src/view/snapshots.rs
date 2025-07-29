@@ -87,7 +87,11 @@ impl From<&UIState> for UiSnapshot {
             mode: src.mode,
             frame_count: src.frame_count.load(Ordering::Relaxed),
             show_process_monitor: src.show_process_monitor,
-            selected_process_idx: if src.selected_process_idx > 0 { Some(src.selected_process_idx) } else { None },
+            selected_process_idx: if src.selected_process_idx > 0 {
+                Some(src.selected_process_idx)
+            } else {
+                None
+            },
         }
     }
 }

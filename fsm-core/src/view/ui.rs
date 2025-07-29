@@ -315,8 +315,12 @@ impl UIRenderer {
 
             UIOverlay::SystemMonitor => {
                 let app_guard = coord.app_state();
-                self.system_monitor_overlay
-                    .render_system_monitor(frame, ui_snapshot, &*app_guard, area);
+                self.system_monitor_overlay.render_system_monitor(
+                    frame,
+                    ui_snapshot,
+                    &*app_guard,
+                    area,
+                );
             }
 
             _ => {

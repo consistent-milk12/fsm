@@ -79,7 +79,7 @@ impl StateCoordinator {
             Ok(mut ui) => {
                 // Invoke the provided closure to mutate UIState
                 f(&mut ui);
-                
+
                 info!("UIState updated successfully");
             }
             Err(poison_err) => {
