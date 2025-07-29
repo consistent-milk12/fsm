@@ -69,7 +69,7 @@ impl SearchDispatcher {
         !pattern.ends_with('*')
             || parts
                 .last()
-                .map_or(true, |p| p.is_empty() || text.ends_with(p))
+                .is_none_or(|p| p.is_empty() || text.ends_with(p))
     }
 
     fn handle_filename_search(&self, query: &str) -> DispatchResult {

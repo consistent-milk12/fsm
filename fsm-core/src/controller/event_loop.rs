@@ -478,7 +478,7 @@ impl EventLoop {
 
             tracing::Span::current()
                 .record("path_exists", true)
-                .record("path", &tracing::field::display(&path.display()));
+                .record("path", tracing::field::display(&path.display()));
 
             trace!(
                 selected_index = idx,
@@ -529,8 +529,8 @@ impl EventLoop {
 
         // Record metrics on the current span *before* we move `result` out
         let span = tracing::Span::current();
-        span.record("dispatch_time", &tracing::field::debug(dispatch_time));
-        span.record("result", &tracing::field::debug(&result));
+        span.record("dispatch_time", tracing::field::debug(dispatch_time));
+        span.record("result", tracing::field::debug(&result));
 
         // Update our internal counter
         self.actions_processed += 1;
@@ -554,7 +554,7 @@ impl EventLoop {
                     total_actions = self.actions_processed,
                     "Action dispatch failed"
                 );
-                Err(err.into())
+                Err(err)
             }
         }
     }
@@ -581,8 +581,8 @@ impl EventLoop {
                 tracing::Span::current()
                     .record("task_variant", "DirectoryLoad")
                     .record("task_id", task_id)
-                    .record("execution_time", &tracing::field::debug(exec))
-                    .record("path", &tracing::field::display(&path.display()));
+                    .record("execution_time", tracing::field::debug(exec))
+                    .record("path", tracing::field::display(&path.display()));
 
                 match result {
                     Ok(entries) => {
@@ -630,7 +630,7 @@ impl EventLoop {
                         // Update UI state
                         self.state_coordinator.update_ui_state(Box::new(
                             move |ui: &mut UIState| {
-                                ui.success(&format!("Loaded {}", path.display()));
+                                ui.success(format!("Loaded {}", path.display()));
                             },
                         ));
 
@@ -668,7 +668,7 @@ impl EventLoop {
                         // Show error in UI
                         self.state_coordinator.update_ui_state(Box::new(
                             move |ui: &mut UIState| {
-                                ui.error(&format!("Load failed: {}", e));
+                                ui.error(format!("Load failed: {e}"));
                             },
                         ));
 
@@ -690,7 +690,7 @@ impl EventLoop {
                 tracing::Span::current()
                     .record("task_variant", "SearchDone")
                     .record("task_id", task_id)
-                    .record("execution_time", &tracing::field::debug(exec))
+                    .record("execution_time", tracing::field::debug(exec))
                     .record("result_status", "success")
                     .record("query", &query)
                     .record("results_count", results.len());
@@ -721,7 +721,7 @@ impl EventLoop {
                 // Update UI with search completion message
                 self.state_coordinator
                     .update_ui_state(Box::new(move |ui: &mut UIState| {
-                        ui.info(&format!("'{}' → {} results", query, results.len()));
+                        ui.info(format!("'{}' → {} results", query, results.len()));
                     }));
 
                 // Complete task
@@ -740,7 +740,7 @@ impl EventLoop {
                 tracing::Span::current()
                     .record("task_variant", "ContentSearchDone")
                     .record("task_id", task_id)
-                    .record("execution_time", &tracing::field::debug(exec))
+                    .record("execution_time", tracing::field::debug(exec))
                     .record("result_status", "success")
                     .record("query", &query)
                     .record("results_count", results.len());
@@ -756,7 +756,7 @@ impl EventLoop {
                 // Update UI with content search results
                 self.state_coordinator
                     .update_ui_state(Box::new(move |ui: &mut UIState| {
-                        ui.info(&format!("Content search: {} files", results.len()));
+                        ui.info(format!("Content search: {} files", results.len()));
                     }));
 
                 // Complete task
@@ -774,9 +774,9 @@ impl EventLoop {
             } => {
                 tracing::Span::current()
                     .record("task_variant", "FileOperation")
-                    .record("operation_id", &tracing::field::display(&op_id))
-                    .record("operation_kind", &tracing::field::display(&op_kind))
-                    .record("execution_time", &tracing::field::debug(exec));
+                    .record("operation_id", tracing::field::display(&op_id))
+                    .record("operation_kind", tracing::field::display(&op_kind))
+                    .record("execution_time", tracing::field::debug(exec));
 
                 match result {
                     Ok(()) => {
@@ -791,7 +791,7 @@ impl EventLoop {
 
                         self.state_coordinator.update_ui_state(Box::new(
                             move |ui: &mut UIState| {
-                                ui.success(&format!("{} completed", op_kind));
+                                ui.success(format!("{op_kind} completed"));
                             },
                         ));
 
@@ -811,7 +811,7 @@ impl EventLoop {
 
                         self.state_coordinator.update_ui_state(Box::new(
                             move |ui: &mut UIState| {
-                                ui.error(&format!("{} failed: {}", op_kind, e));
+                                ui.error(format!("{op_kind} failed: {e}"));
                             },
                         ));
                     }
@@ -826,9 +826,9 @@ impl EventLoop {
             } => {
                 tracing::Span::current()
                     .record("task_variant", "Clipboard")
-                    .record("operation_id", &tracing::field::display(&op_id))
+                    .record("operation_id", tracing::field::display(&op_id))
                     .record("operation_kind", &op_kind)
-                    .record("execution_time", &tracing::field::debug(exec));
+                    .record("execution_time", tracing::field::debug(exec));
 
                 match result {
                     Ok(count) => {
@@ -846,7 +846,7 @@ impl EventLoop {
 
                         self.state_coordinator.update_ui_state(Box::new(
                             move |ui: &mut UIState| {
-                                ui.success(&format!("{} ok ({})", op_kind, count));
+                                ui.success(format!("{op_kind} ok ({count})"));
                             },
                         ));
                     }
@@ -864,7 +864,7 @@ impl EventLoop {
 
                         self.state_coordinator.update_ui_state(Box::new(
                             move |ui: &mut UIState| {
-                                ui.error(&format!("Clipboard {} failed: {}", op_kind, e));
+                                ui.error(format!("Clipboard {op_kind} failed: {e}"));
                             },
                         ));
                     }
@@ -905,7 +905,7 @@ impl EventLoop {
                 tracing::Span::current()
                     .record("task_variant", "Generic")
                     .record("task_id", task_id)
-                    .record("execution_time", &tracing::field::debug(exec));
+                    .record("execution_time", tracing::field::debug(exec));
 
                 match result {
                     Ok(()) => {
@@ -939,7 +939,7 @@ impl EventLoop {
 
                         self.state_coordinator.update_ui_state(Box::new(
                             move |ui: &mut UIState| {
-                                ui.error(&format!("Task failed: {}", e));
+                                ui.error(format!("Task failed: {e}"));
                             },
                         ));
                     }
@@ -975,7 +975,7 @@ impl EventLoop {
         let avg_render_fps = self.render_frame_count as f64 / uptime_secs;
 
         tracing::Span::current()
-            .record("uptime", &tracing::field::debug(uptime))
+            .record("uptime", tracing::field::debug(uptime))
             .record("tasks_per_second", tasks_per_sec)
             .record("actions_per_second", actions_per_sec)
             .record("avg_render_fps", avg_render_fps);
@@ -1031,7 +1031,7 @@ impl EventLoop {
         let total_uptime = self.start_time.elapsed();
 
         tracing::Span::current()
-            .record("total_uptime", &tracing::field::debug(total_uptime))
+            .record("total_uptime", tracing::field::debug(total_uptime))
             .record("final_task_count", self.tasks_processed)
             .record("final_action_count", self.actions_processed)
             .record("final_render_count", self.render_frame_count);

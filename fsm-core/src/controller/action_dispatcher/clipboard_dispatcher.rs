@@ -91,7 +91,7 @@ impl ClipboardDispatcher {
         // Perform async operation
         match clipboard.add_copy(path).await {
             Ok(_) => self.success("Item copied to clipboard"),
-            Err(e) => self.error(&format!("Copy failed: {}", e)),
+            Err(e) => self.error(&format!("Copy failed: {e}")),
         }
 
         Ok(DispatchResult::Continue)
@@ -111,7 +111,7 @@ impl ClipboardDispatcher {
 
         match clipboard.add_move(path).await {
             Ok(_) => self.success("Item cut to clipboard"),
-            Err(e) => self.error(&format!("Cut failed: {}", e)),
+            Err(e) => self.error(&format!("Cut failed: {e}")),
         }
 
         Ok(DispatchResult::Continue)
@@ -169,7 +169,7 @@ impl ClipboardDispatcher {
 
         // Process operations in batches for optimal performance
         let batch_size = std::cmp::min(paste_ops.len(), num_cpus::get() * 2);
-        let total_batches = (paste_ops.len() + batch_size - 1) / batch_size;
+        let total_batches = paste_ops.len().div_ceil(batch_size);
 
         // Show progress for large operations
         if paste_ops.len() > 5 {
@@ -266,7 +266,7 @@ impl ClipboardDispatcher {
             clipboard.clear_on_paste().await;
 
             let success_msg = if operation_errors.is_empty() {
-                format!("Successfully pasted {} items", success_count)
+                format!("Successfully pasted {success_count} items")
             } else {
                 format!(
                     "Pasted {}/{} items. Errors: {}",
@@ -310,7 +310,7 @@ impl ClipboardDispatcher {
                 let msg = if cleared_count == 0 {
                     "Clipboard was already empty".to_string()
                 } else {
-                    format!("Cleared {} items from clipboard", cleared_count)
+                    format!("Cleared {cleared_count} items from clipboard")
                 };
                 self.success(&msg);
                 debug!(
@@ -319,7 +319,7 @@ impl ClipboardDispatcher {
                 );
             }
             Err(e) => {
-                self.error(&format!("Failed to clear clipboard: {}", e));
+                self.error(&format!("Failed to clear clipboard: {e}"));
             }
         }
 

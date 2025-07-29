@@ -127,13 +127,13 @@ impl FileOpsDispatcher {
 
         match TokioFs::File::create(&file_path).await {
             Ok(_) => {
-                self.success(&format!("Created file: {}", name));
+                self.success(&format!("Created file: {name}"));
 
                 self.navigate_to(current_dir).await
             }
 
             Err(e) => {
-                self.error(&format!("Failed to create file: {}", e));
+                self.error(&format!("Failed to create file: {e}"));
 
                 Ok(DispatchResult::Continue)
             }

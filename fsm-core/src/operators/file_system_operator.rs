@@ -164,7 +164,7 @@ impl FileSystemOperator {
     ) -> Self {
         let operation_id = nanoid::nanoid!();
 
-        Span::current().record("operation_id", &tracing::field::display(&operation_id));
+        Span::current().record("operation_id", tracing::field::display(&operation_id));
         debug!(operation_id = %operation_id, "Created file system operation task");
 
         Self {
@@ -660,7 +660,7 @@ impl FileSystemOperator {
                         let progress_result = TaskResult::Progress {
                             task_id,
                             pct: processed as f32, // TODO: Calculate proper percentage
-                            msg: Some(format!("Scanned {} entries", processed)),
+                            msg: Some(format!("Scanned {processed} entries")),
                         };
 
                         if let Err(e) = self.task_tx.send(progress_result) {
@@ -883,7 +883,7 @@ pub fn spawn_file_operation(
     let operation_id = task.operation_id.clone();
 
     // Record the generated operation ID in the span
-    Span::current().record("operation_id", &tracing::field::display(&operation_id));
+    Span::current().record("operation_id", tracing::field::display(&operation_id));
 
     info!(operation_id = %operation_id, "Spawning file system operation task");
 
@@ -1110,7 +1110,7 @@ pub fn spawn_streaming_directory_scan(
                             let progress_result = TaskResult::Progress {
                                 task_id,
                                 pct: processed as f32, // TODO: Calculate proper percentage
-                                msg: Some(format!("Scanned {} entries", processed)),
+                                msg: Some(format!("Scanned {processed} entries")),
                             };
 
                             let _ = operator.task_tx.send(progress_result);

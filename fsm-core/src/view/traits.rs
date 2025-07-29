@@ -7,7 +7,7 @@
 
 use crate::model::app_state::AppState;
 use ratatui::{Frame, layout::Rect};
-use tracing::{debug, trace, instrument};
+use tracing::{debug, instrument, trace};
 
 /// Generic overlay trait for consistent modal/overlay behavior
 pub trait Overlay {
@@ -15,6 +15,7 @@ pub trait Overlay {
     fn name(&self) -> &'static str;
 
     /// Render the overlay to the given area
+    #[allow(unused)]
     #[instrument(level = "trace", skip_all, fields(overlay_name = self.name()))]
     fn render(&self, frame: &mut Frame<'_>, app: &AppState, area: Rect) {
         trace!("Rendering overlay");

@@ -162,7 +162,7 @@ impl Default for SearchState {
 impl SearchState {
     pub fn add_query(&mut self, query: CompactString) {
         // Remove if exists, add to front
-        if let Some(pos) = self.recent_queries.iter().position(|q| q == &query) {
+        if let Some(pos) = self.recent_queries.iter().position(|q| q == query) {
             self.recent_queries.remove(pos);
         }
         self.recent_queries.push_front(query.clone());

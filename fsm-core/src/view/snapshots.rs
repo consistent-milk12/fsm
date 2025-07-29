@@ -16,7 +16,7 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use compact_str::CompactString;
-use tracing::{debug, trace, instrument, warn};
+use tracing::{debug, instrument, trace, warn};
 
 use crate::UIState;
 use crate::controller::actions::{InputPromptType, OperationId};
@@ -233,7 +233,11 @@ impl OpsProgressSnapshot {
                 .map(|(_, progress, _, _)| progress)
                 .sum::<f32>()
                 / count as f32;
-            debug!("Average progress across {} operations: {:.2}%", count, avg * 100.0);
+            debug!(
+                "Average progress across {} operations: {:.2}%",
+                count,
+                avg * 100.0
+            );
             avg
         } else {
             trace!("No active operations");
@@ -576,7 +580,7 @@ impl AppSnapshot {
             tasks: TaskSnapshot::from_tasks(task_infos),
             timestamp: std::time::Instant::now(),
         };
-        
+
         debug!("Application snapshot captured successfully");
         snapshot
     }

@@ -5,7 +5,7 @@
 //! data is supplied by the `UiSnapshot` captured by the renderer.
 
 use ratatui::{prelude::*, widgets::Paragraph};
-use tracing::{debug, trace, instrument};
+use tracing::{debug, instrument, trace};
 
 use crate::{
     controller::state_coordinator::StateCoordinator, model::ui_state::UIMode,

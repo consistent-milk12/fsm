@@ -178,7 +178,7 @@ impl CommandDispatcher {
                 ui.request_redraw(RedrawFlag::All);
             }));
 
-        self.info(&format!("Found {} matches", count));
+        self.info(&format!("Found {count} matches"));
         Ok(())
     }
 
@@ -228,7 +228,7 @@ impl CommandDispatcher {
                         if e.to_string().contains("quit") {
                             return Ok(DispatchResult::Terminate);
                         }
-                        self.error(&format!("Command failed: {}", e));
+                        self.error(&format!("Command failed: {e}"));
                     }
                 }
                 self.close_overlay();
@@ -236,8 +236,8 @@ impl CommandDispatcher {
             }
             Some(InputPromptType::CreateFile) => {
                 if !input.is_empty() {
-                    if let Err(e) = self.execute_command(&format!("touch {}", input)).await {
-                        self.error(&format!("Failed to create file: {}", e));
+                    if let Err(e) = self.execute_command(&format!("touch {input}")).await {
+                        self.error(&format!("Failed to create file: {e}"));
                     }
                 }
                 self.close_overlay();
@@ -245,8 +245,8 @@ impl CommandDispatcher {
             }
             Some(InputPromptType::CreateDirectory) => {
                 if !input.is_empty() {
-                    if let Err(e) = self.execute_command(&format!("mkdir {}", input)).await {
-                        self.error(&format!("Failed to create directory: {}", e));
+                    if let Err(e) = self.execute_command(&format!("mkdir {input}")).await {
+                        self.error(&format!("Failed to create directory: {e}"));
                     }
                 }
                 self.close_overlay();

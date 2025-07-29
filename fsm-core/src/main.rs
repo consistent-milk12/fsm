@@ -16,7 +16,7 @@ use crossterm::{
 use ratatui::{Frame, Terminal, backend::CrosstermBackend as Backend};
 use tokio::{signal, sync::mpsc};
 use tokio_util::sync::CancellationToken;
-use tracing::{Level, debug, error, info, instrument, warn};
+use tracing::{debug, error, info, instrument, warn};
 
 use fsm_core::{
     cache::cache_manager::ObjectInfoCache,
@@ -118,7 +118,7 @@ impl App {
             let _span = trace_operation!("directory_resolution");
             tokio::fs::canonicalize(".")
                 .await
-                .map_err(|e| AppError::Other(format!("Failed to resolve current directory: {}", e)))
+                .map_err(|e| AppError::Other(format!("Failed to resolve current directory: {e}")))
                 .context("Failed to resolve current directory")?
         };
 
@@ -287,11 +287,11 @@ impl App {
                         }
                         Ok(Err(e)) => {
                             error!(error = %e, "Event loop error");
-                            return Err(AppError::Other(format!("Event loop failed: {}", e)));
+                            return Err(AppError::Other(format!("Event loop failed: {e}")));
                         }
                         Err(e) => {
                             error!(error = %e, "Event loop task failed");
-                            return Err(AppError::Other(format!("Event loop task failed: {}", e)));
+                            return Err(AppError::Other(format!("Event loop task failed: {e}")));
                         }
                     }
                 }
@@ -402,16 +402,15 @@ impl Drop for App {
 fn setup_terminal() -> AppResult<AppTerminal> {
     let _span = trace_operation!("terminal_initialization");
 
-    enable_raw_mode()
-        .map_err(|e| AppError::Terminal(format!("Failed to enable raw mode: {}", e)))?;
+    enable_raw_mode().map_err(|e| AppError::Terminal(format!("Failed to enable raw mode: {e}")))?;
 
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)
-        .map_err(|e| AppError::Terminal(format!("Failed to enter alternate screen: {}", e)))?;
+        .map_err(|e| AppError::Terminal(format!("Failed to enter alternate screen: {e}")))?;
 
     let backend = Backend::new(stdout);
     let terminal = Terminal::new(backend)
-        .map_err(|e| AppError::Terminal(format!("Failed to create terminal: {}", e)))?;
+        .map_err(|e| AppError::Terminal(format!("Failed to create terminal: {e}")))?;
 
     info!("Terminal setup completed successfully");
     Ok(terminal)
@@ -420,14 +419,14 @@ fn setup_terminal() -> AppResult<AppTerminal> {
 #[instrument(name = "cleanup_terminal")]
 fn cleanup_terminal(terminal: &mut AppTerminal) -> AppResult<()> {
     disable_raw_mode()
-        .map_err(|e| AppError::Terminal(format!("Failed to disable raw mode: {}", e)))?;
+        .map_err(|e| AppError::Terminal(format!("Failed to disable raw mode: {e}")))?;
 
     execute!(terminal.backend_mut(), LeaveAlternateScreen)
-        .map_err(|e| AppError::Terminal(format!("Failed to leave alternate screen: {}", e)))?;
+        .map_err(|e| AppError::Terminal(format!("Failed to leave alternate screen: {e}")))?;
 
     terminal
         .show_cursor()
-        .map_err(|e| AppError::Terminal(format!("Failed to show cursor: {}", e)))?;
+        .map_err(|e| AppError::Terminal(format!("Failed to show cursor: {e}")))?;
 
     info!("Terminal cleanup completed");
     Ok(())

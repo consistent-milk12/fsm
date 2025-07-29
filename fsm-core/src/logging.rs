@@ -419,7 +419,7 @@ impl<'writer> PrettyFieldVisitor<'writer> {
 impl<'writer> Visit for PrettyFieldVisitor<'writer> {
     fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
         if field.name() == "message" {
-            let _ = write!(self.writer, "{:?}", value);
+            let _ = write!(self.writer, "{value:?}");
         } else {
             let _ = self.write_separator();
             let _ = write!(self.writer, "{}={:?}", field.name(), value);
@@ -428,7 +428,7 @@ impl<'writer> Visit for PrettyFieldVisitor<'writer> {
 
     fn record_str(&mut self, field: &Field, value: &str) {
         if field.name() == "message" {
-            let _ = write!(self.writer, "{}", value);
+            let _ = write!(self.writer, "{value}");
         } else {
             let _ = self.write_separator();
             let _ = write!(self.writer, "{}=\"{}\"", field.name(), value);
@@ -518,9 +518,10 @@ impl FieldExtractor {
 impl Visit for FieldExtractor {
     fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
         if field.name() == "message" {
-            self.message = Some(format!("{:?}", value).trim_matches('"').to_string());
+            self.message = Some(format!("{value:?}").trim_matches('"').to_string());
         } else {
-            self.fields.push((field.name().to_string(), format!("{:?}", value)));
+            self.fields
+                .push((field.name().to_string(), format!("{value:?}")));
         }
     }
 
@@ -528,7 +529,8 @@ impl Visit for FieldExtractor {
         if field.name() == "message" {
             self.message = Some(value.to_string());
         } else {
-            self.fields.push((field.name().to_string(), value.to_string()));
+            self.fields
+                .push((field.name().to_string(), value.to_string()));
         }
     }
 }
@@ -603,19 +605,19 @@ where
         // Event message and fields with proper spacing
         let mut field_visitor = FieldExtractor::new();
         event.record(&mut field_visitor);
-        
+
         // Write message first if present
         if let Some(message) = field_visitor.message {
-            write!(writer, "{}", message)?;
+            write!(writer, "{message}")?;
         }
-        
+
         // Write other fields with proper spacing
         if !field_visitor.fields.is_empty() {
             for (key, value) in field_visitor.fields {
-                write!(writer, " {}={}", key, value)?;
+                write!(writer, " {key}={value}")?;
             }
         }
-        
+
         writeln!(writer)
     }
 }
@@ -781,7 +783,7 @@ where
                 .append(true)
                 .open(&self.error_file)
             {
-                let _ = writeln!(file, "{}", error_record);
+                let _ = writeln!(file, "{error_record}");
             }
         }
     }

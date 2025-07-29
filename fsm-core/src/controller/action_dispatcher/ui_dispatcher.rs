@@ -148,9 +148,7 @@ impl ActionMatcher for UIControlDispatcher {
     }
 
     fn priority(&self) -> ActionPriority {
-        match self {
-            _ => ActionPriority::High,
-        }
+        ActionPriority::High
     }
 
     fn name(&self) -> &'static str {

@@ -6,7 +6,7 @@ use ratatui::{
     widgets::{Block, Borders},
 };
 use std::{collections::HashMap, sync::atomic::Ordering, time::Instant};
-use tracing::{instrument, debug, trace, info, warn};
+use tracing::{debug, instrument, warn};
 
 use crate::{
     controller::state_coordinator::StateCoordinator,

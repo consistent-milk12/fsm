@@ -19,7 +19,7 @@ use ratatui::{
 };
 use std::path::Path;
 use std::sync::atomic::Ordering;
-use tracing::{debug, trace, instrument};
+use tracing::{debug, instrument, trace};
 
 pub struct OptimizedFileTable;
 
@@ -42,7 +42,10 @@ impl OptimizedFileTable {
         path: &Path,
         area: Rect,
     ) {
-        trace!("Rendering file table with {} entries", pane_state.entries.len());
+        trace!(
+            "Rendering file table with {} entries",
+            pane_state.entries.len()
+        );
         let entries = &pane_state.entries;
         debug!("Table area: {}x{}", area.width, area.height);
 

@@ -157,7 +157,7 @@ impl AppError {
     /// Log error with tracing context
     pub fn trace_error(self, span: &Span) -> Self {
         // Record error in current span
-        span.record("error", &tracing::field::display(&self));
+        span.record("error", tracing::field::display(&self));
         span.record("error_type", std::any::type_name::<Self>());
 
         // Log structured error

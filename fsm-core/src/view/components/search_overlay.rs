@@ -10,7 +10,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
 };
 use smallvec::SmallVec;
-use tracing::{debug, trace, instrument};
+use tracing::{debug, instrument, trace};
 
 use crate::model::ui_state::UIOverlay;
 use crate::view::snapshots::SearchSnapshot;
@@ -32,7 +32,10 @@ impl OptimizedSearchOverlay {
     // ---------------------------------------------------------
     #[instrument(level = "trace", skip_all, fields(overlay_type = ?self.overlay_type, query_len = snap.query.len(), result_count = snap.results.len()))]
     pub fn render_with_input(&self, frame: &mut Frame<'_>, snap: &SearchSnapshot, rect: Rect) {
-        trace!("Rendering search overlay with {} results", snap.results.len());
+        trace!(
+            "Rendering search overlay with {} results",
+            snap.results.len()
+        );
         // clear background -----------------------------------
         trace!("Clearing search overlay background");
         frame.render_widget(Clear, rect);

@@ -166,7 +166,7 @@ impl Dispatcher {
         };
 
         let execution_time = start_time.elapsed();
-        tracing::Span::current().record("execution_time", &tracing::field::debug(execution_time));
+        tracing::Span::current().record("execution_time", tracing::field::debug(execution_time));
 
         match &result {
             Ok(dispatch_result) => {
@@ -489,7 +489,7 @@ impl ActionDispatcher {
         let initialization_time = init_start.elapsed();
         tracing::Span::current().record(
             "initialization_time",
-            &tracing::field::debug(initialization_time),
+            tracing::field::debug(initialization_time),
         );
 
         let dispatcher = Self {
@@ -529,7 +529,7 @@ impl ActionDispatcher {
         let dispatch_start = Instant::now();
         let priority = self.determine_priority(&action);
 
-        tracing::Span::current().record("priority", &tracing::field::display(&priority));
+        tracing::Span::current().record("priority", tracing::field::display(&priority));
 
         debug!(
             action = ?action,
@@ -544,7 +544,7 @@ impl ActionDispatcher {
 
             tracing::Span::current()
                 .record("handler_name", "built_in_quit")
-                .record("execution_time", &tracing::field::debug(execution_time))
+                .record("execution_time", tracing::field::debug(execution_time))
                 .record("result", "terminate");
 
             self.metrics.record_action(priority, source, execution_time);
@@ -559,7 +559,7 @@ impl ActionDispatcher {
         }
 
         // Store debug info before moving action
-        let action_debug = format!("{:?}", action);
+        let action_debug = format!("{action:?}");
 
         // Dispatch to appropriate handler
         let result = match self.dispatch_to_handlers(action, source).await {
@@ -599,11 +599,11 @@ impl ActionDispatcher {
                 // Classify error severity
                 match e.downcast_ref::<AppError>() {
                     Some(AppError::StateLock { .. }) | Some(AppError::Terminal(_)) => {
-                        self.show_error(&format!("Critical error: {}", e));
+                        self.show_error(&format!("Critical error: {e}"));
                         Err(e)
                     }
                     _ => {
-                        self.show_error(&format!("Action failed: {}", e));
+                        self.show_error(&format!("Action failed: {e}"));
                         Ok(true) // Continue on non-critical errors
                     }
                 }
@@ -611,7 +611,7 @@ impl ActionDispatcher {
         };
 
         let execution_time = dispatch_start.elapsed();
-        tracing::Span::current().record("execution_time", &tracing::field::debug(execution_time));
+        tracing::Span::current().record("execution_time", tracing::field::debug(execution_time));
 
         // Record metrics
         self.metrics.record_action(priority, source, execution_time);
@@ -686,7 +686,7 @@ impl ActionDispatcher {
             .record("selected_handler", handler_name)
             .record(
                 "handler_priority",
-                &tracing::field::display(&selected_priority),
+                tracing::field::display(&selected_priority),
             );
 
         trace!(
