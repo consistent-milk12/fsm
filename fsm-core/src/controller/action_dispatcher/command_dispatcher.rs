@@ -16,7 +16,7 @@ use crate::model::ui_state::{RedrawFlag, UIOverlay, UIState};
 
 use super::{ActionMatcher, ActionPriority, DispatchResult};
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct CommandDispatcher {
     state_provider: Arc<dyn StateProvider>,
 }

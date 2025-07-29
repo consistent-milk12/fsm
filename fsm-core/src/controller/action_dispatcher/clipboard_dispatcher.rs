@@ -12,7 +12,7 @@ use crate::model::ui_state::{RedrawFlag, UIState};
 
 use super::*;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct ClipboardDispatcher {
     state_provider: Arc<dyn StateProvider>,
 }

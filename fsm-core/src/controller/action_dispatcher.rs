@@ -78,7 +78,7 @@ pub trait ActionMatcher: Send + Sync {
 }
 
 /// Type-safe dispatcher enum
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum Dispatcher {
     Navigation(NavigationDispatcher),
 
@@ -210,6 +210,7 @@ impl ActionMatcher for Dispatcher {
 }
 
 /// Dispatcher registry entry with metrics
+#[derive(Debug)]
 struct DispatcherEntry {
     dispatcher: Dispatcher,
 
@@ -271,6 +272,7 @@ impl Metrics {
 }
 
 /// Main action dispatcher orchestrator
+#[derive(Debug)]
 pub struct ActionDispatcher {
     state_provider: Arc<dyn StateProvider>,
     dispatchers: ArcSwap<Vec<DispatcherEntry>>,

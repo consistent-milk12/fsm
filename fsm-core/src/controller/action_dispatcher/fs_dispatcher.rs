@@ -22,7 +22,7 @@ use crate::model::ui_state::{RedrawFlag, UIState};
 use super::{ActionMatcher, ActionPriority, DispatchResult};
 
 #[allow(unused)]
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct FileOpsDispatcher {
     state_provider: Arc<dyn StateProvider>,
     task_tx: mpsc::UnboundedSender<TaskResult>,

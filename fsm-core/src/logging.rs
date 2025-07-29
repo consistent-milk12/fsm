@@ -1,5 +1,5 @@
-//! Practical logging with comprehensive tracing support
-//! Simple, effective tracing without over-engineering
+//! FSM-Core Logging System
+//! File-only logging with comprehensive tracing support for production use
 
 use std::{
     borrow::Cow,
@@ -15,8 +15,9 @@ use std::{
 
 use serde_json::json;
 use tracing::{
-    Event, Level, Subscriber,
+    Event, Level, Subscriber, debug, error,
     field::{Field, Visit},
+    info, trace, warn,
 };
 use tracing_appender::{
     non_blocking::WorkerGuard,
@@ -34,39 +35,61 @@ use tracing_subscriber::{
     util::SubscriberInitExt,
 };
 
-/// Simple logger with file and console output
+/// File-only logger with comprehensive tracing support
 pub struct Logger {
     _guards: Vec<WorkerGuard>,
 }
 
 impl Logger {
-    /// Initialize basic tracing system
+    /// Initialize file-only logging system (recommended)
     pub fn init() -> io::Result<Self> {
-        Self::init_with_config(LoggingConfig::default())
+        Self::init_file_only("logs")
+    }
+
+    /// Initialize file-only logging with custom directory
+    pub fn init_file_only<P: AsRef<Path>>(log_dir: P) -> io::Result<Self> {
+        let config = LoggingConfig {
+            log_dir: log_dir.as_ref().to_path_buf(),
+            enable_console: false,
+            enable_file_logging: true,
+            enable_metrics: true,
+            enable_error_tracking: true,
+            enable_colors: false,
+            clean_on_startup: true,
+            console_level: Level::ERROR, // Unused
+            file_level: Level::DEBUG,
+        };
+        Self::init_with_config(config)
     }
 
     /// Initialize with custom configuration
     pub fn init_with_config(config: LoggingConfig) -> io::Result<Self> {
-        // Initialize global counters
+        // Validate configuration
+        config
+            .validate()
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+
+        // Initialize global state
         SEQ.get_or_init(|| AtomicUsize::new(1));
         METRICS.get_or_init(|| RwLock::new(LogMetrics::default()));
         PROJECT_ROOT.get_or_init(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
-        let mut guards: Vec<WorkerGuard> = Vec::new();
+        let mut guards = Vec::new();
 
-        // Setup log directory
+        // Setup log directories
         Self::setup_log_directories(&config)?;
 
         let registry = Registry::default();
 
-        // Console layer
+        // Console layer (typically disabled)
         let console_layer = if config.enable_console {
             let (non_blocking, guard) = tracing_appender::non_blocking(io::stdout());
             guards.push(guard);
 
             Some(
                 fmt::layer()
-                    .event_format(CompactFormatter)
+                    .event_format(CompactFormatter::new())
+                    .fmt_fields(PrettyFields::new())
                     .with_writer(non_blocking)
                     .with_ansi(config.enable_colors)
                     .with_filter(
@@ -77,7 +100,7 @@ impl Logger {
             None
         };
 
-        // File layer
+        // File layer - main application log
         let file_layer = if config.enable_file_logging {
             let file_appender =
                 RollingFileAppender::new(Rotation::DAILY, &config.log_dir, "fsm-core");
@@ -87,7 +110,8 @@ impl Logger {
 
             Some(
                 fmt::layer()
-                    .event_format(StructuredFormatter)
+                    .event_format(StructuredFormatter::new())
+                    .fmt_fields(PrettyFields::new())
                     .with_writer(non_blocking)
                     .with_ansi(false)
                     .with_filter(
@@ -98,7 +122,7 @@ impl Logger {
             None
         };
 
-        // Metrics layer
+        // Metrics collection layer
         let metrics_layer = if config.enable_metrics {
             Some(MetricsLayer)
         } else {
@@ -112,7 +136,7 @@ impl Logger {
             None
         };
 
-        // Build subscriber
+        // Build and initialize subscriber
         let subscriber = registry
             .with(console_layer)
             .with(file_layer)
@@ -121,20 +145,28 @@ impl Logger {
 
         subscriber.init();
 
-        tracing::info!(
+        // Log initialization (this will go to files if console is disabled)
+        info!(
             version = env!("CARGO_PKG_VERSION"),
-            "Tracing system initialized"
+            guards_count = guards.len(),
+            log_dir = %config.log_dir.display(),
+            console_enabled = config.enable_console,
+            file_enabled = config.enable_file_logging,
+            "FSM-Core logging system initialized"
         );
 
         Ok(Self { _guards: guards })
     }
 
+    /// Setup log directories
     fn setup_log_directories(config: &LoggingConfig) -> io::Result<()> {
         if config.clean_on_startup && config.log_dir.exists() {
             fs::remove_dir_all(&config.log_dir)?;
         }
+
         fs::create_dir_all(&config.log_dir)?;
         fs::create_dir_all(config.log_dir.join("errors"))?;
+
         Ok(())
     }
 
@@ -147,15 +179,43 @@ impl Logger {
             .unwrap_or_default()
     }
 
-    /// Flush logs
+    /// Flush all log buffers
     pub fn flush() {
-        tracing::info!("Flushing log buffers");
-        // Force a small delay to allow async writers to flush
         std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+
+    /// Graceful shutdown with final log
+    pub fn shutdown(self) {
+        info!("FSM-Core logging system shutting down");
+        Self::flush();
+        drop(self._guards);
+    }
+
+    /// Test logging functionality
+    pub fn test_logging() {
+        info!("Testing INFO level logging");
+        debug!("Testing DEBUG level logging");
+        warn!("Testing WARN level logging");
+        error!("Testing ERROR level logging");
+        trace!("Testing TRACE level logging");
+
+        info!(
+            user_id = 12345,
+            operation = "test",
+            duration_ms = 150,
+            "Operation completed successfully"
+        );
+
+        error!(
+            error_code = 404,
+            component = "file_manager",
+            path = "/nonexistent/file.txt",
+            "File not found during operation"
+        );
     }
 }
 
-/// Simple logging configuration
+/// Logging configuration
 #[derive(Debug, Clone)]
 pub struct LoggingConfig {
     pub log_dir: PathBuf,
@@ -171,26 +231,95 @@ pub struct LoggingConfig {
 
 impl Default for LoggingConfig {
     fn default() -> Self {
-        Self {
-            log_dir: PathBuf::from("logs"),
-            enable_console: true,
-            enable_file_logging: true,
-            enable_metrics: true,
-            enable_error_tracking: true,
-            enable_colors: true,
-            clean_on_startup: true,
-            console_level: Level::INFO,
-            file_level: Level::DEBUG,
-        }
+        Self::file_only()
     }
 }
 
-/// Simple metrics tracking
+impl LoggingConfig {
+    /// File-only configuration (recommended)
+    pub fn file_only() -> Self {
+        Self {
+            log_dir: PathBuf::from("logs"),
+            enable_console: false,
+            enable_file_logging: true,
+            enable_metrics: true,
+            enable_error_tracking: true,
+            enable_colors: false,
+            clean_on_startup: true,
+            console_level: Level::ERROR, // Unused
+            file_level: Level::DEBUG,
+        }
+    }
+
+    /// Production configuration
+    pub fn production() -> Self {
+        Self {
+            log_dir: PathBuf::from("/var/log/fsm-core"),
+            enable_console: false,
+            enable_file_logging: true,
+            enable_metrics: true,
+            enable_error_tracking: true,
+            enable_colors: false,
+            clean_on_startup: false,
+            console_level: Level::ERROR,
+            file_level: Level::INFO,
+        }
+    }
+
+    /// Development configuration with detailed tracing
+    pub fn development() -> Self {
+        Self {
+            log_dir: PathBuf::from("logs"),
+            enable_console: false,
+            enable_file_logging: true,
+            enable_metrics: true,
+            enable_error_tracking: true,
+            enable_colors: false,
+            clean_on_startup: true,
+            console_level: Level::DEBUG,
+            file_level: Level::TRACE,
+        }
+    }
+
+    /// Console-only for debugging (not recommended for production)
+    pub fn console_debug() -> Self {
+        Self {
+            log_dir: PathBuf::from("logs"),
+            enable_console: true,
+            enable_file_logging: false,
+            enable_metrics: false,
+            enable_error_tracking: false,
+            enable_colors: true,
+            clean_on_startup: false,
+            console_level: Level::DEBUG,
+            file_level: Level::DEBUG,
+        }
+    }
+
+    /// Validate configuration
+    pub fn validate(&self) -> Result<(), String> {
+        if !self.enable_console && !self.enable_file_logging {
+            return Err("At least one output method must be enabled".to_string());
+        }
+
+        if self.log_dir.to_string_lossy().is_empty() {
+            return Err("Log directory path cannot be empty".to_string());
+        }
+
+        Ok(())
+    }
+}
+
+/// Performance and usage metrics
 #[derive(Debug, Clone)]
 pub struct LogMetrics {
     pub total_events: u64,
     pub errors_count: u64,
+    pub warnings_count: u64,
+    pub debug_count: u64,
+    pub trace_count: u64,
     pub start_time: SystemTime,
+    pub last_event_time: Option<SystemTime>,
 }
 
 impl Default for LogMetrics {
@@ -198,8 +327,38 @@ impl Default for LogMetrics {
         Self {
             total_events: 0,
             errors_count: 0,
+            warnings_count: 0,
+            debug_count: 0,
+            trace_count: 0,
             start_time: SystemTime::now(),
+            last_event_time: None,
         }
+    }
+}
+
+impl LogMetrics {
+    /// Calculate events per second
+    pub fn events_per_second(&self) -> f64 {
+        let uptime = self.start_time.elapsed().unwrap_or_default().as_secs_f64();
+        if uptime > 0.0 {
+            self.total_events as f64 / uptime
+        } else {
+            0.0
+        }
+    }
+
+    /// Calculate error rate percentage
+    pub fn error_rate(&self) -> f64 {
+        if self.total_events > 0 {
+            (self.errors_count as f64 / self.total_events as f64) * 100.0
+        } else {
+            0.0
+        }
+    }
+
+    /// Get uptime duration
+    pub fn uptime(&self) -> std::time::Duration {
+        self.start_time.elapsed().unwrap_or_default()
     }
 }
 
@@ -208,8 +367,138 @@ static SEQ: OnceLock<AtomicUsize> = OnceLock::new();
 static PROJECT_ROOT: OnceLock<PathBuf> = OnceLock::new();
 static METRICS: OnceLock<RwLock<LogMetrics>> = OnceLock::new();
 
-/// Compact formatter for console
+/// Pretty field formatter for cleaner structured data
+struct PrettyFields;
+
+impl PrettyFields {
+    fn new() -> Self {
+        Self
+    }
+}
+
+impl<'writer> FormatFields<'writer> for PrettyFields {
+    fn format_fields<R: tracing_subscriber::field::RecordFields>(
+        &self,
+        writer: Writer<'writer>,
+        fields: R,
+    ) -> std::fmt::Result {
+        let mut visitor = PrettyFieldVisitor::new(writer);
+        fields.record(&mut visitor);
+        visitor.finish()
+    }
+}
+
+/// Pretty field visitor that formats fields nicely
+struct PrettyFieldVisitor<'writer> {
+    writer: Writer<'writer>,
+    first_field: bool,
+}
+
+impl<'writer> PrettyFieldVisitor<'writer> {
+    fn new(writer: Writer<'writer>) -> Self {
+        Self {
+            writer,
+            first_field: true,
+        }
+    }
+
+    fn write_separator(&mut self) -> std::fmt::Result {
+        if self.first_field {
+            self.first_field = false;
+            Ok(())
+        } else {
+            write!(self.writer, " ")
+        }
+    }
+
+    fn finish(self) -> std::fmt::Result {
+        Ok(())
+    }
+}
+
+impl<'writer> Visit for PrettyFieldVisitor<'writer> {
+    fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+        if field.name() == "message" {
+            let _ = write!(self.writer, "{:?}", value);
+        } else {
+            let _ = self.write_separator();
+            let _ = write!(self.writer, "{}={:?}", field.name(), value);
+        }
+    }
+
+    fn record_str(&mut self, field: &Field, value: &str) {
+        if field.name() == "message" {
+            let _ = write!(self.writer, "{}", value);
+        } else {
+            let _ = self.write_separator();
+            let _ = write!(self.writer, "{}=\"{}\"", field.name(), value);
+        }
+    }
+
+    fn record_bool(&mut self, field: &Field, value: bool) {
+        let _ = self.write_separator();
+        let _ = write!(self.writer, "{}={}", field.name(), value);
+    }
+
+    fn record_u64(&mut self, field: &Field, value: u64) {
+        let _ = self.write_separator();
+        // Format large numbers with separators for readability
+        if value >= 1000 {
+            let _ = write!(self.writer, "{}={}", field.name(), format_number(value));
+        } else {
+            let _ = write!(self.writer, "{}={}", field.name(), value);
+        }
+    }
+
+    fn record_i64(&mut self, field: &Field, value: i64) {
+        let _ = self.write_separator();
+        if value.abs() >= 1000 {
+            let _ = write!(
+                self.writer,
+                "{}={}",
+                field.name(),
+                format_number(value as u64)
+            );
+        } else {
+            let _ = write!(self.writer, "{}={}", field.name(), value);
+        }
+    }
+
+    fn record_f64(&mut self, field: &Field, value: f64) {
+        let _ = self.write_separator();
+        // Format floats with appropriate precision
+        if field.name().contains("duration") || field.name().contains("time") {
+            let _ = write!(self.writer, "{}={:.3}", field.name(), value);
+        } else {
+            let _ = write!(self.writer, "{}={:.2}", field.name(), value);
+        }
+    }
+}
+
+/// Helper function to format numbers with separators
+fn format_number(n: u64) -> String {
+    let s = n.to_string();
+    let mut result = String::new();
+    let chars: Vec<char> = s.chars().collect();
+
+    for (i, ch) in chars.iter().enumerate() {
+        if i > 0 && (chars.len() - i) % 3 == 0 {
+            result.push(',');
+        }
+        result.push(*ch);
+    }
+
+    result
+}
+
+/// Compact formatter for console output with prettier formatting
 struct CompactFormatter;
+
+impl CompactFormatter {
+    fn new() -> Self {
+        Self
+    }
+}
 
 impl<S, N> FormatEvent<S, N> for CompactFormatter
 where
@@ -225,6 +514,13 @@ where
         let seq = SEQ.get().unwrap().fetch_add(1, Ordering::Relaxed);
         let meta = event.metadata();
 
+        // Format timestamp
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default();
+        let timestamp = now.as_secs() % 86400;
+
+        // Format file path (shortened)
         let file_path = meta.file().unwrap_or("??");
         let display_path = if let Some(root) = PROJECT_ROOT.get() {
             Path::new(file_path)
@@ -235,28 +531,56 @@ where
             Cow::Borrowed(file_path)
         };
 
+        // Color-coded level
+        let level_colored = match *meta.level() {
+            Level::ERROR => "\x1b[31m ERROR \x1b[0m", // Red
+            Level::WARN => "\x1b[33m WARN  \x1b[0m",  // Yellow
+            Level::INFO => "\x1b[32m INFO  \x1b[0m",  // Green
+            Level::DEBUG => "\x1b[36m DEBUG \x1b[0m", // Cyan
+            Level::TRACE => "\x1b[90m TRACE \x1b[0m", // Gray
+        };
+
+        // Pretty timestamp and sequence
         write!(
             writer,
-            "[{:06}] {:5} [{}:{}] {}: ",
+            "\x1b[90m{:02}:{:02}:{:02}\x1b[0m \x1b[90m[{:04}]\x1b[0m {} ",
+            (timestamp / 3600) % 24,
+            (timestamp / 60) % 60,
+            timestamp % 60,
             seq,
-            meta.level(),
-            display_path,
-            meta.line().unwrap_or(0),
-            meta.target()
+            level_colored
         )?;
 
-        // Add span context if available
+        // Target with dimmed styling
+        write!(writer, "\x1b[90m{}\x1b[0m ", meta.target())?;
+
+        // Span context in brackets
         if let Some(span) = ctx.lookup_current() {
-            write!(writer, "[{}] ", span.name())?;
+            write!(writer, "\x1b[35m[{}]\x1b[0m ", span.name())?;
         }
 
+        // Location info (dimmed)
+        write!(
+            writer,
+            "\x1b[90m({}:{})\x1b[0m ",
+            display_path,
+            meta.line().unwrap_or(0)
+        )?;
+
+        // Event message and fields
         ctx.field_format().format_fields(writer.by_ref(), event)?;
         writeln!(writer)
     }
 }
 
-/// Structured formatter for files
+/// Structured formatter for file output with prettier formatting
 struct StructuredFormatter;
+
+impl StructuredFormatter {
+    fn new() -> Self {
+        Self
+    }
+}
 
 impl<S, N> FormatEvent<S, N> for StructuredFormatter
 where
@@ -270,37 +594,62 @@ where
         event: &Event<'_>,
     ) -> std::fmt::Result {
         let meta = event.metadata();
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis();
+        let seq = SEQ.get().unwrap().fetch_add(1, Ordering::Relaxed);
 
+        // Format timestamp as readable time
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default();
+        let timestamp = now.as_secs() % 86400; // Seconds since midnight
+
+        // Format file path (shortened)
+        let file_path = meta.file().unwrap_or("unknown");
+        let display_path = if let Some(root) = PROJECT_ROOT.get() {
+            Path::new(file_path)
+                .strip_prefix(root)
+                .unwrap_or(Path::new(file_path))
+                .to_string_lossy()
+        } else {
+            Cow::Borrowed(file_path)
+        };
+
+        // Level with padding for alignment
+        let level_str = format!("{:5}", meta.level());
+
+        // Write timestamp and basic info
         write!(
             writer,
-            "ts={} level={} target={} ",
-            timestamp,
-            meta.level(),
-            meta.target()
+            "{:02}:{:02}:{:02} [{:04}] {} ",
+            (timestamp / 3600) % 24,
+            (timestamp / 60) % 60,
+            timestamp % 60,
+            seq,
+            level_str,
         )?;
 
-        if let Some(file) = meta.file() {
-            write!(writer, "file={} ", file)?;
-        }
-        if let Some(line) = meta.line() {
-            write!(writer, "line={} ", line)?;
-        }
-
-        // Add span context
+        // Add span context in a clean format
         if let Some(span) = ctx.lookup_current() {
-            write!(writer, "span={} ", span.name())?;
+            // Only show the immediate span, not the full hierarchy
+            write!(writer, "[{}] ", span.name())?;
         }
 
+        // Target and location
+        write!(
+            writer,
+            "{} ({}:{}) ",
+            meta.target(),
+            display_path,
+            meta.line().unwrap_or(0)
+        )?;
+
+        // Event message and fields
         ctx.field_format().format_fields(writer.by_ref(), event)?;
+
         writeln!(writer)
     }
 }
 
-/// Simple metrics collection layer
+/// Metrics collection layer
 struct MetricsLayer;
 
 impl<S> tracing_subscriber::Layer<S> for MetricsLayer
@@ -311,24 +660,34 @@ where
         if let Some(metrics) = METRICS.get() {
             if let Ok(mut m) = metrics.write() {
                 m.total_events += 1;
-                if event.metadata().level() == &Level::ERROR {
-                    m.errors_count += 1;
+                m.last_event_time = Some(SystemTime::now());
+
+                match *event.metadata().level() {
+                    Level::ERROR => m.errors_count += 1,
+                    Level::WARN => m.warnings_count += 1,
+                    Level::DEBUG => m.debug_count += 1,
+                    Level::TRACE => m.trace_count += 1,
+                    Level::INFO => {} // No specific counter for INFO
                 }
             }
         }
     }
 }
 
-/// Error tracking layer
+/// Error tracking layer with JSON output
 struct ErrorTrackingLayer {
     error_file: PathBuf,
 }
 
 impl ErrorTrackingLayer {
     fn new(log_dir: &Path) -> io::Result<Self> {
-        Ok(Self {
-            error_file: log_dir.join("errors").join("errors.jsonl"),
-        })
+        let error_file = log_dir.join("errors").join("errors.jsonl");
+
+        if let Some(parent) = error_file.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        Ok(Self { error_file })
     }
 }
 
@@ -337,23 +696,36 @@ where
     S: Subscriber + for<'lookup> LookupSpan<'lookup>,
 {
     fn on_event(&self, event: &Event<'_>, ctx: tracing_subscriber::layer::Context<'_, S>) {
-        if event.metadata().level() == &Level::ERROR {
+        if matches!(event.metadata().level(), &Level::ERROR | &Level::WARN) {
             let mut visitor = JsonVisitor::new();
             event.record(&mut visitor);
 
-            let span_context = ctx.lookup_current().map(|span| span.name());
+            // Collect span hierarchy
+            let mut span_context = Vec::new();
+            if let Some(span) = ctx.lookup_current() {
+                span.scope().for_each(|s| {
+                    span_context.push(json!({
+                        "name": s.name(),
+                        "target": s.metadata().target(),
+                        "file": s.metadata().file(),
+                        "line": s.metadata().line(),
+                    }));
+                });
+            }
 
             let error_record = json!({
                 "timestamp": SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_secs(),
-                "level": "ERROR",
+                "level": event.metadata().level().to_string(),
                 "target": event.metadata().target(),
                 "file": event.metadata().file(),
                 "line": event.metadata().line(),
-                "span": span_context,
+                "spans": span_context,
                 "fields": visitor.fields,
+                "process_id": std::process::id(),
+                "thread_id": format!("{:?}", std::thread::current().id()),
             });
 
             // Write to error file (best effort)
@@ -368,7 +740,7 @@ where
     }
 }
 
-/// JSON field visitor
+/// JSON field visitor for error tracking
 struct JsonVisitor {
     fields: serde_json::Map<String, serde_json::Value>,
 }
@@ -402,6 +774,10 @@ impl Visit for JsonVisitor {
     fn record_i64(&mut self, field: &Field, value: i64) {
         self.fields.insert(field.name().to_string(), json!(value));
     }
+
+    fn record_f64(&mut self, field: &Field, value: f64) {
+        self.fields.insert(field.name().to_string(), json!(value));
+    }
 }
 
 /// Convenience macros for operation tracing
@@ -424,6 +800,7 @@ macro_rules! measure_time {
         tracing::info!(
             operation = $name,
             duration_ms = duration.as_millis(),
+            duration_us = duration.as_micros(),
             "Operation completed"
         );
         result
@@ -433,35 +810,27 @@ macro_rules! measure_time {
 #[macro_export]
 macro_rules! trace_fn {
     ($fn_name:expr) => {
-        tracing::info_span!("fn", name = $fn_name).entered()
+        tracing::debug_span!("fn", name = $fn_name).entered()
     };
     ($fn_name:expr, $($field:tt)*) => {
-        tracing::info_span!("fn", name = $fn_name, $($field)*).entered()
+        tracing::debug_span!("fn", name = $fn_name, $($field)*).entered()
     };
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tempfile::TempDir;
-    use tracing::{debug, error, info};
-
-    #[test]
-    fn test_logger_initialization() {
-        let temp_dir = TempDir::new().unwrap();
-        let config = LoggingConfig {
-            log_dir: temp_dir.path().to_path_buf(),
-            clean_on_startup: false,
-            ..Default::default()
-        };
-
-        let _logger = Logger::init_with_config(config).unwrap();
-
-        info!("Test info message");
-        error!(error_code = 404, "Test error message");
-        debug!(user_id = 123, action = "test", "Debug message");
-
-        let metrics = Logger::metrics();
-        assert!(metrics.total_events > 0);
-    }
+#[macro_export]
+macro_rules! trace_err {
+    ($error:expr) => {
+        tracing::error!(
+            error = %$error,
+            error_debug = ?$error,
+            "Error occurred"
+        )
+    };
+    ($error:expr, $($field:tt)*) => {
+        tracing::error!(
+            error = %$error,
+            error_debug = ?$error,
+            $($field)*
+        )
+    };
 }

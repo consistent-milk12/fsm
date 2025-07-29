@@ -85,6 +85,7 @@ parking_lot = "0.12.4"
 arc-swap = "1.7.1"
 ahash = "0.8.12"
 crossbeam-channel = "0.5.15"
+tracing-attributes = "0.1.30"
 
 [[bin]]
 name = "fs"

@@ -1,11 +1,11 @@
-//! FSM-Core main.rs - Entry point with practical tracing
+//! FSM-Core main.rs - Entry point with FileSystemOperator integration
 
 use std::{
     io::{self, Stdout},
     panic::PanicHookInfo,
     path::PathBuf,
     sync::{Arc, Mutex, RwLock},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result};
@@ -15,7 +15,8 @@ use crossterm::{
 };
 use ratatui::{Frame, Terminal, backend::CrosstermBackend as Backend};
 use tokio::{signal, sync::mpsc};
-use tracing::{Instrument, error, info, instrument, warn};
+use tokio_util::sync::CancellationToken;
+use tracing::{Instrument, Level, debug, error, info, instrument, warn};
 
 use fsm_core::{
     cache::cache_manager::ObjectInfoCache,
@@ -25,7 +26,6 @@ use fsm_core::{
         state_coordinator::StateCoordinator,
     },
     error::{AppError, AppResult, TracedResult},
-    fs::dir_scanner::spawn_directory_scan,
     logging::{Logger, LoggingConfig},
     measure_time,
     model::{
@@ -33,6 +33,7 @@ use fsm_core::{
         fs_state::FSState,
         ui_state::{RedrawFlag, UIState},
     },
+    operators::file_system_operator::{ScanMode, spawn_directory_scan},
     trace_fn, trace_operation,
     view::ui::UIRenderer,
 };
@@ -42,38 +43,29 @@ type AppTerminal = Terminal<Backend<Stdout>>;
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 #[instrument(name = "main")]
 async fn main() -> Result<()> {
-    let startup_start = Instant::now();
+    let startup_start: Instant = Instant::now();
     setup_panic_handler();
 
-    // Initialize logging first
-    Logger::init_with_config(LoggingConfig {
-        enable_metrics: true,
-        console_level: tracing::Level::INFO,
-        file_level: tracing::Level::DEBUG,
+    let config: LoggingConfig = LoggingConfig {
+        console_level: Level::TRACE,
         ..Default::default()
-    })?;
+    };
 
-    info!("Starting FSM-Core");
+    let _logger: Logger = Logger::init_with_config(config)?;
 
-    let app = measure_time!("app_initialization", {
+    info!("Starting FSM-Core with integrated FileSystemOperator");
+
+    let app: App = measure_time!("app_initialization", {
         App::new().await.trace_err("app_creation")?
     });
 
-    let startup_time = startup_start.elapsed();
+    let startup_time: Duration = startup_start.elapsed();
     info!(
         startup_time_ms = startup_time.as_millis(),
         "FSM-Core startup completed"
     );
 
     app.run().await.trace_err("app_runtime")?;
-
-    // Log final metrics
-    let metrics = Logger::metrics();
-    info!(
-        total_events = metrics.total_events,
-        error_count = metrics.errors_count,
-        "Final session metrics"
-    );
 
     info!("FSM-Core exited cleanly");
     Ok(())
@@ -84,6 +76,7 @@ struct App {
     event_loop: EventLoop,
     state_coordinator: Arc<StateCoordinator>,
     ui_renderer: UIRenderer,
+    cancel_token: CancellationToken,
 }
 
 impl App {
@@ -91,13 +84,16 @@ impl App {
     async fn new() -> AppResult<Self> {
         let _span = trace_operation!("app_initialization");
 
+        // Create cancellation token for graceful shutdown
+        let cancel_token: CancellationToken = CancellationToken::new();
+
         // Terminal setup
         let terminal = measure_time!("terminal_setup", {
             setup_terminal().trace_err("terminal_setup")?
         });
 
         // Config loading
-        let config = {
+        let config: Arc<Config> = {
             let _span = trace_operation!("config_loading");
             match Config::load().await {
                 Ok(config) => {
@@ -145,7 +141,7 @@ impl App {
             (app_state, fs_state, ui_state)
         };
 
-        // Coordinator and event loop setup
+        // Coordinator and event loop setup with FileSystemOperator integration
         let state_coordinator = {
             let _span = trace_operation!("coordinator_setup");
             Arc::new(StateCoordinator::new(app_state, ui_state, fs_state))
@@ -156,47 +152,62 @@ impl App {
             EventLoop::new(state_coordinator.clone())
         };
 
-        // Initial directory loading
-        Self::load_initial_directory(&state_coordinator, current_dir, task_tx)
-            .await
-            .trace_err("initial_directory_load")?;
+        // Initial directory loading using FileSystemOperator
+        Self::load_initial_directory(
+            &state_coordinator,
+            current_dir,
+            task_tx,
+            cancel_token.clone(),
+        )
+        .await
+        .trace_err("initial_directory_load")?;
 
         let ui_renderer = UIRenderer::new();
 
-        info!("Application initialization completed successfully");
+        info!("Application initialization with FileSystemOperator completed successfully");
 
         Ok(Self {
             terminal,
             event_loop,
             state_coordinator,
             ui_renderer,
+            cancel_token,
         })
     }
 
-    #[instrument(name = "load_initial_directory", skip(coordinator, task_tx))]
+    #[instrument(
+        name = "load_initial_directory",
+        skip(coordinator, task_tx, cancel_token)
+    )]
     async fn load_initial_directory(
         coordinator: &StateCoordinator,
         dir: PathBuf,
         task_tx: mpsc::UnboundedSender<TaskResult>,
+        cancel_token: CancellationToken,
     ) -> AppResult<()> {
-        let _span = trace_operation!("directory_scan", path = %dir.display());
-
-        let task_id = {
-            let app_state = coordinator.app_state();
-            app_state.add_task("Loading initial directory")
-        };
+        let _span = trace_operation!("initial_directory_scan", path = %dir.display());
 
         info!(
-            task_id = task_id,
             directory = %dir.display(),
-            "Starting initial directory scan"
+            "Starting initial directory scan with FileSystemOperator"
         );
 
-        let _handle = spawn_directory_scan(task_id, dir.clone(), false, task_tx);
+        // Use FileSystemOperator for initial directory scan
+        let operation_id = spawn_directory_scan(
+            dir.clone(),
+            false,              // Don't show hidden files initially
+            ScanMode::TwoPhase, // Fast display + background metadata
+            task_tx,
+            cancel_token,
+        );
 
         coordinator.request_redraw(RedrawFlag::All);
 
-        info!("Initial directory scan started successfully");
+        info!(
+            operation_id = %operation_id,
+            directory = %dir.display(),
+            "Initial directory scan started successfully"
+        );
         Ok(())
     }
 
@@ -204,7 +215,7 @@ impl App {
     async fn run(mut self) -> AppResult<()> {
         let run_start = Instant::now();
 
-        info!("Starting main application loop");
+        info!("Starting main application loop with FileSystemOperator");
 
         // Setup graceful shutdown
         self.setup_shutdown().await;
@@ -213,9 +224,6 @@ impl App {
         let loop_result = self.run_main_loop().await;
 
         let total_runtime = run_start.elapsed();
-
-        // Log session metrics
-        self.log_session_metrics(total_runtime).await;
 
         match loop_result {
             Ok(_) => {
@@ -243,7 +251,7 @@ impl App {
 
         loop {
             tokio::select! {
-                // Event loop processing
+                // Event loop processing with FileSystemOperator integration
                 result = self.event_loop.run() => {
                     match result {
                         Ok(_) => {
@@ -267,6 +275,12 @@ impl App {
                         );
                     }
                     frame_count += 1;
+                }
+
+                // Handle cancellation
+                _ = self.cancel_token.cancelled() => {
+                    info!("Received cancellation signal, shutting down gracefully");
+                    break;
                 }
             }
         }
@@ -324,6 +338,7 @@ impl App {
     #[instrument(name = "setup_shutdown", skip(self))]
     async fn setup_shutdown(&self) {
         let shutdown = self.event_loop.shutdown_handle();
+        let cancel_token = self.cancel_token.clone();
 
         tokio::spawn(
             async move {
@@ -354,37 +369,11 @@ impl App {
                 }
 
                 info!("Initiating graceful shutdown");
+                cancel_token.cancel();
                 shutdown.notify_one();
             }
             .instrument(tracing::info_span!("shutdown_handler")),
         );
-    }
-
-    #[instrument(name = "log_session_metrics", skip(self))]
-    async fn log_session_metrics(&self, total_runtime: std::time::Duration) {
-        let event_metrics = self.event_loop.metrics();
-        let logging_metrics = Logger::metrics();
-
-        info!("=== FSM-Core Session Summary ===");
-        info!(
-            total_runtime_secs = total_runtime.as_secs(),
-            tasks_completed = event_metrics.tasks,
-            actions_processed = event_metrics.actions,
-            "Session execution metrics"
-        );
-
-        info!(
-            total_log_events = logging_metrics.total_events,
-            error_events = logging_metrics.errors_count,
-            "Logging metrics"
-        );
-
-        // Log cache performance if available
-        let app_state: &Arc<Mutex<AppState>> = &self.state_coordinator.app_state;
-
-        if let Ok(_state) = app_state.try_lock() {
-            info!("Cache performance logged");
-        }
     }
 }
 
@@ -392,11 +381,17 @@ impl Drop for App {
     fn drop(&mut self) {
         let _span = trace_fn!("app_cleanup");
 
+        // Cancel all ongoing operations
+        self.cancel_token.cancel();
+
         if let Err(e) = cleanup_terminal(&mut self.terminal) {
             warn!(error = %e, "Terminal cleanup failed");
         } else {
-            tracing::debug!("Terminal cleanup completed successfully");
+            debug!("Terminal cleanup completed successfully");
         }
+
+        // Flush logs to ensure all file system operations are recorded
+        Logger::flush();
     }
 }
 
@@ -449,7 +444,7 @@ fn setup_panic_handler() {
             "PANIC: Application panicked"
         );
 
-        // Flush logs
+        // Flush logs including file system operation logs
         Logger::flush();
 
         original(info);

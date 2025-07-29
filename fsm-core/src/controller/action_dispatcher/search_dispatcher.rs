@@ -11,7 +11,7 @@ use crate::model::ui_state::{RedrawFlag, UIState};
 
 use super::{ActionMatcher, ActionPriority, DispatchResult};
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct SearchDispatcher {
     state_provider: Arc<dyn StateProvider>,
 }
