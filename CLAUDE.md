@@ -17,12 +17,14 @@ EventLoop -> ActionDispatcher -> StateCoordinator -> UIRenderer
 4. **STRICT Token Efficiency**: Be extremely precise and compact about input/output tokens
 5. **NEVER cargo run**: Ask user to run and test app when needed
 
-## Status ✅ PHASE 4.7 COMPLETE - System Monitoring
-- **System Monitoring**: Added actions and data structures for system and process monitoring.
+## Status ✅ PHASE 4.8 COMPLETE - System Monitoring Implementation
+- **System Monitoring**: Full implementation with SystemHandler, system overlay, process monitoring
+- **Compilation Fixed**: All sysinfo compatibility issues resolved, SystemHandler integrated
+- **ActionDispatcher**: 7 handlers including SystemHandler with proper ActionMatcher trait
+- **UI Components**: System monitor overlay with CPU/memory gauges, process list rendering
 - **EventLoop Architecture**: Single EventLoop in background task, main.rs handles rendering
 - **TSV Logging System**: AI-optimized structured logging (6x token efficiency vs JSON)
 - **StateProvider trait**: Clean abstraction for handler state access
-- **ActionDispatcher**: Modular action handling with 6 handlers (no duplication)
 - **UIRenderer**: Real-time rendering at 60fps with atomic redraw synchronization
 - **Navigation**: Both Enter/Backspace work correctly with proper entry loading
 - **FileSystem**: Async directory scanning, entries loaded efficiently
@@ -70,3 +72,13 @@ awk -F'\t' '$8 != "NULL" {
 ```
 
 **Reference**: See `TRACING.md` for complete TSV logging methodology and AI analysis patterns.
+
+## System Monitoring Compilation Fixes ✅ COMPLETED (2025-07-29)
+**Problem**: Multiple compilation errors after adding system monitoring features
+**Issues Fixed**:
+1. **sysinfo API**: Updated from deprecated `SystemExt`, `CpuExt`, `ProcessExt` traits to direct methods
+2. **SystemHandler Integration**: Added `ActionMatcher` trait implementation, proper error handling
+3. **UIState Extension**: Added `show_system_monitor`, `show_process_monitor`, `selected_process_idx` fields
+4. **System Overlay**: Fixed `Clear` widget import, `bytesize` API calls, theme references
+5. **Action Dispatcher**: Added `System(SystemHandler)` variant with complete match arm coverage
+**Status**: `cargo check` passes, ready for system monitoring functionality testing

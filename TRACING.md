@@ -174,6 +174,7 @@ info!(
 
 // System Monitoring
 "SYSTEM_MONITOR_TOGGLE" | "PROCESS_MONITOR_TOGGLE" | "PROCESS_KILL_ATTEMPT" | "PROCESS_KILL_SUCCESS" | "PROCESS_KILL_FAILED"
+"SYSTEM_MONITOR_UPDATE" | "PROCESS_MONITOR_UPDATE" | "SYSTEM_DATA_COLLECTED" | "PROCESS_DATA_COLLECTED"
 
 // Command Palette
 "COMMAND_PALETTE_SINGLE_COMPLETION" | "COMMAND_PALETTE_APPLY_COMPLETION_START" | "COMMAND_PALETTE_APPLY_COMPLETION_BEFORE" | "COMMAND_PALETTE_APPLY_COMPLETION_AFTER"
@@ -326,6 +327,9 @@ awk -F'\t' '$5 == "input_handling" {print $1, $4, $5, $14}' logs/fsm-core.tsv
 
 # Command Palette: Analyze command palette interactions
 awk -F'\t' '$5 == "command_palette" {print $1, $4, $5, $14}' logs/fsm-core.tsv
+
+# System Monitoring: Track system monitoring events
+awk -F'\t' '$5 == "system_monitoring" {print $1, $4, $5, $14}' logs/fsm-core.tsv
 
 # Compare Enter vs Backspace flows (columns 1,4,6,8)
 awk -F'\t' '$4 ~ /^(ENTER_|BACKSPACE_)/ {print $1, $4, $6, $8}' logs/fsm-core.tsv

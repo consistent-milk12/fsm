@@ -30,7 +30,7 @@ pub mod navigation_dispatcher;
 pub mod search_dispatcher;
 pub mod ui_dispatcher;
 pub mod utils;
-
+use crate::controller::handlers::system_handler::SystemHandler;
 use clipboard_dispatcher::ClipboardDispatcher;
 use command_dispatcher::CommandDispatcher;
 use fs_dispatcher::FileOpsDispatcher;
@@ -119,6 +119,7 @@ pub enum Dispatcher {
     Search(SearchDispatcher),
     Command(CommandDispatcher),
     Clipboard(ClipboardDispatcher),
+    System(SystemHandler),
 }
 
 impl Dispatcher {
@@ -163,6 +164,10 @@ impl Dispatcher {
                 tracing::Span::current().record("dispatcher_type", "Clipboard");
                 d.handle(action).await
             }
+            Self::System(d) => {
+                tracing::Span::current().record("dispatcher_type", "System");
+                d.handle(action).await
+            }
         };
 
         let execution_time = start_time.elapsed();
@@ -200,6 +205,7 @@ impl ActionMatcher for Dispatcher {
             Self::Search(d) => d.can_handle(action),
             Self::Command(d) => d.can_handle(action),
             Self::Clipboard(d) => d.can_handle(action),
+            Self::System(d) => d.can_handle(action),
         }
     }
 
@@ -215,6 +221,7 @@ impl ActionMatcher for Dispatcher {
             Self::Search(d) => d.priority(),
             Self::Command(d) => d.priority(),
             Self::Clipboard(d) => d.priority(),
+            Self::System(d) => d.priority(),
         }
     }
 
@@ -226,6 +233,7 @@ impl ActionMatcher for Dispatcher {
             Self::Search(d) => d.name(),
             Self::Command(d) => d.name(),
             Self::Clipboard(d) => d.name(),
+            Self::System(d) => d.name(),
         }
     }
 
@@ -237,6 +245,7 @@ impl ActionMatcher for Dispatcher {
             Self::Search(d) => d.dynamic_priority(action),
             Self::Command(d) => d.dynamic_priority(action),
             Self::Clipboard(d) => d.dynamic_priority(action),
+            Self::System(d) => d.dynamic_priority(action),
         }
     }
 
@@ -248,6 +257,7 @@ impl ActionMatcher for Dispatcher {
             Self::Search(d) => d.can_disable(),
             Self::Command(d) => d.can_disable(),
             Self::Clipboard(d) => d.can_disable(),
+            Self::System(d) => d.can_disable(),
         }
     }
 }
@@ -466,6 +476,9 @@ impl ActionDispatcher {
                 state_provider.clone(),
             ))),
             DispatcherEntry::new(Dispatcher::Command(CommandDispatcher::new(
+                state_provider.clone(),
+            ))),
+            DispatcherEntry::new(Dispatcher::System(SystemHandler::new(
                 state_provider.clone(),
             ))),
         ];

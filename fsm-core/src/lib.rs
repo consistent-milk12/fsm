@@ -71,6 +71,8 @@ pub mod view {
         pub use status_bar::OptimizedStatusBar;
         pub mod error_overlay;
         pub use error_overlay::ErrorOverlay;
+
+        pub mod system_monitor_overlay;
     }
 
     pub use components::*;
@@ -93,6 +95,8 @@ pub mod operators {
     pub mod size_task;
 
     pub mod file_system_operator;
+
+    pub mod system_monitor_task;
 }
 
 pub mod logging;

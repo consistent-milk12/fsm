@@ -16,7 +16,9 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 use crate::{
-    cache::cache_manager::ObjectInfoCache, config::Config, controller::actions::OperationId,
+    cache::cache_manager::ObjectInfoCache,
+    config::Config,
+    controller::actions::{OperationId, ProcessData, SystemData},
 };
 
 /// Task execution information
@@ -234,6 +236,9 @@ pub struct AppState {
 
     pub session_id: CompactString, // Unique session identifier
     pub started_at: Instant,       // State creation timestamp
+
+    pub system_data: Option<SystemData>,
+    pub process_data: Vec<ProcessData>,
 }
 
 impl AppState {
@@ -262,6 +267,8 @@ impl AppState {
             errors_count: AtomicU64::new(0),
             session_id: session_id.clone().into(),
             started_at: Instant::now(),
+            system_data: None,
+            process_data: Vec::new(),
         };
 
         info!(session = %session_id, "AppState initialized");
