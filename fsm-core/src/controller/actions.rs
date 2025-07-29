@@ -1,6 +1,7 @@
 //! Enhanced Actions with comprehensive clipboard and file operations support
-
 use crate::fs::object_info::ObjectInfo;
+use crate::fs::utils::ScanUpdate;
+
 use crossterm::event::{KeyEvent, MouseEvent};
 use std::path::PathBuf;
 
@@ -176,7 +177,7 @@ pub enum Action {
     /// Handle streaming directory scan updates
     DirectoryScanUpdate {
         path: PathBuf,
-        update: crate::fs::dir_scanner::ScanUpdate,
+        update: ScanUpdate,
     },
 
     /// No operation

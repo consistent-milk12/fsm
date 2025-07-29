@@ -7,7 +7,6 @@ pub mod cache {
 }
 
 pub mod controller {
-
     pub mod actions;
     pub use actions::Action;
 
@@ -80,8 +79,8 @@ pub mod view {
 pub use view::*;
 
 pub mod fs {
-    pub mod dir_scanner;
     pub mod object_info;
+    pub mod utils;
 }
 
 pub mod operators {
