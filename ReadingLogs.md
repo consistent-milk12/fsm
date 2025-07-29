@@ -543,4 +543,42 @@ rg 'navigation.*completed.*entries_count=(\d+)' logs/fsm-core.log -A3 -B1 -r 'Na
 rg '(requesting redraw|clearing redraw flags|needs_redraw)' logs/fsm-core.log --color=always
 ```
 
+## UI Corruption Diagnosis Case Study ✅ RESOLVED
+
+**Backspace Navigation UI Corruption (2025-07-29):**
+
+**Diagnostic Process:**
+```bash
+# 1. Compare Enter vs Backspace navigation patterns
+rg 'EnterSelected|GoToParent' logs/fsm-core.log -A5 -B5
+
+# 2. Verify backend navigation correctness  
+rg 'entries_count=(\\d+)' logs/fsm-core.log -C2
+
+# 3. Check redraw request patterns
+rg 'requesting redraw.*flag=All' logs/fsm-core.log -A3
+```
+
+**Root Cause Analysis:**
+- **Backend Logic**: ✅ Both Enter/Backspace navigate correctly (entry counts match)
+- **Redraw System**: ✅ Both operations request `flag=All` redraw  
+- **UI Rendering**: ✅ Both render with correct entry counts
+- **Terminal Buffer**: ❌ Insufficient clearing during ratatui rendering
+
+**Solution Applied:**
+```rust
+// object_table.rs:149-157 - Enhanced terminal clearing
+frame.render_widget(Clear, area);  // Explicit buffer wipe
+frame.render_widget(Block::default().style(Style::default().bg(BACKGROUND)), area);
+```
+
+**Verification Commands:**
+```bash
+# Monitor Clear widget usage across components
+rg 'frame\.render_widget\(Clear' fsm-core/src/view/components/ -n
+
+# Verify ratatui Clear import
+rg 'use.*Clear' fsm-core/src/view/components/object_table.rs
+```
+
 This advanced ripgrep-based approach provides superior performance and flexibility compared to traditional grep-based log analysis, enabling professional-grade debugging and monitoring of FSM-Core applications.

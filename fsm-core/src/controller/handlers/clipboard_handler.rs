@@ -46,7 +46,13 @@ impl ClipboardHandler {
     }
 
     fn handle_key(&mut self, key_event: KeyEvent) -> Result<Vec<Action>, AppError> {
-        trace!("ClipboardHandler: key {:?} mode {:?}", key_event, self.mode);
+        trace!(
+            marker = "CLIPBOARD_HANDLER_KEY_EVENT",
+            operation_type = "input_handling",
+            "ClipboardHandler: key {:?} mode {:?}",
+            key_event,
+            self.mode
+        );
 
         match self.mode {
             ClipboardMode::Normal => self.handle_normal_mode(key_event),

@@ -428,7 +428,12 @@ impl AppState {
             marked_files: self.marked_files.len(),
             history_size: self.operation_history.len(),
         };
-        debug!(?metrics, "Metrics retrieved");
+        debug!(
+            marker = "METRICS_RETRIEVED",
+            operation_type = "metrics",
+            ?metrics,
+            "Metrics retrieved"
+        );
         metrics
     }
 }
@@ -436,6 +441,11 @@ impl AppState {
 impl Default for AppState {
     #[instrument(level = "debug")]
     fn default() -> Self {
+        debug!(
+            marker = "APP_STATE_DEFAULT_CREATED",
+            operation_type = "application",
+            "Creating default AppState."
+        );
         Self::new(
             Arc::new(Config::default()),
             Arc::new(ObjectInfoCache::new()),

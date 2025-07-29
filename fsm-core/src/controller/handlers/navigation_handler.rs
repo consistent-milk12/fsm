@@ -60,7 +60,12 @@ impl NavigationHandler {
     }
 
     fn handle_key(&mut self, key_event: KeyEvent) -> Result<Vec<Action>, AppError> {
-        trace!("NavigationHandler: key {:?}", key_event);
+        trace!(
+            marker = "NAVIGATION_HANDLER_KEY_EVENT",
+            operation_type = "input_handling",
+            "NavigationHandler: key {:?}",
+            key_event
+        );
 
         // Check sequences
         if let Some(action) = self.check_sequences(key_event) {

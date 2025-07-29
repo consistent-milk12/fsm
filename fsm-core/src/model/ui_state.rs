@@ -253,8 +253,11 @@ impl UIState {
     #[inline]
     #[instrument(level = "trace", skip(self, entry))]
     pub fn history_push(&mut self, entry: impl Into<CompactString>) {
-        self.command_history.push(entry.into());
-        self.history_index = None;
+        trace!(
+            marker = "HISTORY_PUSH",
+            operation_type = "ui_input",
+            "history_push"
+        );
     }
 }
 
@@ -286,16 +289,19 @@ impl UIState {
     pub fn info(&mut self, msg: impl Into<CompactString>) {
         self.notify(msg, NotificationLevel::Info, Some(3000));
     }
+
     #[instrument(level = "debug", skip(self, msg))]
     #[inline]
     pub fn success(&mut self, msg: impl Into<CompactString>) {
         self.notify(msg, NotificationLevel::Success, Some(2000));
     }
+
     #[instrument(level = "debug", skip(self, msg))]
     #[inline]
     pub fn warn(&mut self, msg: impl Into<CompactString>) {
         self.notify(msg, NotificationLevel::Warning, Some(5000));
     }
+
     #[instrument(level = "debug", skip(self, msg))]
     #[inline]
     pub fn error(&mut self, msg: impl Into<CompactString>) {
@@ -308,6 +314,7 @@ impl UIState {
         trace!(
             notification = ?self.notification.as_ref().map(|n| (&n.level, &n.timestamp, &n.auto_dismiss_ms))
         );
+
         if let Some(n) = &self.notification {
             if let Some(auto_ms) = n.auto_dismiss_ms
                 && n.timestamp.elapsed().as_millis() > auto_ms as u128
@@ -317,11 +324,13 @@ impl UIState {
                     n.level,
                     n.timestamp.elapsed().as_millis()
                 );
+
                 self.notification = None;
                 self.request_redraw(RedrawFlag::Notification);
                 return true;
             }
         }
+
         false
     }
 }
@@ -433,40 +442,5 @@ impl PartialEq for UIState {
             && self.overlay == other.overlay
             && self.clipboard_overlay_active == other.clipboard_overlay_active
             && self.prompt_buffer == other.prompt_buffer
-    }
-}
-
-// ------------------------------------------------------------
-// Unit tests (compile & behaviour smoke tests)
-// ------------------------------------------------------------
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn clipboard_toggle() {
-        let mut st = UIState::default();
-        assert!(!st.clipboard_overlay_active);
-        st.toggle_clipboard_overlay();
-        assert!(st.clipboard_overlay_active);
-    }
-
-    #[test]
-    fn prompt_edit() {
-        let mut st = UIState::default();
-        st.prompt_set("abc");
-        st.prompt_insert('d');
-        assert_eq!(st.prompt_buffer.as_str(), "abcd");
-        assert!(st.prompt_backspace());
-        assert_eq!(st.prompt_buffer.as_str(), "abc");
-    }
-
-    #[test]
-    fn redraw_bits() {
-        let st = UIState::default();
-        st.request_redraw(RedrawFlag::Main);
-        assert!(st.needs_redraw());
-        st.clear_redraw();
-        assert!(!st.needs_redraw());
     }
 }

@@ -72,7 +72,13 @@ impl FileOpsHandler {
     }
 
     fn handle_key(&mut self, key_event: KeyEvent) -> Result<Vec<Action>, AppError> {
-        trace!("FileOpsHandler: key {:?} mode {:?}", key_event, self.mode);
+        trace!(
+            marker = "FILE_OPS_HANDLER_KEY_EVENT",
+            operation_type = "input_handling",
+            "FileOpsHandler: key {:?} mode {:?}",
+            key_event,
+            self.mode
+        );
 
         match self.mode {
             FileOpsMode::Normal => self.handle_normal_mode(key_event),

@@ -314,6 +314,8 @@ impl ClipboardDispatcher {
                 };
                 self.success(&msg);
                 debug!(
+                    marker = "CLIPBOARD_CLEAR_SUCCESS",
+                    operation_type = "clipboard_clear",
                     "Successfully cleared {} items from clipboard",
                     cleared_count
                 );

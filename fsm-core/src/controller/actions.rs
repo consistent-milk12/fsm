@@ -57,6 +57,26 @@ impl std::fmt::Display for OperationId {
     }
 }
 
+/// Data for system monitor
+#[derive(Debug, Clone, Default)]
+pub struct SystemData {
+    pub cpu_usage: f32,
+    pub mem_usage: u64,
+    pub total_mem: u64,
+    pub swap_usage: u64,
+    pub total_swap: u64,
+}
+
+/// Data for a single process
+#[derive(Debug, Clone)]
+pub struct ProcessData {
+    pub pid: u32,
+    pub name: String,
+    pub cpu_usage: f32,
+    pub memory: u64,
+    pub status: String,
+}
+
 /// Represents a high-level action that the application can perform.
 #[derive(Debug, Clone)]
 pub enum Action {
@@ -429,6 +449,22 @@ pub enum Action {
 
     // Input handling
     InputCharacter(char),
+
+    // ===== System Monitoring =====
+    /// Toggle system monitor overlay
+    ToggleSystemMonitor,
+
+    /// Update system monitor data
+    SystemMonitorUpdate(SystemData),
+
+    /// Toggle process monitor overlay
+    ToggleProcessMonitor,
+
+    /// Update process monitor data
+    ProcessMonitorUpdate(Vec<ProcessData>),
+
+    /// Kill process by PID
+    KillProcess(u32),
 }
 
 impl Action {

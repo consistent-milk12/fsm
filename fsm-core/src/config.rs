@@ -140,7 +140,12 @@ impl Config {
     /// Saves config to TOML file at the XDG-compliant app config dir.
     pub async fn save(&self) -> anyhow::Result<()> {
         let path = Self::config_path()?;
-        info!("Saving config to {}", path.display());
+        info!(
+            marker = "CONFIG_SAVE_START",
+            operation_type = "config_save",
+            "Saving config to {}",
+            path.display()
+        );
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }

@@ -92,7 +92,12 @@ impl KeyboardHandler {
     }
 
     fn handle_debug(&mut self, key_event: KeyEvent) -> Result<Vec<Action>, AppError> {
-        debug!("KeyboardHandler: DEBUG - {:?}", key_event);
+        debug!(
+            marker = "KEYBOARD_DEBUG_MODE",
+            operation_type = "input_handling",
+            "KeyboardHandler: DEBUG - {:?}",
+            key_event
+        );
 
         if let Some(action) = self.emergency_bindings.get(&key_event).cloned() {
             Ok(vec![action])

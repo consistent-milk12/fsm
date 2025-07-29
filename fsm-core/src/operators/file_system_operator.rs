@@ -1235,12 +1235,12 @@ pub fn spawn_two_phase_directory_scan(
                     Ok(Vec::new())
                 }
                 Err(e) => {
-                    error!(
-                        task_id = task_id,
-                        path = %path.display(),
-                        error = %e,
-                        "Two-phase directory scan failed"
-                    );
+                    error!(marker = "TWO_PHASE_SCAN_WITH_UPDATES_FAILED", operation_type = "file_system",
+                    task_id = task_id,
+                    path = %path.display(),
+                    error = %e,
+                    "Two-phase directory scan failed"
+                );
                     Err(e)
                 }
             }

@@ -50,7 +50,13 @@ impl SearchHandler {
     }
 
     fn handle_key(&mut self, key_event: KeyEvent) -> Result<Vec<Action>, AppError> {
-        trace!("SearchHandler: key {:?} mode {:?}", key_event, self.mode);
+        trace!(
+            marker = "SEARCH_HANDLER_KEY_EVENT",
+            operation_type = "input_handling",
+            "SearchHandler: key {:?} mode {:?}",
+            key_event,
+            self.mode
+        );
 
         match self.mode {
             SearchMode::Normal => self.handle_normal_mode(key_event),

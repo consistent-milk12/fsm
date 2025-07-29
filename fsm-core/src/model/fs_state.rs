@@ -239,8 +239,11 @@ impl PaneState {
             .store(sort_duration, Ordering::Relaxed);
 
         debug!(
+            marker = "NAVIGATION_SORT_APPLIED",
+            operation_type = "state_management",
             "Navigation sort applied to {} entries in {} us",
-            entries_len, sort_duration
+            entries_len,
+            sort_duration
         );
     }
 

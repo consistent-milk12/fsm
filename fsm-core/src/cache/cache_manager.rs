@@ -483,6 +483,8 @@ impl ObjectInfoCache {
         }
 
         debug!(
+            marker = "CACHE_HEALTH_CHECK",
+            operation_type = "cache_health",
             "Cache health check: {} entries, {} MB, hit rate: {:.2}%",
             entry_count,
             memory_usage_mb,

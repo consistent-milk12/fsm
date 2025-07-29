@@ -151,7 +151,11 @@ impl NavigationDispatcher {
             Ok(DispatchResult::Continue)
         } else {
             // Not handled here
-            trace!("action not handled by navigation_dispatcher");
+            trace!(
+                marker = "ACTION_NOT_HANDLED",
+                operation_type = "action_dispatch",
+                "action not handled by navigation_dispatcher"
+            );
             Ok(DispatchResult::NotHandled)
         }
     }

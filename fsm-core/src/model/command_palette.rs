@@ -126,7 +126,12 @@ impl CommandPaletteState {
                 self.input = new_parts.join(" ");
             }
 
-            tracing::debug!("After apply: input='{}', hiding completions", self.input);
+            tracing::debug!(
+                marker = "COMMAND_PALETTE_APPLY_COMPLETION_AFTER",
+                operation_type = "command_palette",
+                "After apply: input='{}', hiding completions",
+                self.input
+            );
             self.show_completions = false;
             self.update_filter();
         }

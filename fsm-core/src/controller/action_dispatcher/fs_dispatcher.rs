@@ -50,6 +50,11 @@ impl FileOpsDispatcher {
     /// Navigate into a directory, reload entries, and request redraw.
     #[instrument(level = "info", skip(self, target), fields(target = %target.display()))]
     async fn navigate_to(&self, target: PathBuf) -> Result<DispatchResult> {
+        info!(
+            target_path = %target.display(),
+            "ENTER: Starting navigate_to"
+        );
+
         // Validate directory existence
         if !target.exists() || !target.is_dir() {
             error!("navigate_to: invalid directory {}", target.display());
@@ -60,6 +65,12 @@ impl FileOpsDispatcher {
         // Load entries asynchronously
         let entries: Vec<ObjectInfo> = self.load_directory(&target).await?;
 
+        info!(
+            target_path = %target.display(),
+            loaded_entries = entries.len(),
+            "ENTER: Loaded directory entries"
+        );
+
         // Update FS state using proper navigation method (includes sorting)
         {
             let mut fs: MutexGuard<'_, FSState> = self.state_provider.fs_state();
@@ -69,13 +80,14 @@ impl FileOpsDispatcher {
             let pane: &mut PaneState = fs.active_pane_mut();
             pane.set_entries(entries);
 
-            debug!(
-                "Navigation completed with {} sorted entries",
-                pane.entries.len()
+            info!(
+                target_path = %target.display(),
+                final_entries = pane.entries.len(),
+                "ENTER: Navigation and sorting completed"
             );
         }
 
-        info!("navigate_to: directory loaded with sorting, requesting full redraw");
+        info!("ENTER: Requesting redraw after navigate_to");
         self.state_provider.request_redraw(RedrawFlag::All);
         Ok(DispatchResult::Continue)
     }
@@ -116,11 +128,23 @@ impl FileOpsDispatcher {
     /// Handle the EnterSelected action by navigating if selected entry is a directory.
     #[instrument(level = "info", skip(self))]
     async fn handle_enter_selected(&self) -> Result<DispatchResult> {
+        info!("=== ENTER: Starting EnterSelected navigation ===");
+
         // Determine selected path
         let target = {
             let fs = self.state_provider.fs_state();
             let pane = fs.active_pane();
+            let current_path = pane.cwd.clone();
+            let current_entries = pane.entries.len();
             let idx = pane.selected.load(Ordering::Relaxed);
+
+            info!(
+                current_path = %current_path.display(),
+                current_entries = current_entries,
+                selected_index = idx,
+                "ENTER: Before navigation"
+            );
+
             pane.entries
                 .get(idx)
                 .filter(|e| e.is_dir)
@@ -129,11 +153,14 @@ impl FileOpsDispatcher {
 
         match target {
             Some(path) => {
-                info!("handle_enter_selected: navigating into {}", path.display());
+                info!(
+                    target_path = %path.display(),
+                    "ENTER: Navigating into directory"
+                );
                 self.navigate_to(path).await
             }
             None => {
-                debug!("handle_enter_selected: no directory selected");
+                info!("ENTER: No directory selected or selection is file");
                 Ok(DispatchResult::Continue)
             }
         }
@@ -142,51 +169,53 @@ impl FileOpsDispatcher {
     /// Handle the GoToParent action by navigating to parent directory.
     #[instrument(level = "info", skip(self))]
     async fn handle_go_to_parent(&self) -> Result<DispatchResult> {
-        let (parent_path, needs_reload) = {
+        info!("=== BACKSPACE: Starting GoToParent navigation ===");
+
+        let parent_path = {
             let mut fs = self.state_provider.fs_state();
+            let current_path = fs.active_pane().cwd.clone();
+            let current_entries = fs.active_pane().entries.len();
 
-            // Use FSState's navigation method which handles sorting
+            info!(
+                current_path = %current_path.display(),
+                current_entries = current_entries,
+                "BACKSPACE: Before navigate_to_parent"
+            );
+
+            // Use FSState's navigation method to change directory only
             if let Some(parent_path) = fs.navigate_to_parent() {
-                // Check if we need to reload entries (entries might be cached/stale)
-                let current_entries_count = fs.active_pane().entries.len();
-                let needs_reload = current_entries_count == 0;
-
-                debug!(
-                    "Parent navigation completed, entries_count={}, needs_reload={}",
-                    current_entries_count, needs_reload
+                info!(
+                    parent_path = %parent_path.display(),
+                    "BACKSPACE: Directory changed, entries need reload"
                 );
 
-                (Some(parent_path), needs_reload)
+                Some(parent_path)
             } else {
-                debug!("Already at root directory");
-                (None, false)
+                info!("BACKSPACE: Already at root directory");
+                None
             }
         };
 
         match parent_path {
-            Some(path) if needs_reload => {
+            Some(path) => {
                 info!(
-                    "handle_go_to_parent: reloading entries for {}",
-                    path.display()
+                    path = %path.display(),
+                    "BACKSPACE: Always reload parent directory entries"
                 );
-                // Reload entries if cache is empty
+
+                // Always reload parent directory entries (never use cache)
                 let entries: Vec<ObjectInfo> = self.load_directory(&path).await?;
 
                 {
                     let mut fs = self.state_provider.fs_state();
                     fs.active_pane_mut().set_entries(entries);
-                    info!("Parent directory entries reloaded and sorted");
+                    info!(
+                        entries_count = fs.active_pane().entries.len(),
+                        "BACKSPACE: Parent directory entries reloaded"
+                    );
                 }
 
-                self.state_provider.request_redraw(RedrawFlag::All);
-                Ok(DispatchResult::Continue)
-            }
-            Some(path) => {
-                info!(
-                    "handle_go_to_parent: using cached sorted entries for {}",
-                    path.display()
-                );
-                // Entries are already sorted by navigate_to_parent
+                info!("BACKSPACE: Requesting redraw after parent reload");
                 self.state_provider.request_redraw(RedrawFlag::All);
                 Ok(DispatchResult::Continue)
             }
@@ -290,7 +319,12 @@ impl FileOpsDispatcher {
     #[instrument(level = "trace", skip(self, msg))]
     fn error(&self, msg: &str) {
         let msg = msg.to_string();
-        debug!("error: {}", msg);
+        debug!(
+            marker = "NOTIFICATION_ERROR",
+            operation_type = "ui_update",
+            "error: {}",
+            msg
+        );
         self.state_provider
             .update_ui_state(Box::new(move |ui: &mut UIState| {
                 ui.error(&msg);

@@ -152,7 +152,11 @@ impl UIControlDispatcher {
                 return Ok(DispatchResult::Terminate);
             }
             _ => {
-                trace!("UIControlDispatcher: action not handled");
+                trace!(
+                    marker = "ACTION_NOT_HANDLED",
+                    operation_type = "action_dispatch",
+                    "UIControlDispatcher: action not handled"
+                );
                 DispatchResult::NotHandled
             }
         };

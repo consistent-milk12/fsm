@@ -16,7 +16,7 @@ use crossterm::{
 use ratatui::{Frame, Terminal, backend::CrosstermBackend as Backend};
 use tokio::{signal, sync::mpsc};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, instrument, warn};
+use tracing::{debug, error, info, instrument, trace, warn};
 
 use fsm_core::{
     cache::cache_manager::ObjectInfoCache,
@@ -370,7 +370,9 @@ impl App {
                     );
                 } else {
                     // Trace individual frames for debugging
-                    tracing::trace!(
+                    trace!(
+                        marker = "FRAME_RENDERED_TRACE",
+                        operation_type = "ui_render",
                         frame = frame_count,
                         render_time_us = render_duration.as_micros(),
                         "Frame rendered"

@@ -15,7 +15,7 @@ use crate::{
 };
 use ratatui::{
     prelude::*,
-    widgets::{Block, Borders, Cell, HighlightSpacing, Row, Table, TableState},
+    widgets::{Block, Borders, Cell, Clear, HighlightSpacing, Row, Table, TableState},
 };
 use std::path::Path;
 use std::sync::atomic::Ordering;
@@ -56,8 +56,9 @@ impl OptimizedFileTable {
             cwd = %path.display(),
             area_width = area.width,
             area_height = area.height,
-            "Rendering file table with {} entries",
-            entries.len()
+            "=== UI RENDER: File table with {} entries for {} ===",
+            entries.len(),
+            path.display()
         );
 
         trace!(
@@ -146,7 +147,14 @@ impl OptimizedFileTable {
             "Table title generated from current path"
         );
 
-        // Clear the area first to prevent UI corruption during navigation
+        // Clear the area with explicit fill to prevent UI corruption during navigation
+        info!(
+            target: "fsm_core::view::object_table",
+            area_width = area.width,
+            area_height = area.height,
+            "=== UI CLEAR: Clearing area before rendering table ==="
+        );
+        frame.render_widget(Clear, area);
         frame.render_widget(
             Block::default().style(Style::default().bg(theme::BACKGROUND)),
             area,
@@ -171,6 +179,13 @@ impl OptimizedFileTable {
             .highlight_spacing(HighlightSpacing::Always);
 
         frame.render_stateful_widget(table, area, &mut table_state);
+
+        info!(
+            target: "fsm_core::view::object_table",
+            entries_count = entries.len(),
+            selected_index = selected_index,
+            "=== UI COMPLETE: Table rendering finished ==="
+        );
 
         let render_time_us = render_start.elapsed().as_micros();
         trace!(

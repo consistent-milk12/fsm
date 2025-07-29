@@ -1076,6 +1076,8 @@ impl EventLoop {
         }
 
         trace!(
+            marker = "PERFORMANCE_METRICS_COLLECTED",
+            operation_type = "metrics",
             metrics_count = metrics.len(),
             "Performance metrics collected"
         );
@@ -1091,7 +1093,7 @@ impl EventLoop {
         let result = self.task_rx.recv().await;
 
         if let Some(ref task_result) = result {
-            trace!(
+            trace!(marker = "TASK_RESULT_RECEIVED_LEGACY", operation_type = "task_management",
                 task_result = ?task_result,
                 "Task result received via legacy method"
             );
@@ -1145,7 +1147,7 @@ impl EventLoop {
             queued: 0, // No queue in this implementation
         };
 
-        trace!(
+        trace!(marker = "METRICS_SNAPSHOT_CREATED", operation_type = "metrics",
             snapshot = ?snapshot,
             "Metrics snapshot created"
         );

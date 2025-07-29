@@ -857,6 +857,8 @@ impl ActionDispatcher {
             self.dispatchers.store(Arc::new(new_dispatchers));
         } else {
             warn!(
+                marker = "HANDLER_NOT_FOUND_OR_DISABLED",
+                operation_type = "dispatcher_management",
                 handler = name,
                 enabled = enabled,
                 "Handler not found or cannot be disabled"

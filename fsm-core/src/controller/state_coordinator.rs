@@ -122,7 +122,11 @@ impl StateCoordinator {
         let fs = self.fs_state();
         let ui = self.ui_state.read().expect("UIState lock poisoned");
         let result = f(&app, &fs, &ui);
-        info!("with_all_states executed");
+        info!(
+            marker = "WITH_ALL_STATES_EXIT",
+            operation_type = "state_management",
+            "with_all_states executed"
+        );
         Ok(result)
     }
 }
