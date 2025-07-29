@@ -28,7 +28,7 @@ impl PasteErrorType {
     /// Categorize error from string message for better user experience
     fn from_error_message(msg: &str) -> Self {
         let msg_lower = msg.to_lowercase();
-        
+
         if msg_lower.contains("not found") || msg_lower.contains("no such file") {
             Self::SourceNotFound
         } else if msg_lower.contains("permission denied") || msg_lower.contains("access denied") {
@@ -43,7 +43,7 @@ impl PasteErrorType {
             Self::Other(msg.to_string())
         }
     }
-    
+
     /// Get user-friendly error description
     fn user_message(&self) -> &str {
         match self {
@@ -55,7 +55,7 @@ impl PasteErrorType {
             Self::Other(_) => "Operation failed",
         }
     }
-    
+
     /// Get detailed error message for logging
     fn detailed_message(&self) -> String {
         match self {
@@ -170,12 +170,12 @@ impl ClipboardDispatcher {
         // Process operations in batches for optimal performance
         let batch_size = std::cmp::min(paste_ops.len(), num_cpus::get() * 2);
         let total_batches = (paste_ops.len() + batch_size - 1) / batch_size;
-        
+
         // Show progress for large operations
         if paste_ops.len() > 5 {
             self.success(&format!("Starting paste of {} items...", paste_ops.len()));
         }
-        
+
         for (batch_idx, batch) in paste_ops.chunks(batch_size).enumerate() {
             // Create futures for concurrent execution within batch
             let futures: Vec<_> = batch
@@ -190,8 +190,12 @@ impl ClipboardDispatcher {
                             preserve_attrs,
                             ..
                         } => {
-                            self.execute_copy_operation(source.as_str(), dest.as_str(), *preserve_attrs)
-                                .await
+                            self.execute_copy_operation(
+                                source.as_str(),
+                                dest.as_str(),
+                                *preserve_attrs,
+                            )
+                            .await
                         }
                         FileOperation::Move {
                             source,
@@ -199,18 +203,22 @@ impl ClipboardDispatcher {
                             atomic_move,
                             ..
                         } => {
-                            self.execute_move_operation(source.as_str(), dest.as_str(), *atomic_move)
-                                .await
+                            self.execute_move_operation(
+                                source.as_str(),
+                                dest.as_str(),
+                                *atomic_move,
+                            )
+                            .await
                         }
                     };
-                    
+
                     (global_idx, paste_op, result)
                 })
                 .collect();
 
             // Await all operations in this batch concurrently
             let batch_results = futures::future::join_all(futures).await;
-            
+
             // Process results
             for (idx, paste_op, result) in batch_results {
                 match result {
@@ -230,7 +238,7 @@ impl ClipboardDispatcher {
                             error_type.user_message()
                         );
                         operation_errors.push(user_msg);
-                        
+
                         // Log detailed error for debugging
                         warn!(
                             "Paste operation failed for {:?}: {}",
@@ -240,11 +248,16 @@ impl ClipboardDispatcher {
                     }
                 }
             }
-            
+
             // Show intermediate progress for large operations
             if paste_ops.len() > 10 && batch_idx + 1 < total_batches {
                 let completed = (batch_idx + 1) * batch_size;
-                debug!("Completed batch {}/{} ({} items)", batch_idx + 1, total_batches, completed);
+                debug!(
+                    "Completed batch {}/{} ({} items)",
+                    batch_idx + 1,
+                    total_batches,
+                    completed
+                );
             }
         }
 
@@ -300,7 +313,10 @@ impl ClipboardDispatcher {
                     format!("Cleared {} items from clipboard", cleared_count)
                 };
                 self.success(&msg);
-                debug!("Successfully cleared {} items from clipboard", cleared_count);
+                debug!(
+                    "Successfully cleared {} items from clipboard",
+                    cleared_count
+                );
             }
             Err(e) => {
                 self.error(&format!("Failed to clear clipboard: {}", e));

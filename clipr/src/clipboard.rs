@@ -332,25 +332,18 @@ impl ClipBoard {
     /// Optimized for concurrent access with batched async operations
     pub async fn clear_all(&self) -> ClipResult<usize> {
         // Collect all item IDs first to avoid iterator invalidation
-        let item_ids: Vec<u64> = self
-            .items
-            .iter()
-            .map(|guard| *guard.key())
-            .collect();
+        let item_ids: Vec<u64> = self.items.iter().map(|guard| *guard.key()).collect();
 
         let total_items = item_ids.len();
-        
+
         // Batch removals in chunks for optimal async performance
         let chunk_size = std::cmp::max(1, total_items / num_cpus::get());
         let mut removed_count = 0;
-        
+
         for chunk in item_ids.chunks(chunk_size) {
             // Process chunk with concurrent futures
-            let futures: Vec<_> = chunk
-                .iter()
-                .map(|&id| self.remove_item(id))
-                .collect();
-            
+            let futures: Vec<_> = chunk.iter().map(|&id| self.remove_item(id)).collect();
+
             // Await all futures in this chunk concurrently
             let results = futures::future::join_all(futures).await;
             removed_count += results.iter().filter(|r| r.is_ok()).count();

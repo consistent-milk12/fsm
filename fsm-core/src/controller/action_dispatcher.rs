@@ -68,7 +68,7 @@ pub enum DispatchResult {
 }
 
 /// Action source tracking for debugging and metrics
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, enum_map::Enum)]
 pub enum ActionSource {
     Keyboard,
     Timer,
@@ -335,7 +335,7 @@ impl DispatcherEntry {
 }
 
 /// Performance metrics collection with comprehensive tracking
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct Metrics {
     total_actions: AtomicU64,
     priority_counts: EnumMap<ActionPriority, AtomicU64>,
@@ -348,8 +348,22 @@ struct Metrics {
 impl Metrics {
     fn new() -> Self {
         Self {
+            total_actions: AtomicU64::new(0),
+            priority_counts: enum_map! {
+                ActionPriority::Critical => AtomicU64::new(0),
+                ActionPriority::High => AtomicU64::new(0),
+                ActionPriority::Normal => AtomicU64::new(0),
+                ActionPriority::Low => AtomicU64::new(0),
+            },
+            source_counts: enum_map! {
+                ActionSource::Keyboard => AtomicU64::new(0),
+                ActionSource::Timer => AtomicU64::new(0),
+                ActionSource::System => AtomicU64::new(0),
+                ActionSource::Internal => AtomicU64::new(0),
+            },
+            unhandled_actions: AtomicU64::new(0),
+            total_execution_time: AtomicU64::new(0),
             start_time: std::time::SystemTime::now(),
-            ..Default::default()
         }
     }
 
@@ -544,6 +558,9 @@ impl ActionDispatcher {
             return Ok(false);
         }
 
+        // Store debug info before moving action
+        let action_debug = format!("{:?}", action);
+
         // Dispatch to appropriate handler
         let result = match self.dispatch_to_handlers(action, source).await {
             Ok(DispatchResult::Terminate) => {
@@ -559,7 +576,7 @@ impl ActionDispatcher {
                 self.metrics.record_unhandled();
 
                 warn!(
-                    action = ?action,
+                    action = action_debug,
                     source = %source,
                     priority = %priority,
                     "No handler found for action"
@@ -572,7 +589,7 @@ impl ActionDispatcher {
                 tracing::Span::current().record("result", "error");
 
                 error!(
-                    action = ?action,
+                    action = action_debug,
                     source = %source,
                     error = %e,
                     error_debug = ?e,
@@ -581,7 +598,7 @@ impl ActionDispatcher {
 
                 // Classify error severity
                 match e.downcast_ref::<AppError>() {
-                    Some(AppError::Critical { .. }) => {
+                    Some(AppError::StateLock { .. }) | Some(AppError::Terminal(_)) => {
                         self.show_error(&format!("Critical error: {}", e));
                         Err(e)
                     }
@@ -658,7 +675,7 @@ impl ActionDispatcher {
         }
 
         // Select best handler (lowest priority value = highest priority)
-        let (handler_idx, entry, selected_priority) = capable_handlers
+        let (_handler_idx, entry, selected_priority) = capable_handlers
             .into_iter()
             .min_by_key(|(_, _, priority)| *priority)
             .unwrap();
@@ -772,7 +789,7 @@ impl ActionDispatcher {
         let msg = message.to_string();
         self.state_provider
             .update_ui_state(Box::new(move |ui: &mut UIState| {
-                ui.warning(&msg);
+                ui.error(&msg);
             }));
         self.state_provider.request_redraw(RedrawFlag::StatusBar);
     }
@@ -804,12 +821,7 @@ impl ActionDispatcher {
                 ActionPriority::Normal => self.metrics.priority_counts[ActionPriority::Normal].load(Ordering::Relaxed),
                 ActionPriority::Low => self.metrics.priority_counts[ActionPriority::Low].load(Ordering::Relaxed),
             },
-            source_distribution: enum_map! {
-                ActionSource::Keyboard => self.metrics.source_counts[ActionSource::Keyboard].load(Ordering::Relaxed),
-                ActionSource::Timer => self.metrics.source_counts[ActionSource::Timer].load(Ordering::Relaxed),
-                ActionSource::System => self.metrics.source_counts[ActionSource::System].load(Ordering::Relaxed),
-                ActionSource::Internal => self.metrics.source_counts[ActionSource::Internal].load(Ordering::Relaxed),
-            },
+            // Note: source_distribution not included in DispatcherStats struct
             handlers: handler_stats,
             uptime: self.metrics.uptime(),
             actions_per_second: self.metrics.actions_per_second(),

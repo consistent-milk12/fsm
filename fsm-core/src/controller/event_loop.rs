@@ -10,20 +10,15 @@ use std::{
 use anyhow::Result;
 use crossterm::event::{Event as TerminalEvent, EventStream, KeyCode, KeyEvent, KeyModifiers};
 use tokio::{
-    sync::{
-        Notify,
-        mpsc::{self, UnboundedReceiver},
-    },
+    sync::{Notify, mpsc},
     time::{MissedTickBehavior, interval},
 };
 use tracing::{
     Level, debug, debug_span, error, event, field::Empty, info, info_span, instrument, trace, warn,
 };
 
-use futures::{StreamExt, stream::Fuse}; // Fuse for event_stream
+use futures::StreamExt;
 use tokio::select;
-use tokio_stream::wrappers::IntervalStream; // wrap Interval in a Stream if you prefer
-use tokio_util::codec::FramedRead; // only if using a frame
 
 use crate::{
     UIState,
@@ -248,7 +243,7 @@ impl EventLoop {
     ),
     err
 )]
-    pub async fn run(&mut self, mut task_rx: UnboundedReceiver<TaskResult>) -> Result<()> {
+    pub async fn run(&mut self) -> Result<()> {
         // Startup log
         info!("Event loop started");
 
@@ -303,7 +298,7 @@ impl EventLoop {
                 }
 
                 // 3) Background task results
-                Some(task_res) = task_rx.recv() => {
+                Some(task_res) = self.task_rx.recv() => {
                     self.handle_task_result(task_res).await;
                     self.tasks_processed += 1;
                 }
@@ -316,7 +311,7 @@ impl EventLoop {
                 }
 
                 // 5) Idle back‑off
-                default => {
+                else => {
                     tokio::time::sleep(Duration::from_millis(1)).await;
                 }
             }
@@ -529,7 +524,7 @@ impl EventLoop {
         );
 
         // Perform the dispatch and take ownership of its Result
-        let result: Result<bool> = Ok(self.action_dispatcher.dispatch(action, source).await);
+        let result: Result<bool> = self.action_dispatcher.dispatch(action, source).await;
         let dispatch_time = dispatch_start.elapsed();
 
         // Record metrics on the current span *before* we move `result` out
