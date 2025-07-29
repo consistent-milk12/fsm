@@ -143,7 +143,6 @@ pub struct EventLoop {
     actions_processed: u64,
     start_time: Instant,
     last_render: Instant,
-    render_frame_count: u64,
 }
 
 impl EventLoop {
@@ -219,7 +218,6 @@ impl EventLoop {
             actions_processed: 0,
             start_time: now,
             last_render: now,
-            render_frame_count: 0,
         };
 
         // Record initialization completion
@@ -306,8 +304,8 @@ impl EventLoop {
                 // 4) Render tick
                 _ = render_timer.tick() => {
                     self.last_render = Instant::now();
-                    self.render_frame_count += 1;
-                    trace!(frame = self.render_frame_count, "Render timer tick");
+                    // Note: Actual frame counting moved to main.rs render_frame()
+                    trace!("Render timer tick");
                 }
 
                 // 5) Idle back‑off
@@ -972,23 +970,21 @@ impl EventLoop {
 
         let tasks_per_sec = self.tasks_processed as f64 / uptime_secs;
         let actions_per_sec = self.actions_processed as f64 / uptime_secs;
-        let avg_render_fps = self.render_frame_count as f64 / uptime_secs;
+        // Note: Render FPS tracking moved to main.rs
 
         tracing::Span::current()
             .record("uptime", tracing::field::debug(uptime))
             .record("tasks_per_second", tasks_per_sec)
-            .record("actions_per_second", actions_per_sec)
-            .record("avg_render_fps", avg_render_fps);
+            .record("actions_per_second", actions_per_sec);
 
         info!(
             loop_iteration = loop_iteration,
             uptime = ?uptime,
             tasks_processed = self.tasks_processed,
             actions_processed = self.actions_processed,
-            render_frames = self.render_frame_count,
+            // render_frames tracking moved to main.rs
             tasks_per_sec = tasks_per_sec,
             actions_per_sec = actions_per_sec,
-            avg_render_fps = avg_render_fps,
             "Performance metrics report"
         );
 
@@ -1033,15 +1029,15 @@ impl EventLoop {
         tracing::Span::current()
             .record("total_uptime", tracing::field::debug(total_uptime))
             .record("final_task_count", self.tasks_processed)
-            .record("final_action_count", self.actions_processed)
-            .record("final_render_count", self.render_frame_count);
+            .record("final_action_count", self.actions_processed);
+        // final_render_count tracking moved to main.rs
 
         info!(
             final_iteration = final_iteration,
             total_uptime = ?total_uptime,
             total_tasks = self.tasks_processed,
             total_actions = self.actions_processed,
-            total_renders = self.render_frame_count,
+            // total_renders tracking moved to main.rs
             avg_iteration_time = ?total_uptime.checked_div(final_iteration as u32),
             "Event loop final performance summary"
         );
@@ -1067,7 +1063,7 @@ impl EventLoop {
         );
         metrics.insert(
             "render_frames".to_string(),
-            self.render_frame_count.to_string(),
+            "0".to_string(), // render_frame_count removed
         );
 
         if uptime_secs > 0.0 {
@@ -1081,7 +1077,7 @@ impl EventLoop {
             );
             metrics.insert(
                 "render_fps".to_string(),
-                (self.render_frame_count as f64 / uptime_secs).to_string(),
+                "0".to_string(), // render FPS calculation removed
             );
         }
 

@@ -351,9 +351,16 @@ impl App {
             Ok(_) => {
                 self.state_coordinator.clear_redraw();
 
+                // Log every 60 frames (approximately 1 second at 60fps)
                 if frame_count % 60 == 0 {
-                    // Log every second at 60fps
                     tracing::debug!(
+                        frame = frame_count,
+                        render_time_us = render_duration.as_micros(),
+                        "Frame rendered"
+                    );
+                } else {
+                    // Trace individual frames for debugging
+                    tracing::trace!(
                         frame = frame_count,
                         render_time_us = render_duration.as_micros(),
                         "Frame rendered"
