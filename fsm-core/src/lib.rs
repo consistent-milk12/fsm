@@ -73,6 +73,7 @@ pub mod view {
         pub use error_overlay::ErrorOverlay;
 
         pub mod system_monitor_overlay;
+        pub use system_monitor_overlay::OptimizedSystemMonitorOverlay;
     }
 
     pub use components::*;

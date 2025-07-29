@@ -1,5 +1,5 @@
 # FSM - AI Context (Sonnet 4)
-**FSM**: Rust TUI file manager - ✅ **Phase 4.7 COMPLETE + System Monitoring**
+**FSM**: Rust TUI file manager - ✅ **Phase 4.9 COMPLETE + System Monitor UI Integration**
 
 ## Architecture ✅ PRODUCTION READY
 ```rust
@@ -17,11 +17,15 @@ EventLoop -> ActionDispatcher -> StateCoordinator -> UIRenderer
 4. **STRICT Token Efficiency**: Be extremely precise and compact about input/output tokens
 5. **NEVER cargo run**: Ask user to run and test app when needed
 
-## Status ✅ PHASE 4.8 COMPLETE - System Monitoring Implementation
-- **System Monitoring**: Full implementation with SystemHandler, system overlay, process monitoring
-- **Compilation Fixed**: All sysinfo compatibility issues resolved, SystemHandler integrated
-- **ActionDispatcher**: 7 handlers including SystemHandler with proper ActionMatcher trait
-- **UI Components**: System monitor overlay with CPU/memory gauges, process list rendering
+## Status ✅ PHASE 4.9 COMPLETE - System Monitor UI Integration
+- **System Monitor UI**: Complete `OptimizedSystemMonitorOverlay` with real-time metrics display
+- **UI Integration**: Fully integrated into main UIRenderer with proper state management
+- **Performance Optimized**: 2-second update intervals, cached process formatting, top 50 processes
+- **Interactive Features**: Process selection, color-coded metrics, keyboard navigation support
+- **State Management**: Added `show_system_monitor`, `show_process_monitor`, `selected_process_idx` to UiSnapshot
+- **Visual Design**: CPU/Memory/Swap gauges with threshold-based colors, formatted byte display
+- **SystemHandler**: 7 handlers including SystemHandler with proper ActionMatcher trait
+- **Compilation**: All sysinfo compatibility issues resolved, `cargo check` passes
 - **EventLoop Architecture**: Single EventLoop in background task, main.rs handles rendering
 - **TSV Logging System**: AI-optimized structured logging (6x token efficiency vs JSON)
 - **StateProvider trait**: Clean abstraction for handler state access
@@ -73,12 +77,20 @@ awk -F'\t' '$8 != "NULL" {
 
 **Reference**: See `TRACING.md` for complete TSV logging methodology and AI analysis patterns.
 
-## System Monitoring Compilation Fixes ✅ COMPLETED (2025-07-29)
-**Problem**: Multiple compilation errors after adding system monitoring features
-**Issues Fixed**:
-1. **sysinfo API**: Updated from deprecated `SystemExt`, `CpuExt`, `ProcessExt` traits to direct methods
-2. **SystemHandler Integration**: Added `ActionMatcher` trait implementation, proper error handling
-3. **UIState Extension**: Added `show_system_monitor`, `show_process_monitor`, `selected_process_idx` fields
-4. **System Overlay**: Fixed `Clear` widget import, `bytesize` API calls, theme references
-5. **Action Dispatcher**: Added `System(SystemHandler)` variant with complete match arm coverage
-**Status**: `cargo check` passes, ready for system monitoring functionality testing
+## System Monitor UI Integration ✅ COMPLETED (2025-07-29)
+**Achievement**: Complete system monitor overlay implementation and UI integration
+**Components Implemented**:
+1. **OptimizedSystemMonitorOverlay**: Full-featured system monitor with caching and performance optimization
+2. **Real-time Metrics**: CPU/Memory/Swap gauges with color-coded thresholds (green/yellow/red)
+3. **Process Management**: Interactive process list (top 50 by CPU) with selection and color-coded status
+4. **UI Architecture**: Proper integration into UIRenderer overlay system with AppState access
+5. **State Management**: Extended UiSnapshot with system monitoring fields and proper synchronization
+6. **Performance**: 2-second update intervals, cached formatting, human-readable byte display
+7. **Responsive Design**: Graceful handling of missing system data with informative placeholders
+
+**Technical Integration**:
+- **Module Export**: Added to lib.rs component exports for proper visibility
+- **State Synchronization**: UiSnapshot extended with `show_system_monitor`, `show_process_monitor`, `selected_process_idx`  
+- **Rendering Pipeline**: Integrated into main overlay rendering system with proper lock management
+- **Memory Efficient**: Process list limited to top 50, cached formatting, minimal allocations
+**Status**: Full UI integration complete, `cargo check` passes, ready for live system monitoring testing

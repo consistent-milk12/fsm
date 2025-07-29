@@ -20,6 +20,7 @@ use crate::{
             notification_overlay::OptimizedNotificationOverlay, object_table::OptimizedFileTable,
             search_overlay::OptimizedSearchOverlay,
             search_results_overlay::OptimizedSearchResultsOverlay, status_bar::OptimizedStatusBar,
+            system_monitor_overlay::OptimizedSystemMonitorOverlay,
         },
         snapshots::{PromptSnapshot, SearchSnapshot, UiSnapshot},
     },
@@ -41,6 +42,7 @@ pub struct UIRenderer {
     search_overlay: OptimizedSearchOverlay,
     search_results_overlay: OptimizedSearchResultsOverlay,
     file_ops_overlay: OptimizedFileOperationsOverlay,
+    system_monitor_overlay: OptimizedSystemMonitorOverlay,
 
     /// Performance tracking
     stats: RenderStats,
@@ -81,6 +83,7 @@ impl UIRenderer {
             search_overlay: OptimizedSearchOverlay::new(UIOverlay::FileNameSearch),
             search_results_overlay: OptimizedSearchResultsOverlay::new(),
             file_ops_overlay: OptimizedFileOperationsOverlay::new(),
+            system_monitor_overlay: OptimizedSystemMonitorOverlay::new(),
             stats: RenderStats::default(),
             frame_count: 0,
             dirty_flags: u32::MAX,
@@ -252,6 +255,14 @@ impl UIRenderer {
 
         // File operations progress (using enhanced FSState)
         self.render_file_operations_progress(frame, coord, screen_size);
+
+        // System monitor overlay
+        if ui_snapshot.show_system_monitor {
+            let system_monitor_area = self.centered_rect(screen_size, 85, 80);
+            let app_guard = coord.app_state();
+            self.system_monitor_overlay
+                .render_system_monitor(frame, ui_snapshot, &*app_guard, system_monitor_area);
+        }
 
         // Notifications
         if let Some(notification) = &ui_snapshot.notification {

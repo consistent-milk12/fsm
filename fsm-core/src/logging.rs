@@ -8,7 +8,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         OnceLock, RwLock,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -31,10 +31,11 @@ use tracing_subscriber::{
         format::{FormatEvent, FormatFields, Writer},
     },
     layer::SubscriberExt,
-    prelude::*,
     registry::LookupSpan,
     util::SubscriberInitExt,
 };
+
+use tracing_subscriber::{Layer, layer::Context};
 
 /// File-only logger with comprehensive tracing support
 pub struct Logger {
@@ -103,34 +104,45 @@ impl Logger {
         };
 
         // TSV layer (always enabled for AI-optimized logging)
+        // TSV layer (always enabled for AI-optimized logging)
         let tsv_layer = if config.enable_file_logging && matches!(config.log_format, LogFormat::Tsv)
         {
-            let file_appender =
-                RollingFileAppender::new(Rotation::NEVER, &config.log_dir, "fsm-core.tsv");
-            let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
-            guards.push(guard);
-
-            // Write TSV header if file doesn't exist
+            // Determine the path to the TSV log file
             let header_path = config.log_dir.join("fsm-core.tsv");
+
+            // If the TSV file does not exist, create it and write the header
             if !header_path.exists() {
-                if let Ok(mut file) = fs::OpenOptions::new()
-                    .create(true)
-                    .write(true)
+                let _ = fs::OpenOptions::new()
+                    .create(true) // create file if missing
+                    .append(true) // append to avoid clobbering
+                    .write(true) // enable write access
                     .open(&header_path)
-                {
-                    let _ = writeln!(file, "{}", TSVFormatter::get_header());
-                }
+                    .and_then(|mut f| {
+                        // Write the header row, followed by newline
+                        writeln!(f, "{}", TSVFormatter::get_header())
+                    });
             }
 
+            // Instantiate a rolling file appender that reuses the existing file
+            let file_appender = RollingFileAppender::new(
+                Rotation::NEVER, // never rotate
+                &config.log_dir, // target directory
+                "fsm-core.tsv",  // file name
+            );
+            // Convert to non-blocking writer and retain its guard
+            let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
+            guards.push(guard); // keep guard alive to flush logs
+
+            // Build the tracing-subscriber layer for TSV output
             Some(
                 fmt::layer()
-                    .event_format(TSVFormatter::new())
-                    .fmt_fields(PrettyFields::new())
-                    .with_writer(non_blocking)
-                    .with_ansi(false)
+                    .event_format(TSVFormatter::new()) // custom TSV formatter
+                    .fmt_fields(PrettyFields::new()) // structured fields
+                    .with_writer(non_blocking) // writer to file
+                    .with_ansi(false) // no ANSI codes in TSV
                     .with_filter(
                         EnvFilter::from_default_env().add_directive(config.file_level.into()),
-                    ),
+                    ), // respect log level
             )
         } else {
             None
@@ -248,7 +260,19 @@ impl Logger {
     /// Graceful shutdown with final log
     pub fn shutdown(self) {
         info!("FSM-Core logging system shutting down");
+
         Self::flush();
+
+        // Close out JSON array in errors.json
+        if let Some(err_layer) = &self._guards.iter().find_map(|_| None::<ErrorTrackingLayer>) {
+            if let Ok(mut f) = fs::OpenOptions::new()
+                .append(true)
+                .open(&err_layer.error_file)
+            {
+                let _ = writeln!(f, "\n]");
+            }
+        }
+
         drop(self._guards);
     }
 
@@ -1005,67 +1029,92 @@ where
     }
 }
 
-/// Error tracking layer with JSON output
+/// Error tracking layer that writes a valid JSON array of errors
 struct ErrorTrackingLayer {
+    /// Path to the JSON file where errors are collected
     error_file: PathBuf,
+    /// Tracks if the next entry is the first in the array
+    is_first: AtomicBool,
 }
 
 impl ErrorTrackingLayer {
+    /// Create the error-tracking layer and initialize the JSON file
     fn new(log_dir: &Path) -> io::Result<Self> {
-        let error_file = log_dir.join("errors").join("errors.log");
+        // Construct full path to errors.json under logs/errors/
+        let error_file = log_dir.join("errors").join("errors.json");
 
+        // Ensure parent directory exists
         if let Some(parent) = error_file.parent() {
             fs::create_dir_all(parent)?;
         }
 
-        Ok(Self { error_file })
+        // Truncate or create the file and write opening bracket
+        let mut file = fs::OpenOptions::new()
+            .create(true) // create if missing
+            .write(true) // allow write access
+            .truncate(true) // clear existing contents
+            .open(&error_file)?;
+        writeln!(file, "[")?; // start JSON array
+
+        Ok(Self {
+            error_file,
+            is_first: AtomicBool::new(true),
+        })
     }
 }
 
-impl<S> tracing_subscriber::Layer<S> for ErrorTrackingLayer
+impl<S> Layer<S> for ErrorTrackingLayer
 where
     S: Subscriber + for<'lookup> LookupSpan<'lookup>,
 {
-    fn on_event(&self, event: &Event<'_>, ctx: tracing_subscriber::layer::Context<'_, S>) {
+    /// Called on each tracing event; logs ERROR and WARN as JSON entries
+    fn on_event(&self, event: &Event<'_>, ctx: Context<'_, S>) {
+        // Only track errors or warnings
         if matches!(event.metadata().level(), &Level::ERROR | &Level::WARN) {
+            // Visitor to extract all event fields into a JSON map
             let mut visitor = JsonVisitor::new();
             event.record(&mut visitor);
 
-            // Collect span hierarchy
+            // Build span context array
             let mut span_context = Vec::new();
             if let Some(span) = ctx.lookup_current() {
                 span.scope().for_each(|s| {
                     span_context.push(json!({
-                        "name": s.name(),
+                        "name":  s.name(),
                         "target": s.metadata().target(),
-                        "file": s.metadata().file(),
-                        "line": s.metadata().line(),
+                        "file":   s.metadata().file(),
+                        "line":   s.metadata().line(),
                     }));
                 });
             }
 
+            // Compose the JSON object for this error event
             let error_record = json!({
-                "timestamp": SystemTime::now()
+                "timestamp":   SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_secs(),
-                "level": event.metadata().level().to_string(),
-                "target": event.metadata().target(),
-                "file": event.metadata().file(),
-                "line": event.metadata().line(),
-                "spans": span_context,
-                "fields": visitor.fields,
-                "process_id": std::process::id(),
-                "thread_id": format!("{:?}", std::thread::current().id()),
+                "level":       event.metadata().level().to_string(),
+                "target":      event.metadata().target(),
+                "file":        event.metadata().file(),
+                "line":        event.metadata().line(),
+                "spans":       span_context,
+                "fields":      visitor.fields,
+                "process_id":  std::process::id(),
+                "thread_id":   format!("{:?}", std::thread::current().id()),
             });
 
-            // Write to error file (best effort)
+            // Append to the JSON array in the file
             if let Ok(mut file) = fs::OpenOptions::new()
-                .create(true)
-                .append(true)
+                .append(true) // keep existing array entries
                 .open(&self.error_file)
             {
-                let _ = writeln!(file, "{error_record}");
+                // Prepend comma for non-first entries
+                if self.is_first.swap(false, Ordering::SeqCst) {
+                    let _ = writeln!(file, "  {}", error_record);
+                } else {
+                    let _ = writeln!(file, ",\n  {}", error_record);
+                }
             }
         }
     }
