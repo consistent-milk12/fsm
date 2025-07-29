@@ -10,6 +10,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
 };
 use smallvec::SmallVec;
+use tracing::{debug, trace, instrument};
 
 use crate::model::ui_state::UIOverlay;
 use crate::view::snapshots::SearchSnapshot;
@@ -22,14 +23,18 @@ pub struct OptimizedSearchOverlay {
 
 impl OptimizedSearchOverlay {
     pub fn new(overlay_type: UIOverlay) -> Self {
+        debug!("Creating new search overlay: {:?}", overlay_type);
         Self { overlay_type }
     }
 
     // ---------------------------------------------------------
     // Public API called by the renderer
     // ---------------------------------------------------------
+    #[instrument(level = "trace", skip_all, fields(overlay_type = ?self.overlay_type, query_len = snap.query.len(), result_count = snap.results.len()))]
     pub fn render_with_input(&self, frame: &mut Frame<'_>, snap: &SearchSnapshot, rect: Rect) {
+        trace!("Rendering search overlay with {} results", snap.results.len());
         // clear background -----------------------------------
+        trace!("Clearing search overlay background");
         frame.render_widget(Clear, rect);
 
         // title differs per overlay kind ---------------------
@@ -47,6 +52,7 @@ impl OptimizedSearchOverlay {
 
         if res_rect.height >= 3 {
             if !snap.results.is_empty() && !snap.query.is_empty() {
+                debug!("Drawing {} search results", snap.results.len());
                 self.draw_results(frame, snap, res_rect);
             } else if !snap.query.is_empty() {
                 self.draw_help(frame, res_rect);

@@ -16,6 +16,7 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use compact_str::CompactString;
+use tracing::{debug, trace, instrument, warn};
 
 use crate::UIState;
 use crate::controller::actions::{InputPromptType, OperationId};
@@ -64,7 +65,9 @@ pub struct UiSnapshot {
 }
 
 impl From<&UIState> for UiSnapshot {
+    #[instrument(level = "trace", skip_all, fields(overlay = ?src.overlay, frame_count = src.frame_count.load(Ordering::Relaxed)))]
     fn from(src: &UIState) -> Self {
+        trace!("Creating UI snapshot from UIState");
         Self {
             overlay: src.overlay,
             clipboard_active: src.clipboard_overlay_active,
@@ -115,11 +118,16 @@ pub struct SearchSnapshot {
 
 impl SearchSnapshot {
     /// Builder extracted from a locked `UIState` and `PaneState`
+    #[instrument(level = "trace", skip_all, fields(search_mode = ?ui.search_mode))]
     pub fn from_states(ui: &UIState, pane: &PaneState) -> Option<Self> {
+        trace!("Creating search snapshot from states");
         let query: CompactString = ui.search_query.clone()?;
         let results: Arc<[ObjectInfo]> = if ui.search_mode == SearchMode::None {
+            trace!("No search mode - empty results");
             Arc::from(vec![])
         } else {
+            let result_count = pane.search_results.len();
+            trace!("Search results: {} items", result_count);
             Arc::from(pane.search_results.clone().into_boxed_slice().into_vec())
         };
 
@@ -169,8 +177,11 @@ pub struct PromptSnapshot {
 
 impl PromptSnapshot {
     /// Safe extractor – returns `None` if prompt overlay inactive
+    #[instrument(level = "trace", skip_all, fields(prompt_active = ui.input_prompt_type.is_some()))]
     pub fn from_ui(ui: &crate::model::ui_state::UIState) -> Option<Self> {
+        trace!("Creating prompt snapshot from UI state");
         let prompt_type = ui.input_prompt_type.clone()?;
+        debug!("Prompt type: {:?}", prompt_type);
         Some(Self {
             prompt_type,
             buffer: ui.prompt_buffer.clone(),
@@ -212,15 +223,20 @@ pub struct OpsProgressSnapshot {
 
 impl OpsProgressSnapshot {
     /// Create from operation details
+    #[instrument(level = "trace", skip_all, fields(operation_count = operations.len()))]
     pub fn from_operations(operations: &[(OperationId, f32, u64, u64)]) -> Self {
+        trace!("Creating operations progress snapshot");
         let count = operations.len();
         let average = if count > 0 {
-            operations
+            let avg = operations
                 .iter()
                 .map(|(_, progress, _, _)| progress)
                 .sum::<f32>()
-                / count as f32
+                / count as f32;
+            debug!("Average progress across {} operations: {:.2}%", count, avg * 100.0);
+            avg
         } else {
+            trace!("No active operations");
             0.0
         };
 
@@ -305,7 +321,9 @@ pub struct PaneSnapshot {
 }
 
 impl From<&PaneState> for PaneSnapshot {
+    #[instrument(level = "trace", skip_all, fields(cwd = ?pane.cwd, entry_count = pane.entries.len()))]
     fn from(pane: &PaneState) -> Self {
+        trace!("Creating pane snapshot from PaneState");
         Self {
             cwd: pane.cwd.clone(),
             entries: Arc::from(pane.entries.clone().into_boxed_slice()),
@@ -372,7 +390,9 @@ pub enum ClipboardItemType {
 
 impl ClipboardSnapshot {
     /// Create empty clipboard snapshot
+    #[instrument(level = "trace")]
     pub fn empty() -> Self {
+        trace!("Creating empty clipboard snapshot");
         Self {
             items: Arc::from([]),
             selected_idx: 0,
@@ -383,7 +403,9 @@ impl ClipboardSnapshot {
     }
 
     /// Create from clipboard items
+    #[instrument(level = "trace", skip_all, fields(item_count = items.len()))]
     pub fn from_items(items: Vec<ClipboardItemSnapshot>, selected_idx: usize) -> Self {
+        trace!("Creating clipboard snapshot from {} items", items.len());
         let item_count = items.len();
         let is_empty = item_count == 0;
         let total_size = items.iter().map(|item| item.size).sum();
@@ -460,7 +482,9 @@ pub enum TaskStatus {
 
 impl TaskSnapshot {
     /// Create from task collection
+    #[instrument(level = "trace", skip_all, fields(task_count = tasks.len()))]
     pub fn from_tasks(tasks: Vec<TaskInfo>) -> Self {
+        trace!("Creating task snapshot from {} tasks", tasks.len());
         let total_count = tasks.len();
         let running_count = tasks
             .iter()
@@ -485,7 +509,9 @@ impl TaskSnapshot {
     }
 
     /// Create empty task snapshot
+    #[instrument(level = "trace")]
     pub fn empty() -> Self {
+        trace!("Creating empty task snapshot");
         Self {
             tasks: Arc::from([]),
             total_count: 0,
@@ -530,6 +556,7 @@ pub struct AppSnapshot {
 
 impl AppSnapshot {
     /// Create complete application snapshot
+    #[instrument(level = "debug", skip_all, fields(operation_count = operations.len(), clipboard_item_count = clipboard_items.len(), task_count = task_infos.len()))]
     pub fn capture(
         ui_state: &UIState,
         pane_state: &PaneState,
@@ -538,7 +565,8 @@ impl AppSnapshot {
         clipboard_selected_idx: usize,
         task_infos: Vec<TaskInfo>,
     ) -> Self {
-        Self {
+        debug!("Capturing complete application snapshot");
+        let snapshot = Self {
             ui: UiSnapshot::from(ui_state),
             pane: PaneSnapshot::from(pane_state),
             search: SearchSnapshot::from_states(ui_state, pane_state),
@@ -547,6 +575,9 @@ impl AppSnapshot {
             clipboard: ClipboardSnapshot::from_items(clipboard_items, clipboard_selected_idx),
             tasks: TaskSnapshot::from_tasks(task_infos),
             timestamp: std::time::Instant::now(),
-        }
+        };
+        
+        debug!("Application snapshot captured successfully");
+        snapshot
     }
 }

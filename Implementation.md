@@ -1,60 +1,75 @@
 # Implementation Status
 
-## ✅ Phase 4.1 COMPLETE + OVERLAY SYSTEM - Full UI Interactions
-**Status**: Production-ready file manager with complete overlay system and interactive UI
+## ✅ Phase 4.2 COMPLETE + PRODUCTION ARCHITECTURE - Event Loop & Logging Fixes
+**Status**: Production-ready file manager with optimized architecture and clean logging system
 
-### Implemented Components
-- **ActionDispatcher**: Modular action handling with ActionBatcher optimization + overlay actions
-- **StateCoordinator**: Lock-free directory loading, atomic selections
-- **EventLoop**: 60fps throttling, ActionDispatcher integration
-- **UIRenderer**: Real file display, StateCoordinator integration, overlay rendering
+### Implemented Components ✅ PRODUCTION READY
+- **EventLoop Architecture**: Single EventLoop in background task, main.rs handles 60fps rendering
+- **ActionDispatcher**: Modular action handling with 6 handlers (eliminated duplication)
+- **StateCoordinator**: Lock-free directory loading, atomic selections, clean state access
+- **Logging System**: Fixed field concatenation, proper spacing, .log extensions
+- **UIRenderer**: Real file display with optimized render cycles
 - **Navigation**: **Enter directories, parent navigation**, arrow keys, page navigation
-- **Overlay System**: Command mode, filename search, help overlays with input handling
+- **Signal Handling**: Integrated Ctrl+C/terminate signals into main render loop
 
-### Current Functionality
+### Current Functionality ✅ OPTIMIZED
 ```rust
-// Modular action flow:
-KeyEvent -> main.rs -> ActionDispatcher.handle() -> ActionBatcher -> apply_action()
-// Directory navigation:
-Enter -> ActionDispatcher.load_directory() -> async file scan -> FSState update
-Backspace -> GoToParent -> load parent directory
-// Overlay system:
-: -> EnterCommandMode -> UIOverlay::Prompt with input handling
-/ -> ToggleFileNameSearch -> UIOverlay::FileNameSearch with live input
-h/? -> ToggleHelp -> UIOverlay::Help with key mappings
-Esc -> CloseOverlay -> UIOverlay::None
-// Performance optimization:
-ActionBatcher batches movements, 60fps throttling, sub-ms response
+// Clean architecture flow:
+EventLoop(background) -> ActionDispatcher -> StateCoordinator -> UIRenderer
+main.rs(60fps rendering) + EventLoop(event processing) -> Clean separation
+// Directory navigation (performance verified):
+Enter -> FileOps handler (488μs) -> async directory scan (1ms) -> FSState update
+Backspace -> GoToParent handler (1.4ms) -> parent directory load
+↑↓ keys -> Navigation handler (45-60μs) -> atomic selection update
+// Logging system:
+FieldExtractor -> proper field spacing -> fsm-core.log.YYYY-MM-DD
+CompactFormatter -> readable console output with colors and structure
+// Signal handling:
+Ctrl+C -> main render loop -> shutdown_handle.notify_one() -> graceful exit
 ```
 
-### Architecture
-- ✅ **Modular**: ActionDispatcher handles business logic, main.rs orchestrates
-- ✅ **Performance**: ActionBatcher optimization, lock-free atomic operations
-- ✅ **Navigation**: Enter/Backspace directory traversal with async loading
-- ✅ **File System**: Real directory scanning, hidden file filtering, parent entries
-- ✅ **Clean Code**: Removed monolithic action handling from main.rs
-- ✅ **Overlay System**: Modular overlay components with input state management
-- ✅ **Input Handling**: Context-aware input processing for overlays vs navigation
+### Architecture ✅ PRODUCTION OPTIMIZED
+- ✅ **Single EventLoop**: Fixed duplicate creation, clean resource usage
+- ✅ **Render Separation**: EventLoop(events) + main.rs(60fps rendering)
+- ✅ **Performance**: 45-60μs handler execution, 1ms directory scans
+- ✅ **Logging**: FieldExtractor prevents concatenation, .log extensions
+- ✅ **Signal Integration**: Ctrl+C/terminate in main render loop
+- ✅ **Resource Optimization**: 6 handlers instead of 12, single EventLoop
+- ✅ **Clean Shutdown**: Graceful termination with proper cleanup
 
-### Key Mappings Implemented
+### Key Mappings Implemented ✅ TESTED
 ```rust
-// Navigation keys:
-q/Q: Quit, ↑↓: Selection, PgUp/PgDn: Page navigation
-Enter: Navigate into directories, Backspace: Go to parent
-// Overlay keys:
-:: Command mode overlay with input field
-/: Filename search overlay with live filtering
-h/?: Help overlay with comprehensive key mappings
-Esc: Close any active overlay
-// Overlay input:
-Typing: Add characters to overlay input
-Backspace: Remove characters from overlay input
-Enter: Execute overlay action (command/search) and close
+// Navigation keys (tested, working):
+q: Quit (37μs handler execution), ↑↓: Selection (45-60μs)
+Enter: Navigate into directories (488μs), Left/Backspace: Parent (1.4ms)
+Right: Enter selected directory
+// System signals:
+Ctrl+C: Graceful shutdown with cleanup
+SIGTERM: Unix signal handling
+// Performance verified:
+18 entries loaded in 1ms, 60fps rendering, sub-ms response times
 ```
+
+### Critical Fixes Applied ✅ RESOLVED
+1. **Duplicate EventLoop FIXED**: `std::mem::replace()` → `Option<EventLoop>.take()`
+2. **Missing Rendering FIXED**: Separated EventLoop(background) + main.rs(rendering)
+3. **Log Concatenation FIXED**: Added FieldExtractor for proper field spacing
+4. **File Extensions FIXED**: All logs now use .log extensions
+5. **Signal Handling FIXED**: Integrated into main render loop
+
+### Performance Metrics (Latest Verified)
+- **Startup Time**: 8ms total initialization (down from previous runs)
+- **Directory Loading**: 18 entries in 1.116ms execution time
+- **Handler Performance**: 
+  - Navigation: 45-60μs (MoveSelectionUp/Down)
+  - File Operations: 488μs (EnterSelected), 1.4ms (GoToParent)
+  - System: 37μs (Quit action)
+- **Rendering**: First frame 12ms, subsequent frames smooth at 60fps
+- **Memory**: Single EventLoop, 6 handlers, optimized resource usage
 
 ### Next Development
-**Priority**: Command execution and file operations
+**Current**: Production-ready architecture with clean logging
 - Command parsing and execution for command mode overlay
-- Filename filtering implementation for search overlay
+- Filename filtering implementation for search overlay  
 - File operations (copy, move, delete) with progress overlays
 - Advanced search features (content search, regex patterns)

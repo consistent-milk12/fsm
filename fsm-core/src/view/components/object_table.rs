@@ -19,11 +19,13 @@ use ratatui::{
 };
 use std::path::Path;
 use std::sync::atomic::Ordering;
+use tracing::{debug, trace, instrument};
 
 pub struct OptimizedFileTable;
 
 impl OptimizedFileTable {
     pub fn new() -> Self {
+        debug!("Creating new OptimizedFileTable");
         Self
     }
 
@@ -31,6 +33,7 @@ impl OptimizedFileTable {
     /// directory entries, sorting and selection state.  The selected index
     /// is loaded atomically to configure the table’s highlight row.  The
     /// provided `path` is used for the table title.
+    #[instrument(level = "trace", skip_all, fields(entry_count = pane_state.entries.len(), path = ?path))]
     pub fn render_optimized(
         &self,
         frame: &mut Frame<'_>,
@@ -39,7 +42,9 @@ impl OptimizedFileTable {
         path: &Path,
         area: Rect,
     ) {
+        trace!("Rendering file table with {} entries", pane_state.entries.len());
         let entries = &pane_state.entries;
+        debug!("Table area: {}x{}", area.width, area.height);
 
         // Header row with column names
         let header = Row::new(vec!["Name", "Size", "Modified"])

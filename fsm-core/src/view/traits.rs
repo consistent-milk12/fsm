@@ -7,6 +7,7 @@
 
 use crate::model::app_state::AppState;
 use ratatui::{Frame, layout::Rect};
+use tracing::{debug, trace, instrument};
 
 /// Generic overlay trait for consistent modal/overlay behavior
 pub trait Overlay {
@@ -14,7 +15,10 @@ pub trait Overlay {
     fn name(&self) -> &'static str;
 
     /// Render the overlay to the given area
-    fn render(&self, frame: &mut Frame<'_>, app: &AppState, area: Rect);
+    #[instrument(level = "trace", skip_all, fields(overlay_name = self.name()))]
+    fn render(&self, frame: &mut Frame<'_>, app: &AppState, area: Rect) {
+        trace!("Rendering overlay");
+    }
 
     /// Whether this overlay should consume all input (modal behavior)
     fn is_modal(&self) -> bool {
@@ -37,10 +41,16 @@ pub trait Overlay {
     }
 
     /// Called when overlay becomes active
-    fn on_activate(&mut self, _app: &mut AppState) {}
+    #[instrument(level = "debug", skip_all, fields(overlay_name = self.name()))]
+    fn on_activate(&mut self, _app: &mut AppState) {
+        debug!("Overlay activated");
+    }
 
     /// Called when overlay becomes inactive
-    fn on_deactivate(&mut self, _app: &mut AppState) {}
+    #[instrument(level = "debug", skip_all, fields(overlay_name = self.name()))]
+    fn on_deactivate(&mut self, _app: &mut AppState) {
+        debug!("Overlay deactivated");
+    }
 }
 
 /// Trait for components that can be focused/unfocused
@@ -49,10 +59,17 @@ pub trait Focusable {
     fn is_focused(&self) -> bool;
 
     /// Set focus state
-    fn set_focused(&mut self, focused: bool);
+    #[instrument(level = "trace", skip(self))]
+    fn set_focused(&mut self, focused: bool) {
+        trace!("Focus changed to: {}", focused);
+    }
 
     /// Handle focus-specific input (when focused)
-    fn handle_focused_input(&mut self, key: crossterm::event::KeyEvent) -> bool;
+    #[instrument(level = "trace", skip(self), fields(key_code = ?key.code))]
+    fn handle_focused_input(&mut self, key: crossterm::event::KeyEvent) -> bool {
+        trace!("Handling focused input");
+        false
+    }
 }
 
 /// Trait for components with scrollable content
@@ -61,13 +78,22 @@ pub trait Scrollable {
     fn scroll_position(&self) -> usize;
 
     /// Scroll up by n items
-    fn scroll_up(&mut self, n: usize);
+    #[instrument(level = "trace", skip(self))]
+    fn scroll_up(&mut self, n: usize) {
+        trace!("Scrolling up by {} items", n);
+    }
 
     /// Scroll down by n items  
-    fn scroll_down(&mut self, n: usize);
+    #[instrument(level = "trace", skip(self))]
+    fn scroll_down(&mut self, n: usize) {
+        trace!("Scrolling down by {} items", n);
+    }
 
     /// Scroll to specific position
-    fn scroll_to(&mut self, position: usize);
+    #[instrument(level = "trace", skip(self))]
+    fn scroll_to(&mut self, position: usize) {
+        trace!("Scrolling to position {}", position);
+    }
 
     /// Get total scrollable content size
     fn content_size(&self) -> usize;

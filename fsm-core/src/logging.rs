@@ -103,7 +103,7 @@ impl Logger {
         // File layer - main application log
         let file_layer = if config.enable_file_logging {
             let file_appender =
-                RollingFileAppender::new(Rotation::DAILY, &config.log_dir, "fsm-core");
+                RollingFileAppender::new(Rotation::NEVER, &config.log_dir, "fsm-core.log");
 
             let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
             guards.push(guard);
@@ -500,6 +500,39 @@ impl CompactFormatter {
     }
 }
 
+/// Field visitor to properly extract message and fields
+struct FieldExtractor {
+    message: Option<String>,
+    fields: Vec<(String, String)>,
+}
+
+impl FieldExtractor {
+    fn new() -> Self {
+        Self {
+            message: None,
+            fields: Vec::new(),
+        }
+    }
+}
+
+impl Visit for FieldExtractor {
+    fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+        if field.name() == "message" {
+            self.message = Some(format!("{:?}", value).trim_matches('"').to_string());
+        } else {
+            self.fields.push((field.name().to_string(), format!("{:?}", value)));
+        }
+    }
+
+    fn record_str(&mut self, field: &Field, value: &str) {
+        if field.name() == "message" {
+            self.message = Some(value.to_string());
+        } else {
+            self.fields.push((field.name().to_string(), value.to_string()));
+        }
+    }
+}
+
 impl<S, N> FormatEvent<S, N> for CompactFormatter
 where
     S: Subscriber + for<'lookup> LookupSpan<'lookup>,
@@ -567,8 +600,22 @@ where
             meta.line().unwrap_or(0)
         )?;
 
-        // Event message and fields
-        ctx.field_format().format_fields(writer.by_ref(), event)?;
+        // Event message and fields with proper spacing
+        let mut field_visitor = FieldExtractor::new();
+        event.record(&mut field_visitor);
+        
+        // Write message first if present
+        if let Some(message) = field_visitor.message {
+            write!(writer, "{}", message)?;
+        }
+        
+        // Write other fields with proper spacing
+        if !field_visitor.fields.is_empty() {
+            for (key, value) in field_visitor.fields {
+                write!(writer, " {}={}", key, value)?;
+            }
+        }
+        
         writeln!(writer)
     }
 }
@@ -681,7 +728,7 @@ struct ErrorTrackingLayer {
 
 impl ErrorTrackingLayer {
     fn new(log_dir: &Path) -> io::Result<Self> {
-        let error_file = log_dir.join("errors").join("errors.jsonl");
+        let error_file = log_dir.join("errors").join("errors.log");
 
         if let Some(parent) = error_file.parent() {
             fs::create_dir_all(parent)?;

@@ -5,6 +5,7 @@
 //! data is supplied by the `UiSnapshot` captured by the renderer.
 
 use ratatui::{prelude::*, widgets::Paragraph};
+use tracing::{debug, trace, instrument};
 
 use crate::{
     controller::state_coordinator::StateCoordinator, model::ui_state::UIMode,
@@ -16,6 +17,7 @@ pub struct OptimizedStatusBar;
 
 impl OptimizedStatusBar {
     pub fn new() -> Self {
+        debug!("Creating new OptimizedStatusBar");
         Self
     }
 
@@ -24,6 +26,7 @@ impl OptimizedStatusBar {
     /// * `ui`    – immutable snapshot of UIState
     /// * `coord` – coordinator for small pieces of global state
     /// * `rect`  – bar rectangle (height == 1 in the renderer)
+    #[instrument(level = "trace", skip_all, fields(mode = ?ui.mode))]
     pub fn render_with_metrics(
         &self,
         frame: &mut Frame<'_>,
@@ -31,18 +34,24 @@ impl OptimizedStatusBar {
         coord: &StateCoordinator,
         rect: Rect,
     ) {
+        trace!("Rendering status bar");
         // -----------------------------------------------------
         // 1) Gather a few live figures (short lock scope)
         // -----------------------------------------------------
         let (cwd, marked) = {
             let fs = coord.fs_state();
             let pane = fs.active_pane();
-            (pane.cwd.clone(), pane.marked_entries.len())
+            let cwd = pane.cwd.clone();
+            let marked_count = pane.marked_entries.len();
+            trace!("Status bar data: cwd={:?}, marked={}", cwd, marked_count);
+            (cwd, marked_count)
         };
 
         let task_count = {
             let app = coord.app_state();
-            app.tasks.len()
+            let count = app.tasks.len();
+            trace!("Active tasks: {}", count);
+            count
         };
 
         // -----------------------------------------------------

@@ -7,6 +7,16 @@
 //! https://github.com/catppuccin/catppuccin
 
 use ratatui::style::Color;
+use tracing::{debug, instrument};
+
+/// Initialize theme colors - logs color palette information
+#[instrument(level = "debug")]
+pub fn init_theme() {
+    debug!("Initializing Catppuccin Mocha theme");
+    debug!("Background: {:?}", BACKGROUND);
+    debug!("Foreground: {:?}", FOREGROUND);
+    debug!("Current line: {:?}", CURRENT_LINE);
+}
 
 pub const BACKGROUND: Color = Color::Rgb(30, 30, 46); // Base
 pub const CURRENT_LINE: Color = Color::Rgb(69, 71, 90); // Surface1

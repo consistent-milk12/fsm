@@ -16,7 +16,7 @@ use crossterm::{
 use ratatui::{Frame, Terminal, backend::CrosstermBackend as Backend};
 use tokio::{signal, sync::mpsc};
 use tokio_util::sync::CancellationToken;
-use tracing::{Instrument, Level, debug, error, info, instrument, warn};
+use tracing::{Level, debug, error, info, instrument, warn};
 
 use fsm_core::{
     cache::cache_manager::ObjectInfoCache,
@@ -46,12 +46,7 @@ async fn main() -> Result<()> {
     let startup_start: Instant = Instant::now();
     setup_panic_handler();
 
-    let config: LoggingConfig = LoggingConfig {
-        console_level: Level::TRACE,
-        ..Default::default()
-    };
-
-    let _logger: Logger = Logger::init_with_config(config)?;
+    let _logger: Logger = Logger::init_with_config(LoggingConfig::development())?;
 
     info!("Starting FSM-Core with integrated FileSystemOperator");
 
@@ -73,7 +68,7 @@ async fn main() -> Result<()> {
 
 struct App {
     terminal: AppTerminal,
-    event_loop: EventLoop,
+    event_loop: Option<EventLoop>,
     state_coordinator: Arc<StateCoordinator>,
     ui_renderer: UIRenderer,
     cancel_token: CancellationToken,
@@ -168,7 +163,7 @@ impl App {
 
         Ok(Self {
             terminal,
-            event_loop,
+            event_loop: Some(event_loop),
             state_coordinator,
             ui_renderer,
             cancel_token,
@@ -217,8 +212,7 @@ impl App {
 
         info!("Starting main application loop with FileSystemOperator");
 
-        // Setup graceful shutdown
-        self.setup_shutdown().await;
+        // Shutdown is now handled in run_main_loop
 
         // Main event loop
         let loop_result = self.run_main_loop().await;
@@ -249,18 +243,55 @@ impl App {
         let mut frame_count = 0u64;
         let mut render_interval = tokio::time::interval(tokio::time::Duration::from_millis(16));
 
+        // Get shutdown handle before moving event loop
+        let shutdown_handle = self
+            .event_loop
+            .as_ref()
+            .expect("EventLoop should be available")
+            .shutdown_handle();
+
+        // Move event loop to background task to prevent restarts
+        let mut event_loop = self
+            .event_loop
+            .take()
+            .expect("EventLoop should be available");
+        let mut event_loop_handle = tokio::spawn(async move { event_loop.run().await });
+
+        // Setup signal handlers
+        let mut ctrl_c = std::pin::pin!(async {
+            signal::ctrl_c()
+                .await
+                .expect("Failed to install Ctrl+C handler");
+        });
+
+        #[cfg(unix)]
+        let mut terminate = std::pin::pin!(async {
+            signal::unix::signal(signal::unix::SignalKind::terminate())
+                .expect("Failed to install signal handler")
+                .recv()
+                .await;
+        });
+
+        #[cfg(not(unix))]
+        let mut terminate = std::pin::pin!(std::future::pending::<()>());
+
+        // Main render loop
         loop {
             tokio::select! {
-                // Event loop processing with FileSystemOperator integration
-                result = self.event_loop.run() => {
+                // Check if event loop completed
+                result = &mut event_loop_handle => {
                     match result {
-                        Ok(_) => {
+                        Ok(Ok(_)) => {
                             info!("Event loop completed normally");
                             break;
                         }
-                        Err(e) => {
+                        Ok(Err(e)) => {
                             error!(error = %e, "Event loop error");
                             return Err(AppError::Other(format!("Event loop failed: {}", e)));
+                        }
+                        Err(e) => {
+                            error!(error = %e, "Event loop task failed");
+                            return Err(AppError::Other(format!("Event loop task failed: {}", e)));
                         }
                     }
                 }
@@ -277,9 +308,22 @@ impl App {
                     frame_count += 1;
                 }
 
-                // Handle cancellation
+                // Handle system signals
+                _ = &mut ctrl_c => {
+                    info!("Received Ctrl+C signal");
+                    shutdown_handle.notify_one();
+                    break;
+                }
+                _ = &mut terminate => {
+                    info!("Received terminate signal");
+                    shutdown_handle.notify_one();
+                    break;
+                }
+
+                // Handle cancellation token
                 _ = self.cancel_token.cancelled() => {
                     info!("Received cancellation signal, shutting down gracefully");
+                    shutdown_handle.notify_one();
                     break;
                 }
             }
@@ -333,47 +377,6 @@ impl App {
                 Err(error)
             }
         }
-    }
-
-    #[instrument(name = "setup_shutdown", skip(self))]
-    async fn setup_shutdown(&self) {
-        let shutdown = self.event_loop.shutdown_handle();
-        let cancel_token = self.cancel_token.clone();
-
-        tokio::spawn(
-            async move {
-                let ctrl_c = async {
-                    signal::ctrl_c()
-                        .await
-                        .expect("Failed to install Ctrl+C handler");
-                };
-
-                #[cfg(unix)]
-                let terminate = async {
-                    signal::unix::signal(signal::unix::SignalKind::terminate())
-                        .expect("Failed to install signal handler")
-                        .recv()
-                        .await;
-                };
-
-                #[cfg(not(unix))]
-                let terminate = std::future::pending::<()>();
-
-                tokio::select! {
-                    _ = ctrl_c => {
-                        info!("Received Ctrl+C signal");
-                    }
-                    _ = terminate => {
-                        info!("Received terminate signal");
-                    }
-                }
-
-                info!("Initiating graceful shutdown");
-                cancel_token.cancel();
-                shutdown.notify_one();
-            }
-            .instrument(tracing::info_span!("shutdown_handler")),
-        );
     }
 }
 

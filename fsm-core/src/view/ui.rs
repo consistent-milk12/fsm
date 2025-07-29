@@ -6,7 +6,7 @@ use ratatui::{
     widgets::{Block, Borders},
 };
 use std::{collections::HashMap, sync::atomic::Ordering, time::Instant};
-use tracing::instrument;
+use tracing::{instrument, debug, trace, info, warn};
 
 use crate::{
     controller::state_coordinator::StateCoordinator,
@@ -68,6 +68,7 @@ pub struct RenderStats {
 
 impl UIRenderer {
     pub fn new() -> Self {
+        debug!("Creating new UIRenderer instance");
         Self {
             cache: LayoutCache::default(),
             clipboard_overlay: OptimizedClipboardOverlay::new(),
@@ -131,6 +132,7 @@ impl UIRenderer {
     }
 
     /// Create UI snapshot from enhanced state
+    #[instrument(level = "trace", skip(self, coord))]
     fn create_ui_snapshot(&self, coord: &StateCoordinator) -> UiSnapshot {
         let ui_state = coord.ui_state();
         let ui_guard = ui_state.read().expect("UI state lock poisoned");
@@ -138,6 +140,7 @@ impl UIRenderer {
     }
 
     /// Update layout cache on screen size change
+    #[instrument(level = "trace", skip(self), fields(width = screen_size.width, height = screen_size.height))]
     fn update_layout_cache(&mut self, screen_size: Rect) {
         if self.cache.screen_size == screen_size {
             self.cache.hit_count += 1;
