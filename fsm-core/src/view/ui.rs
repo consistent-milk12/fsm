@@ -256,14 +256,6 @@ impl UIRenderer {
         // File operations progress (using enhanced FSState)
         self.render_file_operations_progress(frame, coord, screen_size);
 
-        // System monitor overlay
-        if ui_snapshot.show_system_monitor {
-            let system_monitor_area = self.centered_rect(screen_size, 85, 80);
-            let app_guard = coord.app_state();
-            self.system_monitor_overlay
-                .render_system_monitor(frame, ui_snapshot, &*app_guard, system_monitor_area);
-        }
-
         // Notifications
         if let Some(notification) = &ui_snapshot.notification {
             let notification_area = self.notification_rect(screen_size, notification.level);
@@ -319,6 +311,12 @@ impl UIRenderer {
                     self.loading_overlay
                         .render_progress(frame, loading_state, area);
                 }
+            }
+
+            UIOverlay::SystemMonitor => {
+                let app_guard = coord.app_state();
+                self.system_monitor_overlay
+                    .render_system_monitor(frame, ui_snapshot, &*app_guard, area);
             }
 
             _ => {
@@ -393,6 +391,7 @@ impl UIRenderer {
             UIOverlay::SearchResults => self.centered_rect(screen_size, 90, 70),
             UIOverlay::Prompt => self.centered_rect(screen_size, 60, 25),
             UIOverlay::Loading => self.centered_rect(screen_size, 50, 30),
+            UIOverlay::SystemMonitor => self.centered_rect(screen_size, 85, 80),
             _ => self.centered_rect(screen_size, 70, 60),
         };
 

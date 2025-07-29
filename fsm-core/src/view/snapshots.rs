@@ -63,9 +63,6 @@ pub struct UiSnapshot {
     /// Frame count for performance monitoring
     pub frame_count: u64,
 
-    /// Whether system monitor overlay is active
-    pub show_system_monitor: bool,
-
     /// Whether process monitor overlay is active  
     pub show_process_monitor: bool,
 
@@ -89,7 +86,6 @@ impl From<&UIState> for UiSnapshot {
             selected_clipboard_item_idx: src.selected_clipboard_item_idx,
             mode: src.mode,
             frame_count: src.frame_count.load(Ordering::Relaxed),
-            show_system_monitor: src.show_system_monitor,
             show_process_monitor: src.show_process_monitor,
             selected_process_idx: if src.selected_process_idx > 0 { Some(src.selected_process_idx) } else { None },
         }

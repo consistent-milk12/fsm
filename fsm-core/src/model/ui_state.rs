@@ -63,6 +63,7 @@ pub enum UIOverlay {
     Prompt,
     Loading,
     Search,
+    SystemMonitor,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -128,7 +129,6 @@ pub struct UIState {
     pub clipboard: ClipBoard,
     pub clipboard_overlay_active: bool,
     pub selected_clipboard_item_idx: usize,
-    pub show_system_monitor: bool,
     pub show_process_monitor: bool,
     pub selected_process_idx: usize,
 }
@@ -155,7 +155,6 @@ impl Default for UIState {
             clipboard: ClipBoard::new(ClipBoardConfig::default()),
             clipboard_overlay_active: false,
             selected_clipboard_item_idx: 0,
-            show_system_monitor: false,
             show_process_monitor: false,
             selected_process_idx: 0,
         }
@@ -435,7 +434,6 @@ impl Clone for UIState {
             clipboard: ClipBoard::new(ClipBoardConfig::default()),
             clipboard_overlay_active: self.clipboard_overlay_active,
             selected_clipboard_item_idx: self.selected_clipboard_item_idx,
-            show_system_monitor: self.show_system_monitor,
             show_process_monitor: self.show_process_monitor,
             selected_process_idx: self.selected_process_idx,
         }

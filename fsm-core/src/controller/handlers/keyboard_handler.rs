@@ -37,6 +37,7 @@ impl KeyboardHandler {
         app_bindings.insert(ctrl('c'), Action::Quit);
         app_bindings.insert(escape_key(), Action::CloseOverlay);
         app_bindings.insert(function_key(1), Action::ToggleHelp);
+        app_bindings.insert(key('m'), Action::ToggleSystemMonitor);
         app_bindings.insert(function_key(5), Action::ReloadDirectory);
         app_bindings.insert(function_key(10), Action::Quit);
         app_bindings.insert(ctrl('l'), Action::ReloadDirectory);

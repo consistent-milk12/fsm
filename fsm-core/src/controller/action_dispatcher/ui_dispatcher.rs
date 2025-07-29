@@ -58,6 +58,19 @@ impl UIControlDispatcher {
                 // switching search may require full redraw
                 (next, RedrawFlag::All)
             }
+            Action::ToggleSystemMonitor => {
+                let current = {
+                    let lock = self.state_provider.ui_state();
+                    let ui = lock.read().expect("UI lock poisoned");
+                    ui.overlay
+                };
+                let next = if current == UIOverlay::SystemMonitor {
+                    UIOverlay::None
+                } else {
+                    UIOverlay::SystemMonitor
+                };
+                (next, RedrawFlag::Overlay)
+            }
             Action::CloseOverlay => (UIOverlay::None, RedrawFlag::All),
             _ => {
                 trace!("handle_overlay_toggle: action not relevant");
@@ -144,6 +157,8 @@ impl UIControlDispatcher {
         // Dispatch based on action variant
         let result = match action {
             Action::EnterCommandMode => self.handle_command_mode(),
+            Action::CreateFile => self.handle_input_prompt(&InputPromptType::CreateFile),
+            Action::CreateDirectory => self.handle_input_prompt(&InputPromptType::CreateDirectory),
             Action::ShowInputPrompt(prompt_type) => self.handle_input_prompt(&prompt_type),
             Action::UpdateInput(input) => self.handle_input_update(&input),
             Action::Tick => self.handle_tick(),
@@ -170,9 +185,12 @@ impl ActionMatcher for UIControlDispatcher {
         matches!(
             action,
             Action::ToggleHelp
+                | Action::ToggleSystemMonitor
                 | Action::ToggleFileNameSearch
                 | Action::CloseOverlay
                 | Action::EnterCommandMode
+                | Action::CreateFile
+                | Action::CreateDirectory
                 | Action::ShowInputPrompt(_)
                 | Action::UpdateInput(_)
                 | Action::Tick

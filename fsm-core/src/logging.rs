@@ -35,11 +35,14 @@ use tracing_subscriber::{
     util::SubscriberInitExt,
 };
 
+use std::fs as StdFs;
+
 use tracing_subscriber::{Layer, layer::Context};
 
 /// File-only logger with comprehensive tracing support
 pub struct Logger {
     _guards: Vec<WorkerGuard>,
+    error_file: Option<PathBuf>,
 }
 
 impl Logger {
@@ -83,6 +86,12 @@ impl Logger {
         Self::setup_log_directories(&config)?;
 
         let registry = Registry::default();
+
+        let error_file_path = if config.enable_error_tracking {
+            Some(config.log_dir.join("errors").join("errors.json"))
+        } else {
+            None
+        };
 
         // Console layer (typically disabled)
         let console_layer = if config.enable_console {
@@ -228,7 +237,10 @@ impl Logger {
             "FSM-Core logging system initialized"
         );
 
-        Ok(Self { _guards: guards })
+        Ok(Self {
+            _guards: guards,
+            error_file: error_file_path,
+        })
     }
 
     /// Setup log directories
@@ -257,25 +269,6 @@ impl Logger {
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
 
-    /// Graceful shutdown with final log
-    pub fn shutdown(self) {
-        info!("FSM-Core logging system shutting down");
-
-        Self::flush();
-
-        // Close out JSON array in errors.json
-        if let Some(err_layer) = &self._guards.iter().find_map(|_| None::<ErrorTrackingLayer>) {
-            if let Ok(mut f) = fs::OpenOptions::new()
-                .append(true)
-                .open(&err_layer.error_file)
-            {
-                let _ = writeln!(f, "\n]");
-            }
-        }
-
-        drop(self._guards);
-    }
-
     /// Test logging functionality
     pub fn test_logging() {
         info!("Testing INFO level logging");
@@ -297,6 +290,23 @@ impl Logger {
             path = "/nonexistent/file.txt",
             "File not found during operation"
         );
+    }
+}
+
+impl Drop for Logger {
+    fn drop(&mut self) {
+        // Log shutdown (optional)
+        tracing::info!("Shutting down Logger and closing errors.json");
+
+        // Flush all layers
+        Logger::flush();
+
+        // Append closing bracket if errors.json path is known
+        if let Some(err_path) = &self.error_file {
+            if let Ok(mut f) = StdFs::OpenOptions::new().append(true).open(err_path) {
+                let _ = writeln!(f, "\n]");
+            }
+        }
     }
 }
 
