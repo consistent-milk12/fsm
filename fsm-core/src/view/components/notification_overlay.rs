@@ -7,11 +7,16 @@ use ratatui::{
     style::{Modifier, Style, Stylize},
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
+use tracing::{debug, info, trace, warn};
 
 pub struct OptimizedNotificationOverlay;
 
 impl OptimizedNotificationOverlay {
     pub fn new() -> Self {
+        debug!(
+            target: "fsm_core::view::notification_overlay",
+            "Creating new OptimizedNotificationOverlay component"
+        );
         Self
     }
 
@@ -21,6 +26,18 @@ impl OptimizedNotificationOverlay {
         notification: &Notification,
         area: Rect,
     ) {
+        let render_start = std::time::Instant::now();
+        
+        info!(
+            target: "fsm_core::view::notification_overlay",
+            level = ?notification.level,
+            message_len = notification.message.len(),
+            auto_dismiss_ms = ?notification.auto_dismiss_ms,
+            area_width = area.width,
+            area_height = area.height,
+            "Rendering notification overlay"
+        );
+        
         frame.render_widget(Clear, area);
 
         let (border_style, title, icon) = match notification.level {
@@ -29,6 +46,14 @@ impl OptimizedNotificationOverlay {
             NotificationLevel::Error => (Style::default().fg(theme::RED), "Error", "✕"),
             NotificationLevel::Success => (Style::default().fg(theme::GREEN), "Success", "✓"),
         };
+        
+        trace!(
+            target: "fsm_core::view::notification_overlay",
+            level = ?notification.level,
+            title = title,
+            icon = icon,
+            "Selected notification style based on level"
+        );
 
         let block = Block::default()
             .borders(Borders::ALL)
@@ -45,6 +70,15 @@ impl OptimizedNotificationOverlay {
             .constraints([Constraint::Fill(1), Constraint::Length(1)])
             .split(inner_area);
 
+        debug!(
+            target: "fsm_core::view::notification_overlay",
+            message_area_width = layout[0].width,
+            message_area_height = layout[0].height,
+            dismiss_area_width = layout[1].width,
+            dismiss_area_height = layout[1].height,
+            "Layout areas calculated for notification content"
+        );
+
         let message = Paragraph::new(notification.message.as_str())
             .style(Style::default().fg(theme::FOREGROUND))
             .wrap(Wrap { trim: true })
@@ -57,6 +91,13 @@ impl OptimizedNotificationOverlay {
             "Press any key to dismiss"
         };
 
+        trace!(
+            target: "fsm_core::view::notification_overlay",
+            dismiss_text = dismiss_text,
+            has_auto_dismiss = notification.auto_dismiss_ms.is_some(),
+            "Generated dismiss text for notification"
+        );
+
         let dismiss = Paragraph::new(dismiss_text)
             .style(
                 Style::default()
@@ -65,6 +106,48 @@ impl OptimizedNotificationOverlay {
             )
             .alignment(Alignment::Center);
         frame.render_widget(dismiss, layout[1]);
+        
+        let render_time_us = render_start.elapsed().as_micros();
+        trace!(
+            target: "fsm_core::view::notification_overlay",
+            render_time_us = render_time_us,
+            level = ?notification.level,
+            message_len = notification.message.len(),
+            total_area = format!("{}x{}", area.width, area.height),
+            "Notification overlay render completed"
+        );
+        
+        if render_time_us > 3000 {
+            warn!(
+                target: "fsm_core::view::notification_overlay",
+                render_time_us = render_time_us,
+                level = ?notification.level,
+                message_len = notification.message.len(),
+                area_size = format!("{}x{}", area.width, area.height),
+                "Slow notification overlay render detected"
+            );
+        }
+        
+        // performance characteristics tracking
+        match notification.level {
+            NotificationLevel::Error => {
+                debug!(
+                    target: "fsm_core::view::notification_overlay",
+                    message = %notification.message,
+                    render_time_us = render_time_us,
+                    "Error notification displayed to user"
+                );
+            },
+            NotificationLevel::Warning => {
+                debug!(
+                    target: "fsm_core::view::notification_overlay", 
+                    message = %notification.message,
+                    render_time_us = render_time_us,
+                    "Warning notification displayed to user"
+                );
+            },
+            _ => {}
+        }
     }
 }
 

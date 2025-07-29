@@ -64,6 +64,32 @@ rg 'execution_time=(\d+)\.?\d*µs' logs/fsm-core.log -o -r '$1' | \
 # Track entry count changes with timestamps (directory navigation)
 rg 'Rendering file table with (\d+) entries' logs/fsm-core.log -r 'Entries: $1' --no-line-number
 
+# File table render performance with entry count correlation
+rg 'fsm_core::view::object_table.*render_time_us=(\d+).*entries_count=(\d+)' logs/fsm-core.log -o -r '$1,$2' | \
+  awk -F',' '{
+    sum+=$1; count++; 
+    if($1>10000) slow++; 
+    if($2>1000) large++
+  } END {
+    print "File Table Performance:";
+    print "  Average render time:", int(sum/count) "µs";
+    print "  Slow renders (>10ms):", slow+0;
+    print "  Large directories (>1000 entries):", large+0;
+    print "  Total renders:", count
+  }'
+
+# File system composition analysis
+rg 'fsm_core::view::object_table.*dirs_count=(\d+).*files_count=(\d+).*symlinks_count=(\d+)' logs/fsm-core.log -o -r '$1,$2,$3' | \
+  awk -F',' '{
+    dirs+=$1; files+=$2; symlinks+=$3; count++
+  } END {
+    printf "File System Composition:\n";
+    printf "  Average directories: %.1f\n", dirs/count;
+    printf "  Average files: %.1f\n", files/count; 
+    printf "  Average symlinks: %.1f\n", symlinks/count;
+    printf "  Samples: %d\n", count
+  }'
+
 # UI area dimensions tracking with frequency
 rg 'Table area: (\d+x\d+)' logs/fsm-core.log -o -r '$1' | sort | uniq -c
 
@@ -74,6 +100,9 @@ rg 'file table with (\d+) entries' logs/fsm-core.log -o -r '$1' | \
     if(NR>1 && $1!=prev) changes++; 
     prev=$1
   } END {print "Directory changes:", changes}'
+
+# Selection boundary validation monitoring
+rg 'fsm_core::view::object_table.*Selection index out of bounds' logs/fsm-core.log -A1 -B1 --color=always
 ```
 
 **Overlay Activity:**
@@ -86,6 +115,26 @@ rg '(Creating|Rendering).*overlay' logs/fsm-core.log --color=always
 
 # Overlay type distribution
 rg 'overlay.*(\w+Search|\w+Overlay)' logs/fsm-core.log -o | sort | uniq -c
+
+# Loading overlay performance analysis
+rg 'fsm_core::view::loading_overlay.*render_time_us=(\d+)' logs/fsm-core.log -o -r '$1' | \
+  awk '{sum+=$1; count++; if($1>5000) slow++} END {
+    print "Loading Overlay Performance:";
+    print "  Slow renders (>5ms):", slow+0;
+    print "  Total renders:", count
+  }'
+
+# Notification overlay activity with severity breakdown
+rg 'fsm_core::view::notification_overlay.*level = (\w+)' logs/fsm-core.log -o -r '$1' | \
+  sort | uniq -c | sort -nr
+
+# Notification overlay render performance
+rg 'fsm_core::view::notification_overlay.*render_time_us=(\d+)' logs/fsm-core.log -o -r '$1' | \
+  awk '{sum+=$1; count++; if($1>3000) slow++} END {
+    printf "Notification Overlay Performance:\n";
+    printf "  Slow renders (>3ms): %d\n", slow+0;
+    printf "  Total renders: %d\n", count
+  }'
 ```
 
 ### 3. System Health Monitoring

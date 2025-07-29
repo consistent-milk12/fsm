@@ -10,6 +10,7 @@ use ratatui::{
     prelude::*,
     widgets::{Block, Borders, Clear, Gauge, Paragraph},
 };
+use tracing::{debug, trace, warn};
 
 /// Simple progress overlay
 pub struct OptimizedLoadingOverlay;
@@ -17,6 +18,10 @@ pub struct OptimizedLoadingOverlay;
 impl OptimizedLoadingOverlay {
     /// ctor
     pub fn new() -> Self {
+        debug!(
+            target: "fsm_core::view::loading_overlay",
+            "Creating new OptimizedLoadingOverlay component"
+        );
         Self
     }
 
@@ -27,6 +32,8 @@ impl OptimizedLoadingOverlay {
     ///   renderer (no atomics inside).  
     /// * `rect`    – screen rectangle where the overlay is drawn.
     pub fn render_progress(&self, frame: &mut Frame<'_>, loading: &LoadingState, rect: Rect) {
+        let render_start = std::time::Instant::now();
+
         // -----------------------------------------------------
         // Derive percentage from the compact fixed-point field
         // -----------------------------------------------------
@@ -35,6 +42,16 @@ impl OptimizedLoadingOverlay {
 
         // elapsed time for info line
         let elapsed = loading.start_time.elapsed();
+
+        trace!(
+            target: "fsm_core::view::loading_overlay",
+            progress = pct,
+            determinate = determinate,
+            elapsed_ms = elapsed.as_millis(),
+            area_width = rect.width,
+            area_height = rect.height,
+            "Starting loading overlay render"
+        );
 
         // -----------------------------------------------------
         // Clear background & chrome
@@ -52,6 +69,14 @@ impl OptimizedLoadingOverlay {
         // Determinate gauge  (progress > 0%)
         // -----------------------------------------------------
         if determinate {
+            debug!(
+                target: "fsm_core::view::loading_overlay",
+                progress = pct,
+                message = %loading.message,
+                elapsed_ms = elapsed.as_millis(),
+                "Rendering determinate loading gauge"
+            );
+
             let gauge = Gauge::default()
                 .block(chrome)
                 .gauge_style(Style::default().fg(theme::PINK).bg(theme::CURRENT_LINE))
@@ -84,6 +109,13 @@ impl OptimizedLoadingOverlay {
         // Indeterminate (0 %) – just text & elapsed timer
         // -----------------------------------------------------
         else {
+            debug!(
+                target: "fsm_core::view::loading_overlay",
+                message = %loading.message,
+                elapsed_ms = elapsed.as_millis(),
+                "Rendering indeterminate loading display"
+            );
+
             let text = Text::from(vec![
                 Line::from(Span::styled(
                     &*loading.message,
@@ -99,6 +131,27 @@ impl OptimizedLoadingOverlay {
                     .block(chrome)
                     .alignment(Alignment::Center),
                 rect,
+            );
+        }
+
+        let render_time_us = render_start.elapsed().as_micros();
+        trace!(
+            target: "fsm_core::view::loading_overlay",
+            render_time_us = render_time_us,
+            progress = pct,
+            determinate = determinate,
+            message_len = loading.message.len(),
+            elapsed_ms = elapsed.as_millis(),
+            "Loading overlay render completed"
+        );
+
+        if render_time_us > 5000 {
+            warn!(
+                target: "fsm_core::view::loading_overlay",
+                render_time_us = render_time_us,
+                progress = pct,
+                area_size = format!("{}x{}", rect.width, rect.height),
+                "Slow loading overlay render detected"
             );
         }
     }

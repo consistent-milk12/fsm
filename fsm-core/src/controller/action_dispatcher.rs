@@ -425,8 +425,7 @@ impl ActionDispatcher {
             dispatcher_id = Empty,
             handlers_count = Empty,
             initialization_time = Empty,
-        ),
-        ret(level = "debug")
+        )
     )]
     pub fn new(
         state_provider: Arc<dyn StateProvider>,

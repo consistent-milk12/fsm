@@ -19,13 +19,16 @@ use ratatui::{
 };
 use std::path::Path;
 use std::sync::atomic::Ordering;
-use tracing::{debug, instrument, trace};
+use tracing::{debug, info, instrument, trace, warn};
 
 pub struct OptimizedFileTable;
 
 impl OptimizedFileTable {
     pub fn new() -> Self {
-        debug!("Creating new OptimizedFileTable");
+        debug!(
+            target: "fsm_core::view::object_table",
+            "Creating new OptimizedFileTable component"
+        );
         Self
     }
 
@@ -42,12 +45,27 @@ impl OptimizedFileTable {
         path: &Path,
         area: Rect,
     ) {
-        trace!(
-            "Rendering file table with {} entries",
-            pane_state.entries.len()
-        );
+        let render_start = std::time::Instant::now();
         let entries = &pane_state.entries;
-        debug!("Table area: {}x{}", area.width, area.height);
+        let selected_index = pane_state.selected.load(Ordering::Relaxed);
+        
+        info!(
+            target: "fsm_core::view::object_table",
+            entries_count = entries.len(),
+            selected_index = selected_index,
+            cwd = %path.display(),
+            area_width = area.width,
+            area_height = area.height,
+            "Rendering file table with {} entries",
+            entries.len()
+        );
+        
+        trace!(
+            target: "fsm_core::view::object_table",
+            area_width = area.width,
+            area_height = area.height,
+            "Table area: {}x{}", area.width, area.height
+        );
 
         // Header row with column names
         let header = Row::new(vec!["Name", "Size", "Modified"])
@@ -55,14 +73,22 @@ impl OptimizedFileTable {
             .bottom_margin(1);
 
         // Build rows for each entry with appropriate icons and styles
+        let row_build_start = std::time::Instant::now();
+        let mut dirs_count = 0;
+        let mut files_count = 0;
+        let mut symlinks_count = 0;
+        
         let rows: Vec<Row> = entries
             .iter()
             .map(|obj| {
                 let (icon, style) = if obj.is_dir {
+                    dirs_count += 1;
                     (icons::FOLDER_ICON, Style::default().fg(theme::CYAN))
                 } else if obj.is_symlink {
+                    symlinks_count += 1;
                     (icons::SYMLINK_ICON, Style::default().fg(theme::PINK))
                 } else {
+                    files_count += 1;
                     (icons::FILE_ICON, Style::default().fg(theme::FOREGROUND))
                 };
 
@@ -80,6 +106,17 @@ impl OptimizedFileTable {
                 .style(style)
             })
             .collect();
+            
+        let row_build_time_us = row_build_start.elapsed().as_micros();
+        trace!(
+            target: "fsm_core::view::object_table",
+            row_build_time_us = row_build_time_us,
+            dirs_count = dirs_count,
+            files_count = files_count,
+            symlinks_count = symlinks_count,
+            total_rows = rows.len(),
+            "Row construction completed"
+        );
 
         // Column widths
         let widths = [
@@ -88,12 +125,26 @@ impl OptimizedFileTable {
             Constraint::Length(22),
         ];
 
-        // Table selection state based on pane’s selected index
-        let selected_index = pane_state.selected.load(Ordering::Relaxed);
+        // Table selection state based on pane's selected index
         let mut table_state = TableState::default().with_selected(Some(selected_index));
+        
+        debug!(
+            target: "fsm_core::view::object_table",
+            selected_index = selected_index,
+            entries_count = entries.len(),
+            selection_valid = selected_index < entries.len(),
+            "Table selection state configured"
+        );
 
         // Table title shows the current path
         let title = format!(" {} ", path.display());
+        
+        trace!(
+            target: "fsm_core::view::object_table", 
+            title = %title,
+            path = %path.display(),
+            "Table title generated from current path"
+        );
 
         let table = Table::new(rows, widths)
             .header(header)
@@ -114,6 +165,57 @@ impl OptimizedFileTable {
             .highlight_spacing(HighlightSpacing::Always);
 
         frame.render_stateful_widget(table, area, &mut table_state);
+        
+        let render_time_us = render_start.elapsed().as_micros();
+        trace!(
+            target: "fsm_core::view::object_table",
+            render_time_us = render_time_us,
+            entries_count = entries.len(),
+            selected_index = selected_index,
+            dirs_count = dirs_count,
+            files_count = files_count,
+            symlinks_count = symlinks_count,
+            table_area = format!("{}x{}", area.width, area.height),
+            cwd = %path.display(),
+            "File table render completed"
+        );
+        
+        // performance monitoring and alerting
+        if render_time_us > 10000 {
+            warn!(
+                target: "fsm_core::view::object_table",
+                render_time_us = render_time_us,
+                entries_count = entries.len(),
+                table_area = format!("{}x{}", area.width, area.height),
+                cwd = %path.display(),
+                "Slow file table render detected"
+            );
+        }
+        
+        // large directory handling monitoring
+        if entries.len() > 1000 {
+            debug!(
+                target: "fsm_core::view::object_table",
+                entries_count = entries.len(),
+                render_time_us = render_time_us,
+                dirs_count = dirs_count,
+                files_count = files_count,
+                symlinks_count = symlinks_count,
+                cwd = %path.display(),
+                "Large directory rendered"
+            );
+        }
+        
+        // selection boundary validation
+        if selected_index >= entries.len() && !entries.is_empty() {
+            warn!(
+                target: "fsm_core::view::object_table",
+                selected_index = selected_index,
+                entries_count = entries.len(),
+                cwd = %path.display(),
+                "Selection index out of bounds detected"
+            );
+        }
     }
 }
 

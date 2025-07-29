@@ -142,7 +142,6 @@ pub struct EventLoop {
     tasks_processed: u64,
     actions_processed: u64,
     start_time: Instant,
-    last_render: Instant,
 }
 
 impl EventLoop {
@@ -155,7 +154,6 @@ impl EventLoop {
             dispatcher_config = Empty,
             task_channel_capacity = Empty,
         ),
-        ret(level = "debug")
     )]
     pub fn new(
         state_coordinator: Arc<StateCoordinator>,
@@ -217,7 +215,6 @@ impl EventLoop {
             tasks_processed: 0,
             actions_processed: 0,
             start_time: now,
-            last_render: now,
         };
 
         // Record initialization completion
@@ -233,14 +230,14 @@ impl EventLoop {
 
     /// Main event processing loop with comprehensive tracing
     #[instrument(
-    level = "info",
-    name = "event_loop_run",
-    fields(
-        loop_id = tracing::field::display(nanoid::nanoid!()),
-        start_time = ?Instant::now(),
-    ),
-    err
-)]
+        level = "info",
+        name = "event_loop_run",
+        fields(
+            loop_id = tracing::field::display(nanoid::nanoid!()),
+            start_time = ?Instant::now(),
+        ),
+        err
+    )]
     pub async fn run(&mut self) -> Result<()> {
         // Startup log
         info!("Event loop started");
@@ -301,14 +298,7 @@ impl EventLoop {
                     self.tasks_processed += 1;
                 }
 
-                // 4) Render tick
-                _ = render_timer.tick() => {
-                    self.last_render = Instant::now();
-                    // Note: Actual frame counting moved to main.rs render_frame()
-                    trace!("Render timer tick");
-                }
-
-                // 5) Idle back‑off
+                // 4) Idle back‑off
                 else => {
                     tokio::time::sleep(Duration::from_millis(1)).await;
                 }
@@ -323,8 +313,10 @@ impl EventLoop {
 
         // Shutdown complete
         info!("Event loop completed successfully");
+
         Ok(())
     }
+
     /// Process terminal events with detailed tracing
     #[instrument(level = "trace", name = "process_terminal_event", skip(self, event))]
     async fn process_terminal_event(&self, event: TerminalEvent) -> Option<Action> {
