@@ -546,3 +546,7 @@ impl Action {
         }
     }
 }
+
+unsafe impl Send for Action {}
+
+unsafe impl Sync for Action {}

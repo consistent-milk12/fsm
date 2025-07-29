@@ -762,20 +762,27 @@ impl FileSystemOperator {
             warn!(error = %e, "Failed to send quick scan results");
         }
 
-        // Phase 2: Background metadata loading would be spawned here
-        // Note: This would typically spawn a separate task for metadata loading
+        let total_entries: usize = light_entries.len();
+
         if !light_entries.is_empty() {
             debug!(
-                metadata_entries = light_entries.len(),
+                metadata_entries = total_entries,
                 "Would spawn background metadata loading task"
             );
-            // TODO: Implement background metadata loading
+
+            Self::spawn_batch_metadata_load(
+                task_id + 1000,
+                path.to_path_buf(),
+                light_entries,
+                self.task_tx.clone(),
+                10,
+            );
         }
 
         info!(
             path = %path.display(),
             quick_entries = entries.len(),
-            metadata_entries = light_entries.len(),
+            metadata_entries = total_entries,
             duration_ms = start_time.elapsed().as_millis(),
             "Two-phase directory scan completed"
         );
@@ -800,13 +807,13 @@ impl FileSystemOperator {
         path: &Path,
         show_hidden: bool,
     ) -> Result<(Vec<ObjectInfo>, Vec<LightObjectInfo>)> {
-        let span = Span::current();
-        let mut entries = Vec::new();
-        let mut light_entries = Vec::new();
-        let mut processed = 0;
-        let mut filtered = 0;
+        let span: Span = Span::current();
+        let mut entries: Vec<ObjectInfo> = Vec::new();
+        let mut light_entries: Vec<LightObjectInfo> = Vec::new();
+        let mut processed: i32 = 0;
+        let mut filtered: i32 = 0;
 
-        let mut read_dir = TokioFs::read_dir(path)
+        let mut read_dir: TokioFs::ReadDir = TokioFs::read_dir(path)
             .await
             .with_context(|| format!("Failed to read directory: {}", path.display()))?;
 
@@ -819,7 +826,7 @@ impl FileSystemOperator {
                 return Err(anyhow::anyhow!("Scan cancelled"));
             }
 
-            let entry_path = entry.path();
+            let entry_path: PathBuf = entry.path();
 
             // Filter hidden files
             if !show_hidden {
@@ -833,10 +840,13 @@ impl FileSystemOperator {
 
             match ObjectInfo::from_path_light(&entry_path).await {
                 Ok(light_info) => {
-                    let object_info = ObjectInfo::with_placeholder_metadata(light_info.clone());
+                    let object_info: ObjectInfo =
+                        ObjectInfo::with_placeholder_metadata(light_info.clone());
+
                     entries.push(object_info);
                     light_entries.push(light_info);
                 }
+
                 Err(e) => {
                     debug!(
                         path = %entry_path.display(),
@@ -848,11 +858,13 @@ impl FileSystemOperator {
         }
 
         // Sort entries (consistent with FSState sorting)
-        entries.sort_by(|a, b| match (a.is_dir, b.is_dir) {
-            (true, false) => Ordering::Less,
-            (false, true) => Ordering::Greater,
-            _ => a.name.cmp(&b.name),
-        });
+        entries.sort_by(
+            |a: &ObjectInfo, b: &ObjectInfo| match (a.is_dir, b.is_dir) {
+                (true, false) => Ordering::Less,
+                (false, true) => Ordering::Greater,
+                _ => a.name.cmp(&b.name),
+            },
+        );
 
         debug!("Directory entries sorted - {} total entries", entries.len());
 
@@ -867,348 +879,349 @@ impl FileSystemOperator {
 
         Ok((entries, light_entries))
     }
-}
 
-// Convenience functions for spawning operations
+    // Convenience functions for spawning operations
 
-#[instrument(
-    name = "spawn_file_operation",
-    level = "info",
-    fields(
-        operation_type = operation.operation_name(),
-        operation_path = %operation.primary_path().display(),
-        operation_id = tracing::field::Empty
-    )
-)]
-pub fn spawn_file_operation(
-    operation: FileSystemOperation,
-    task_tx: UnboundedSender<TaskResult>,
-    cancel_token: CancellationToken,
-) -> String {
-    let task = FileSystemOperator::new(operation, task_tx, cancel_token);
-    let operation_id = task.operation_id.clone();
+    #[instrument(
+        name = "spawn_file_operation",
+        level = "info",
+        fields(
+            operation_type = operation.operation_name(),
+            operation_path = %operation.primary_path().display(),
+            operation_id = tracing::field::Empty
+        )
+    )]
+    pub fn spawn_file_operation(
+        operation: FileSystemOperation,
+        task_tx: UnboundedSender<TaskResult>,
+        cancel_token: CancellationToken,
+    ) -> String {
+        let task: FileSystemOperator = FileSystemOperator::new(operation, task_tx, cancel_token);
+        let operation_id: String = task.operation_id.clone();
 
-    // Record the generated operation ID in the span
-    Span::current().record("operation_id", tracing::field::display(&operation_id));
+        // Record the generated operation ID in the span
+        Span::current().record("operation_id", tracing::field::display(&operation_id));
 
-    info!(operation_id = %operation_id, "Spawning file system operation task");
+        info!(operation_id = %operation_id, "Spawning file system operation task");
 
-    tokio::spawn(
-        async move {
-            if let Err(e) = task.execute().await {
-                error!(
-                    operation_id = %task.operation_id,
-                    error = %e,
-                    "File system operation task failed"
-                );
-            }
-        }
-        .instrument(tracing::info_span!(
-            "file_system_operation_task",
-            operation_id = %operation_id
-        )),
-    );
-
-    operation_id
-}
-
-/// Spawn a directory scan operation
-#[instrument(
-    name = "spawn_directory_scan",
-    level = "info",
-    fields(
-        path = %path.display(),
-        show_hidden = show_hidden,
-        scan_mode = ?scan_mode,
-        operation_id = tracing::field::Empty
-    )
-)]
-pub fn spawn_directory_scan(
-    path: PathBuf,
-    show_hidden: bool,
-    scan_mode: ScanMode,
-    task_tx: UnboundedSender<TaskResult>,
-    cancel_token: CancellationToken,
-) -> String {
-    let operation = FileSystemOperation::ScanDirectory {
-        path: path.clone(),
-        show_hidden,
-        scan_mode: scan_mode.clone(),
-    };
-
-    spawn_file_operation(operation, task_tx, cancel_token)
-}
-
-/// Spawn a fast directory scan
-#[instrument(
-    name = "spawn_directory_scan_fast",
-    level = "info",
-    fields(
-        path = %path.display(),
-        show_hidden = show_hidden,
-        task_id = task_id
-    )
-)]
-pub fn spawn_directory_scan_fast(
-    task_id: u64,
-    path: PathBuf,
-    show_hidden: bool,
-    task_tx: UnboundedSender<TaskResult>,
-    cancel_token: CancellationToken,
-) -> JoinHandle<Result<Vec<ObjectInfo>>> {
-    let path_str: PathBuf = path.clone();
-
-    tokio::spawn(
-        async move {
-            let operation: FileSystemOperation = FileSystemOperation::ScanDirectory {
-                path: path.clone(),
-                show_hidden,
-                scan_mode: ScanMode::Fast,
-            };
-
-            let operator: FileSystemOperator =
-                FileSystemOperator::new(operation, task_tx, cancel_token);
-
-            match operator.execute().await {
-                Ok(_) => {
-                    // The execute method already sends the task result
-                    // For compatibility, we need to return the entries
-                    // This is a bit awkward but maintains the original API
-                    Ok(Vec::new()) // TODO: Return actual entries
-                }
-                Err(e) => Err(e),
-            }
-        }
-        .instrument(tracing::info_span!(
-            "directory_scan_fast_task",
-            task_id = task_id,
-            path = %path_str.display()
-        )),
-    )
-}
-
-/// Spawn a streaming directory scan with progress updates
-#[instrument(
-    name = "spawn_streaming_directory_scan",
-    level = "info",
-    fields(
-        path = %path.display(),
-        show_hidden = show_hidden,
-        batch_size = batch_size,
-        task_id = task_id
-    )
-)]
-pub fn spawn_streaming_directory_scan(
-    task_id: u64,
-    path: PathBuf,
-    show_hidden: bool,
-    batch_size: usize,
-    task_tx: UnboundedSender<TaskResult>,
-    cancel_token: CancellationToken,
-) -> (
-    mpsc::UnboundedReceiver<ScanUpdate>,
-    JoinHandle<Result<Vec<ObjectInfo>>>,
-) {
-    let path_str: PathBuf = path.clone();
-
-    let (update_tx, update_rx) = tokio::sync::mpsc::unbounded_channel();
-
-    let handle = tokio::spawn(
-        async move {
-            let operation: FileSystemOperation = FileSystemOperation::ScanDirectory {
-                path: path.clone(),
-                show_hidden,
-                scan_mode: ScanMode::Streaming { batch_size },
-            };
-
-            let operator: FileSystemOperator =
-                FileSystemOperator::new(operation, task_tx, cancel_token);
-
-            // Custom streaming implementation with update channel
-            let start_time = Instant::now();
-            let mut entries = Vec::new();
-            let mut processed = 0;
-
-            info!(
-                task_id = task_id,
-                path = %path.display(),
-                batch_size = batch_size,
-                "Starting streaming directory scan with updates"
-            );
-
-            let mut read_dir: TokioFs::ReadDir = match TokioFs::read_dir(&path).await {
-                Ok(rd) => rd,
-                Err(e) => {
-                    let error_msg = format!("Failed to read directory: {e}");
-                    let _ = update_tx.send(ScanUpdate::ScanError(error_msg.clone()));
-
+        tokio::spawn(
+            async move {
+                if let Err(e) = task.execute().await {
                     error!(
-                        task_id = task_id,
-                        path = %path.display(),
+                        operation_id = %task.operation_id,
                         error = %e,
-                        "Failed to open directory for streaming scan"
+                        "File system operation task failed"
                     );
-
-                    let app_error: AppError = AppError::Io(e);
-                    let task_result: TaskResult = TaskResult::DirectoryLoad {
-                        task_id,
-                        path: path.clone(),
-                        result: Err(Arc::new(app_error)),
-                        exec: start_time.elapsed(),
-                    };
-
-                    let _ = operator.task_tx.send(task_result);
-                    return Err(anyhow::anyhow!("Directory read failed"));
                 }
-            };
+            }
+            .instrument(tracing::info_span!(
+                "file_system_operation_task",
+                operation_id = %operation_id
+            )),
+        );
 
-            while let Some(entry_result) = read_dir.next_entry().await.transpose() {
-                // Check cancellation
-                if operator.cancel_token.is_cancelled() {
-                    warn!(task_id = task_id, "Streaming directory scan cancelled");
-                    let _ = update_tx.send(ScanUpdate::ScanError("Scan cancelled".to_string()));
-                    return Err(anyhow::anyhow!("Scan cancelled"));
+        operation_id
+    }
+
+    /// Spawn a directory scan operation
+    #[instrument(
+        name = "spawn_directory_scan",
+        level = "info",
+        fields(
+            path = %path.display(),
+            show_hidden = show_hidden,
+            scan_mode = ?scan_mode,
+            operation_id = tracing::field::Empty
+        )
+    )]
+    pub fn spawn_directory_scan(
+        path: PathBuf,
+        show_hidden: bool,
+        scan_mode: ScanMode,
+        task_tx: UnboundedSender<TaskResult>,
+        cancel_token: CancellationToken,
+    ) -> String {
+        let operation = FileSystemOperation::ScanDirectory {
+            path: path.clone(),
+            show_hidden,
+            scan_mode: scan_mode.clone(),
+        };
+
+        Self::spawn_file_operation(operation, task_tx, cancel_token)
+    }
+
+    /// Spawn a fast directory scan
+    #[instrument(
+        name = "spawn_directory_scan_fast",
+        level = "info",
+        fields(
+            path = %path.display(),
+            show_hidden = show_hidden,
+            task_id = task_id
+        )
+    )]
+    pub fn spawn_directory_scan_fast(
+        task_id: u64,
+        path: PathBuf,
+        show_hidden: bool,
+        task_tx: UnboundedSender<TaskResult>,
+        cancel_token: CancellationToken,
+    ) -> JoinHandle<Result<Vec<ObjectInfo>>> {
+        let path_str: PathBuf = path.clone();
+
+        tokio::spawn(
+            async move {
+                let operation: FileSystemOperation = FileSystemOperation::ScanDirectory {
+                    path: path.clone(),
+                    show_hidden,
+                    scan_mode: ScanMode::Fast,
+                };
+
+                let operator: FileSystemOperator =
+                    FileSystemOperator::new(operation, task_tx, cancel_token);
+
+                match operator.execute().await {
+                    Ok(_) => {
+                        // The execute method already sends the task result
+                        // For compatibility, we need to return the entries
+                        // This is a bit awkward but maintains the original API
+                        Ok(Vec::new()) // TODO: Return actual entries
+                    }
+                    Err(e) => Err(e),
                 }
+            }
+            .instrument(tracing::info_span!(
+                "directory_scan_fast_task",
+                task_id = task_id,
+                path = %path_str.display()
+            )),
+        )
+    }
 
-                let entry: TokioFs::DirEntry = match entry_result {
-                    Ok(e) => e,
+    /// Spawn a streaming directory scan with progress updates
+    #[instrument(
+        name = "spawn_streaming_directory_scan",
+        level = "info",
+        fields(
+            path = %path.display(),
+            show_hidden = show_hidden,
+            batch_size = batch_size,
+            task_id = task_id
+        )
+    )]
+    pub fn spawn_streaming_directory_scan(
+        task_id: u64,
+        path: PathBuf,
+        show_hidden: bool,
+        batch_size: usize,
+        task_tx: UnboundedSender<TaskResult>,
+        cancel_token: CancellationToken,
+    ) -> (
+        mpsc::UnboundedReceiver<ScanUpdate>,
+        JoinHandle<Result<Vec<ObjectInfo>>>,
+    ) {
+        let path_str: PathBuf = path.clone();
+
+        let (update_tx, update_rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let handle = tokio::spawn(
+            async move {
+                let operation: FileSystemOperation = FileSystemOperation::ScanDirectory {
+                    path: path.clone(),
+                    show_hidden,
+                    scan_mode: ScanMode::Streaming { batch_size },
+                };
+
+                let operator: FileSystemOperator =
+                    FileSystemOperator::new(operation, task_tx, cancel_token);
+
+                // Custom streaming implementation with update channel
+                let start_time = Instant::now();
+                let mut entries = Vec::new();
+                let mut processed = 0;
+
+                info!(
+                    task_id = task_id,
+                    path = %path.display(),
+                    batch_size = batch_size,
+                    "Starting streaming directory scan with updates"
+                );
+
+                let mut read_dir: TokioFs::ReadDir = match TokioFs::read_dir(&path).await {
+                    Ok(rd) => rd,
                     Err(e) => {
-                        let error_msg = format!("Failed to read entry: {e}");
-                        let _ = update_tx.send(ScanUpdate::ScanError(error_msg));
+                        let error_msg = format!("Failed to read directory: {e}");
+                        let _ = update_tx.send(ScanUpdate::ScanError(error_msg.clone()));
 
-                        debug!(
+                        error!(
                             task_id = task_id,
+                            path = %path.display(),
                             error = %e,
-                            "Failed to read directory entry during streaming scan"
+                            "Failed to open directory for streaming scan"
                         );
-                        continue;
+
+                        let app_error: AppError = AppError::Io(e);
+                        let task_result: TaskResult = TaskResult::DirectoryLoad {
+                            task_id,
+                            path: path.clone(),
+                            result: Err(Arc::new(app_error)),
+                            exec: start_time.elapsed(),
+                        };
+
+                        let _ = operator.task_tx.send(task_result);
+                        return Err(anyhow::anyhow!("Directory read failed"));
                     }
                 };
 
-                let entry_path: PathBuf = entry.path();
-
-                // Filter hidden files
-                if !show_hidden {
-                    if let Some(name) = entry_path.file_name().and_then(|n: &OsStr| n.to_str()) {
-                        if name.starts_with('.') {
-                            continue;
-                        }
+                while let Some(entry_result) = read_dir.next_entry().await.transpose() {
+                    // Check cancellation
+                    if operator.cancel_token.is_cancelled() {
+                        warn!(task_id = task_id, "Streaming directory scan cancelled");
+                        let _ = update_tx.send(ScanUpdate::ScanError("Scan cancelled".to_string()));
+                        return Err(anyhow::anyhow!("Scan cancelled"));
                     }
-                }
 
-                match ObjectInfo::from_path_light(&entry_path).await {
-                    Ok(light_info) => {
-                        let object_info = ObjectInfo::with_placeholder_metadata(light_info);
-
-                        // Send immediate update for UI
-                        let _ = update_tx.send(ScanUpdate::EntryAdded(object_info.clone()));
-                        entries.push(object_info);
-                        processed += 1;
-
-                        // Send batch progress
-                        if processed % batch_size == 0 {
-                            let _ = update_tx.send(ScanUpdate::BatchComplete {
-                                processed,
-                                total: None,
-                            });
-
-                            // Report progress to task system
-                            let progress_result = TaskResult::Progress {
-                                task_id,
-                                pct: processed as f32, // TODO: Calculate proper percentage
-                                msg: Some(format!("Scanned {processed} entries")),
-                            };
-
-                            let _ = operator.task_tx.send(progress_result);
+                    let entry: TokioFs::DirEntry = match entry_result {
+                        Ok(e) => e,
+                        Err(e) => {
+                            let error_msg = format!("Failed to read entry: {e}");
+                            let _ = update_tx.send(ScanUpdate::ScanError(error_msg));
 
                             debug!(
                                 task_id = task_id,
-                                processed = processed,
-                                "Sent batch progress update"
+                                error = %e,
+                                "Failed to read directory entry during streaming scan"
                             );
+                            continue;
+                        }
+                    };
 
-                            // Yield for responsiveness
-                            tokio::task::yield_now().await;
+                    let entry_path: PathBuf = entry.path();
+
+                    // Filter hidden files
+                    if !show_hidden {
+                        if let Some(name) = entry_path.file_name().and_then(|n: &OsStr| n.to_str())
+                        {
+                            if name.starts_with('.') {
+                                continue;
+                            }
                         }
                     }
-                    Err(e) => {
-                        let error_msg = format!("Failed to read {}: {}", entry_path.display(), e);
-                        let _ = update_tx.send(ScanUpdate::ScanError(error_msg));
 
-                        debug!(
-                            task_id = task_id,
-                            path = %entry_path.display(),
-                            error = %e,
-                            "Failed to read entry metadata during streaming scan"
-                        );
+                    match ObjectInfo::from_path_light(&entry_path).await {
+                        Ok(light_info) => {
+                            let object_info = ObjectInfo::with_placeholder_metadata(light_info);
+
+                            // Send immediate update for UI
+                            let _ = update_tx.send(ScanUpdate::EntryAdded(object_info.clone()));
+                            entries.push(object_info);
+                            processed += 1;
+
+                            // Send batch progress
+                            if processed % batch_size == 0 {
+                                let _ = update_tx.send(ScanUpdate::BatchComplete {
+                                    processed,
+                                    total: None,
+                                });
+
+                                // Report progress to task system
+                                let progress_result = TaskResult::Progress {
+                                    task_id,
+                                    pct: processed as f32, // TODO: Calculate proper percentage
+                                    msg: Some(format!("Scanned {processed} entries")),
+                                };
+
+                                let _ = operator.task_tx.send(progress_result);
+
+                                debug!(
+                                    task_id = task_id,
+                                    processed = processed,
+                                    "Sent batch progress update"
+                                );
+
+                                // Yield for responsiveness
+                                tokio::task::yield_now().await;
+                            }
+                        }
+                        Err(e) => {
+                            let error_msg =
+                                format!("Failed to read {}: {}", entry_path.display(), e);
+                            let _ = update_tx.send(ScanUpdate::ScanError(error_msg));
+
+                            debug!(
+                                task_id = task_id,
+                                path = %entry_path.display(),
+                                error = %e,
+                                "Failed to read entry metadata during streaming scan"
+                            );
+                        }
                     }
                 }
+
+                // Sort entries
+                entries.sort_by(|a, b| match (a.is_dir, b.is_dir) {
+                    (true, false) => Ordering::Less,
+                    (false, true) => Ordering::Greater,
+                    _ => a.name.cmp(&b.name),
+                });
+
+                let exec = start_time.elapsed();
+
+                // Send completion update
+                let _ = update_tx.send(ScanUpdate::ScanComplete {
+                    total_entries: entries.len(),
+                    exec,
+                });
+
+                // Send task completion
+                let task_result = TaskResult::DirectoryLoad {
+                    task_id,
+                    path: path.clone(),
+                    result: Ok(entries.clone()),
+                    exec,
+                };
+                let _ = operator.task_tx.send(task_result);
+
+                info!(
+                    task_id = task_id,
+                    path = %path.display(),
+                    entries_found = entries.len(),
+                    duration_ms = exec.as_millis(),
+                    "Streaming directory scan with updates completed"
+                );
+
+                Ok(entries)
             }
-
-            // Sort entries
-            entries.sort_by(|a, b| match (a.is_dir, b.is_dir) {
-                (true, false) => Ordering::Less,
-                (false, true) => Ordering::Greater,
-                _ => a.name.cmp(&b.name),
-            });
-
-            let exec = start_time.elapsed();
-
-            // Send completion update
-            let _ = update_tx.send(ScanUpdate::ScanComplete {
-                total_entries: entries.len(),
-                exec,
-            });
-
-            // Send task completion
-            let task_result = TaskResult::DirectoryLoad {
-                task_id,
-                path: path.clone(),
-                result: Ok(entries.clone()),
-                exec,
-            };
-            let _ = operator.task_tx.send(task_result);
-
-            info!(
+            .instrument(tracing::info_span!(
+                "streaming_directory_scan_task",
                 task_id = task_id,
-                path = %path.display(),
-                entries_found = entries.len(),
-                duration_ms = exec.as_millis(),
-                "Streaming directory scan with updates completed"
-            );
+                path = %path_str.display()
+            )),
+        );
 
-            Ok(entries)
-        }
-        .instrument(tracing::info_span!(
-            "streaming_directory_scan_task",
-            task_id = task_id,
-            path = %path_str.display()
-        )),
-    );
+        (update_rx, handle)
+    }
 
-    (update_rx, handle)
-}
+    /// Spawn a two-phase directory scan
+    #[instrument(
+        name = "spawn_two_phase_directory_scan",
+        level = "info",
+        fields(
+            path = %path.display(),
+            show_hidden = show_hidden,
+            task_id = task_id
+        )
+    )]
+    pub fn spawn_two_phase_directory_scan(
+        task_id: u64,
+        path: PathBuf,
+        show_hidden: bool,
+        task_tx: UnboundedSender<TaskResult>,
+        cancel_token: CancellationToken,
+    ) -> JoinHandle<Result<Vec<ObjectInfo>>> {
+        let path_str: PathBuf = path.clone();
 
-/// Spawn a two-phase directory scan
-#[instrument(
-    name = "spawn_two_phase_directory_scan",
-    level = "info",
-    fields(
-        path = %path.display(),
-        show_hidden = show_hidden,
-        task_id = task_id
-    )
-)]
-pub fn spawn_two_phase_directory_scan(
-    task_id: u64,
-    path: PathBuf,
-    show_hidden: bool,
-    task_tx: UnboundedSender<TaskResult>,
-    cancel_token: CancellationToken,
-) -> JoinHandle<Result<Vec<ObjectInfo>>> {
-    let path_str: PathBuf = path.clone();
-
-    tokio::spawn(
+        tokio::spawn(
         async move {
             let operation = FileSystemOperation::ScanDirectory {
                 path: path.clone(),
@@ -1251,29 +1264,105 @@ pub fn spawn_two_phase_directory_scan(
             path = %path_str.display()
         )),
     )
-}
+    }
 
-// Legacy compatibility functions to maintain the original API
-// These provide backward compatibility with existing code
+    // Legacy compatibility functions to maintain the original API
+    // These provide backward compatibility with existing code
 
-/// Legacy function: spawn directory scan (maintains original API)
-#[instrument(
-    name = "spawn_directory_scan_legacy",
-    level = "info",
-    fields(
-        task_id = task_id,
-        path = %path.display(),
-        show_hidden = show_hidden
-    )
-)]
-pub fn spawn_directory_scan_legacy(
-    task_id: u64,
-    path: PathBuf,
-    show_hidden: bool,
-    task_tx: UnboundedSender<TaskResult>,
-) -> JoinHandle<Result<Vec<ObjectInfo>>> {
-    let cancel_token = CancellationToken::new();
-    spawn_directory_scan_fast(task_id, path, show_hidden, task_tx, cancel_token)
+    /// Legacy function: spawn directory scan (maintains original API)
+    #[instrument(
+        name = "spawn_directory_scan_legacy",
+        level = "info",
+        fields(
+            task_id = task_id,
+            path = %path.display(),
+            show_hidden = show_hidden
+        )
+    )]
+    pub fn spawn_directory_scan_legacy(
+        task_id: u64,
+        path: PathBuf,
+        show_hidden: bool,
+        task_tx: UnboundedSender<TaskResult>,
+    ) -> JoinHandle<Result<Vec<ObjectInfo>>> {
+        let cancel_token = CancellationToken::new();
+        Self::spawn_directory_scan_fast(task_id, path, show_hidden, task_tx, cancel_token)
+    }
+
+    /// Spawn batch metadata loading task with yield points
+    pub fn spawn_batch_metadata_load(
+        task_id: u64,
+        parent_dir: PathBuf,
+        light_entries: Vec<LightObjectInfo>,
+        task_tx: UnboundedSender<TaskResult>,
+        batch_size: usize,
+    ) {
+        tokio::spawn(async move {
+            let start_time = Instant::now();
+            let total_entries = light_entries.len();
+
+            debug!(
+                "Starting batch metadata load for {total_entries} entries in {}",
+                parent_dir.display()
+            );
+
+            let mut processed = 0;
+            let mut successful = 0;
+
+            for (index, light_info) in light_entries.into_iter().enumerate() {
+                let path = light_info.path.clone();
+
+                match ObjectInfo::from_light_info(light_info).await {
+                    Ok(_full_info) => {
+                        successful += 1;
+                        debug!("Loaded metadata for: {}", path.display());
+                    }
+                    Err(e) => {
+                        debug!("Failed to load metadata for {}: {}", path.display(), e);
+                    }
+                }
+
+                processed += 1;
+
+                // Report progress periodically
+                if processed % batch_size == 0 || processed == total_entries {
+                    let pct = (processed as f32 / total_entries as f32) * 100.0;
+
+                    let progress_result = TaskResult::Progress {
+                        task_id,
+                        pct,
+                        msg: Some(format!(
+                            "Loaded {processed} of {total_entries} metadata entries"
+                        )),
+                    };
+
+                    let _ = task_tx.send(progress_result);
+                }
+
+                // Yield control periodically
+                if index % batch_size == 0 {
+                    tokio::task::yield_now().await;
+                }
+            }
+
+            let exec = start_time.elapsed();
+            info!(
+                "Batch metadata loading completed: {}/{} successful in {:?}",
+                successful, total_entries, exec
+            );
+
+            let completion_result = TaskResult::Generic {
+                task_id,
+                result: Ok(()),
+                msg: Some(format!(
+                    "Batch metadata completed: {successful}/{total_entries} successful",
+                )),
+                exec,
+            };
+
+            let _ = task_tx.send(completion_result);
+        });
+    }
 }
 
 #[cfg(test)]

@@ -1,4 +1,0 @@
-The full project (This repository) is an experiment to see the limits of various AI models in complex software engineering tasks, especially when dealing with a large codebase with complex state management and asynchronous nature. Almost everything in all three branches are AI generated. Sometimes refined using two or more models (Claude, ChatGPT, Deepseek, Gemini etc).
-
-Current Assessment: Severe limitations in practical engineering tasks and most models were only useful in fixing small bugs and other repetitive tasks. Claude 4 Sonnet and Opus were the only models that were able to consistently follow complex logical chains and at least come up with working implementations. PROVIDED, it is specifically walked through documenting the architecture and optimizing those architectural documents for AI optimized minimal token counts. Otherwise, it is fed too much tokens and messes up its context memory at the start of a clean session.
-

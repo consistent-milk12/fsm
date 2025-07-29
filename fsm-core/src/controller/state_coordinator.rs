@@ -2,12 +2,17 @@
 //! StateCoordinator with comprehensive tracing instrumentation
 
 use anyhow::Result;
-use std::sync::{Arc, Mutex, MutexGuard, RwLock};
+use std::{
+    path::PathBuf,
+    sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard},
+};
 use tracing::{debug, info, instrument, trace};
 
 use crate::{
     controller::state_provider::StateProvider,
+    fs::object_info::ObjectInfo,
     model::{
+        PaneState,
         app_state::AppState,
         fs_state::FSState,
         ui_state::{RedrawFlag, UIState},
@@ -42,6 +47,7 @@ impl StateCoordinator {
     #[instrument(level = "trace", skip(self))]
     pub fn app_state(&self) -> MutexGuard<'_, AppState> {
         debug!("locking AppState mutex");
+
         self.app_state.lock().expect("AppState mutex poisoned")
     }
 
@@ -49,6 +55,7 @@ impl StateCoordinator {
     #[instrument(level = "trace", skip(self))]
     pub fn fs_state(&self) -> MutexGuard<'_, FSState> {
         debug!("locking FSState mutex");
+
         self.fs_state.lock().expect("FSState mutex poisoned")
     }
 
@@ -56,6 +63,7 @@ impl StateCoordinator {
     #[instrument(level = "trace", skip(self))]
     pub fn ui_state(&self) -> Arc<RwLock<UIState>> {
         trace!("cloning UIState Arc");
+
         self.ui_state.clone()
     }
 
@@ -71,6 +79,7 @@ impl StateCoordinator {
             Ok(mut ui) => {
                 // Invoke the provided closure to mutate UIState
                 f(&mut ui);
+                
                 info!("UIState updated successfully");
             }
             Err(poison_err) => {
@@ -84,6 +93,7 @@ impl StateCoordinator {
     #[instrument(level = "debug", skip(self))]
     pub fn request_redraw(&self, flag: RedrawFlag) {
         debug!(?flag, "requesting redraw");
+
         self.update_ui_state(|ui| ui.request_redraw(flag));
     }
 
@@ -94,11 +104,15 @@ impl StateCoordinator {
         match self.ui_state.read() {
             Ok(ui) => {
                 let need = ui.needs_redraw();
+
                 debug!(needs = need, "needs_redraw result");
+
                 need
             }
+
             Err(_) => {
                 debug!("UIState read lock poisoned, defaulting needs_redraw=false");
+
                 false
             }
         }
@@ -108,6 +122,7 @@ impl StateCoordinator {
     #[instrument(level = "debug", skip(self))]
     pub fn clear_redraw(&self) {
         debug!("clearing redraw flags");
+
         self.update_ui_state(|ui| ui.clear_redraw());
     }
 
@@ -118,16 +133,45 @@ impl StateCoordinator {
         F: FnOnce(&AppState, &FSState, &UIState) -> R,
     {
         debug!("entering with_all_states");
-        let app = self.app_state();
-        let fs = self.fs_state();
-        let ui = self.ui_state.read().expect("UIState lock poisoned");
+
+        let app: MutexGuard<'_, AppState> = self.app_state();
+        let fs: MutexGuard<'_, FSState> = self.fs_state();
+        let ui: RwLockReadGuard<'_, UIState> = self.ui_state.read().expect("UIState lock poisoned");
         let result = f(&app, &fs, &ui);
+
         info!(
             marker = "WITH_ALL_STATES_EXIT",
             operation_type = "state_management",
             "with_all_states executed"
         );
+
         Ok(result)
+    }
+
+    #[instrument(level = "debug", skip(self))]
+    pub async fn update_entry_metadata(
+        &self,
+        directory_path: PathBuf,
+        entry_path: PathBuf,
+        updated_entry: ObjectInfo,
+    ) {
+        let mut fs_state: MutexGuard<'_, FSState> = self.fs_state();
+        let active_pane: &mut PaneState = fs_state.active_pane_mut();
+
+        // Find and update the matching entry in the active pane
+        if let Some(entry) = active_pane
+            .entries
+            .iter_mut()
+            .find(|e: &&mut ObjectInfo| e.path == entry_path)
+        {
+            *entry = updated_entry;
+
+            debug!(
+                entry_path = %entry_path.display(),
+                entries_count = active_pane.entries.len(),
+                "Updated entry metadata in activepane"
+            );
+        }
     }
 }
 

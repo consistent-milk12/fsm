@@ -4,6 +4,7 @@ use std::{
     io::{self, Stdout},
     panic::PanicHookInfo,
     path::PathBuf,
+    result::Result as StdResult,
     sync::{Arc, Mutex, RwLock},
     time::{Duration, Instant},
 };
@@ -14,9 +15,11 @@ use crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{Frame, Terminal, backend::CrosstermBackend as Backend};
-use tokio::{signal, sync::mpsc};
+use tokio::{signal, sync::mpsc, time::Interval};
+use tokio::{sync::Notify, time as TokioTime};
+
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, instrument, trace, warn};
+use tracing::{debug, error, info, instrument, span::EnteredSpan, trace, warn};
 
 use fsm_core::{
     cache::cache_manager::ObjectInfoCache,
@@ -33,7 +36,7 @@ use fsm_core::{
         fs_state::FSState,
         ui_state::{RedrawFlag, UIState},
     },
-    operators::file_system_operator::{ScanMode, spawn_directory_scan},
+    operators::file_system_operator::{FileSystemOperator, ScanMode},
     trace_fn, trace_operation,
     view::ui::UIRenderer,
 };
@@ -55,6 +58,7 @@ async fn main() -> Result<()> {
     });
 
     let startup_time: Duration = startup_start.elapsed();
+
     info!(
         startup_time_ms = startup_time.as_millis(),
         "FSM-Core startup completed"
@@ -63,6 +67,7 @@ async fn main() -> Result<()> {
     app.run().await.trace_err("app_runtime")?;
 
     info!("FSM-Core exited cleanly");
+
     Ok(())
 }
 
@@ -77,45 +82,54 @@ struct App {
 impl App {
     #[instrument(name = "app_new", skip_all)]
     async fn new() -> AppResult<Self> {
-        let _span = trace_operation!("app_initialization");
+        let _span: EnteredSpan = trace_operation!("app_initialization");
 
         // Create cancellation token for graceful shutdown
         let cancel_token: CancellationToken = CancellationToken::new();
 
         // Terminal setup
-        let terminal = measure_time!("terminal_setup", {
+        let terminal: Terminal<Backend<Stdout>> = measure_time!("terminal_setup", {
             setup_terminal().trace_err("terminal_setup")?
         });
 
         // Config loading
         let config: Arc<Config> = {
-            let _span = trace_operation!("config_loading");
+            let _span: EnteredSpan = trace_operation!("config_loading");
+
             match Config::load().await {
                 Ok(config) => {
                     info!("Configuration loaded successfully");
+
                     Arc::new(config)
                 }
+
                 Err(e) => {
                     warn!(error = %e, "Failed to load config, using defaults");
+
                     Arc::new(Config::default())
                 }
             }
         };
 
         // Cache initialization
-        let cache = {
-            let _span = trace_operation!("cache_initialization");
-            let cache = Arc::new(ObjectInfoCache::with_config(config.cache.clone()));
+        let cache: Arc<ObjectInfoCache> = {
+            let _span: EnteredSpan = trace_operation!("cache_initialization");
+
+            let cache: Arc<ObjectInfoCache> =
+                Arc::new(ObjectInfoCache::with_config(config.cache.clone()));
+
             info!(
                 cache_capacity = config.cache.max_capacity,
                 "Object cache initialized"
             );
+
             cache
         };
 
         // Directory resolution
-        let current_dir = {
-            let _span = trace_operation!("directory_resolution");
+        let current_dir: PathBuf = {
+            let _span: EnteredSpan = trace_operation!("directory_resolution");
+
             tokio::fs::canonicalize(".")
                 .await
                 .map_err(|e| AppError::Other(format!("Failed to resolve current directory: {e}")))
@@ -126,24 +140,26 @@ impl App {
 
         // State initialization
         let (app_state, fs_state, ui_state) = {
-            let _span = trace_operation!("state_initialization");
+            let _span: EnteredSpan = trace_operation!("state_initialization");
 
-            let app_state = Arc::new(Mutex::new(AppState::new(config.clone(), cache.clone())));
-            let fs_state = Arc::new(Mutex::new(FSState::new(current_dir.clone())));
-            let ui_state = Arc::new(RwLock::new(UIState::default()));
+            let app_state: Arc<Mutex<AppState>> =
+                Arc::new(Mutex::new(AppState::new(config.clone(), cache.clone())));
+            let fs_state: Arc<Mutex<FSState>> =
+                Arc::new(Mutex::new(FSState::new(current_dir.clone())));
+            let ui_state: Arc<RwLock<UIState>> = Arc::new(RwLock::new(UIState::default()));
 
             info!("Application states initialized");
             (app_state, fs_state, ui_state)
         };
 
         // Coordinator and event loop setup with FileSystemOperator integration
-        let state_coordinator = {
-            let _span = trace_operation!("coordinator_setup");
+        let state_coordinator: Arc<StateCoordinator> = {
+            let _span: EnteredSpan = trace_operation!("coordinator_setup");
             Arc::new(StateCoordinator::new(app_state, ui_state, fs_state))
         };
 
         let (event_loop, task_tx) = {
-            let _span = trace_operation!("event_loop_creation");
+            let _span: EnteredSpan = trace_operation!("event_loop_creation");
             EventLoop::new(state_coordinator.clone())
         };
 
@@ -157,7 +173,7 @@ impl App {
         .await
         .trace_err("initial_directory_load")?;
 
-        let ui_renderer = UIRenderer::new();
+        let ui_renderer: UIRenderer = UIRenderer::new();
 
         info!("Application initialization with FileSystemOperator completed successfully");
 
@@ -180,7 +196,7 @@ impl App {
         task_tx: mpsc::UnboundedSender<TaskResult>,
         cancel_token: CancellationToken,
     ) -> AppResult<()> {
-        let _span = trace_operation!("initial_directory_scan", path = %dir.display());
+        let _span: EnteredSpan = trace_operation!("initial_directory_scan", path = %dir.display());
 
         info!(
             directory = %dir.display(),
@@ -188,7 +204,7 @@ impl App {
         );
 
         // Use FileSystemOperator for initial directory scan
-        let operation_id = spawn_directory_scan(
+        let operation_id: String = FileSystemOperator::spawn_directory_scan(
             dir.clone(),
             false,              // Don't show hidden files initially
             ScanMode::TwoPhase, // Fast display + background metadata
@@ -215,9 +231,9 @@ impl App {
         // Shutdown is now handled in run_main_loop
 
         // Main event loop
-        let loop_result = self.run_main_loop().await;
+        let loop_result: StdResult<(), AppError> = self.run_main_loop().await;
 
-        let total_runtime = run_start.elapsed();
+        let total_runtime: Duration = run_start.elapsed();
 
         match loop_result {
             Ok(_) => {
@@ -225,14 +241,17 @@ impl App {
                     runtime_secs = total_runtime.as_secs(),
                     "Application completed successfully"
                 );
+
                 Ok(())
             }
+
             Err(e) => {
                 error!(
                     runtime_secs = total_runtime.as_secs(),
                     error = %e,
                     "Application terminated with error"
                 );
+
                 Err(e)
             }
         }
@@ -240,18 +259,19 @@ impl App {
 
     #[instrument(name = "main_loop", skip(self))]
     async fn run_main_loop(&mut self) -> AppResult<()> {
-        let mut frame_count = 0u64;
-        let mut render_interval = tokio::time::interval(tokio::time::Duration::from_millis(16));
+        let mut frame_count: u64 = 0u64;
+        let mut render_interval: Interval =
+            TokioTime::interval(TokioTime::Duration::from_millis(16));
 
         // Get shutdown handle before moving event loop
-        let shutdown_handle = self
+        let shutdown_handle: Arc<Notify> = self
             .event_loop
             .as_ref()
             .expect("EventLoop should be available")
             .shutdown_handle();
 
         // Move event loop to background task to prevent restarts
-        let mut event_loop = self
+        let mut event_loop: EventLoop = self
             .event_loop
             .take()
             .expect("EventLoop should be available");
@@ -283,14 +303,19 @@ impl App {
                     match result {
                         Ok(Ok(_)) => {
                             info!("Event loop completed normally");
+
                             break;
                         }
+
                         Ok(Err(e)) => {
                             error!(error = %e, "Event loop error");
+
                             return Err(AppError::Other(format!("Event loop failed: {e}")));
                         }
+
                         Err(e) => {
                             error!(error = %e, "Event loop task failed");
+
                             return Err(AppError::Other(format!("Event loop task failed: {e}")));
                         }
                     }
@@ -315,25 +340,32 @@ impl App {
                             "Frame render failed"
                         );
                     }
+
                     frame_count += 1;
                 }
 
                 // 3. Handle system signals
                 _ = &mut ctrl_c => {
                     info!("Received Ctrl+C signal");
+
                     shutdown_handle.notify_one();
+
                     break;
                 }
                 _ = &mut terminate => {
                     info!("Received terminate signal");
+
                     shutdown_handle.notify_one();
+
                     break;
                 }
 
                 // 4. Handle cancellation token
                 _ = self.cancel_token.cancelled() => {
                     info!("Received cancellation signal, shutting down gracefully");
+
                     shutdown_handle.notify_one();
+
                     break;
                 }
             }
@@ -348,14 +380,15 @@ impl App {
             return Ok(());
         }
 
-        let render_start = Instant::now();
+        let render_start: Instant = Instant::now();
 
         let render_result = self.terminal.draw(|frame: &mut Frame| {
-            let _span = tracing::info_span!("ui_render", frame = frame_count).entered();
+            let _span: EnteredSpan =
+                tracing::info_span!("ui_render", frame = frame_count).entered();
             self.ui_renderer.render(frame, &self.state_coordinator);
         });
 
-        let render_duration = render_start.elapsed();
+        let render_duration: Duration = render_start.elapsed();
 
         match render_result {
             Ok(_) => {
@@ -378,10 +411,12 @@ impl App {
                         "Frame rendered"
                     );
                 }
+
                 Ok(())
             }
+
             Err(e) => {
-                let error = AppError::Render {
+                let error: AppError = AppError::Render {
                     component: "main_ui".to_string(),
                     reason: e.to_string(),
                 };
@@ -401,7 +436,7 @@ impl App {
 
 impl Drop for App {
     fn drop(&mut self) {
-        let _span = trace_fn!("app_cleanup");
+        let _span: EnteredSpan = trace_fn!("app_cleanup");
 
         // Cancel all ongoing operations
         self.cancel_token.cancel();
@@ -419,16 +454,16 @@ impl Drop for App {
 
 #[instrument(name = "setup_terminal")]
 fn setup_terminal() -> AppResult<AppTerminal> {
-    let _span = trace_operation!("terminal_initialization");
+    let _span: EnteredSpan = trace_operation!("terminal_initialization");
 
     enable_raw_mode().map_err(|e| AppError::Terminal(format!("Failed to enable raw mode: {e}")))?;
 
-    let mut stdout = io::stdout();
+    let mut stdout: Stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)
         .map_err(|e| AppError::Terminal(format!("Failed to enter alternate screen: {e}")))?;
 
-    let backend = Backend::new(stdout);
-    let terminal = Terminal::new(backend)
+    let backend: Backend<Stdout> = Backend::new(stdout);
+    let terminal: Terminal<Backend<Stdout>> = Terminal::new(backend)
         .map_err(|e| AppError::Terminal(format!("Failed to create terminal: {e}")))?;
 
     info!("Terminal setup completed successfully");

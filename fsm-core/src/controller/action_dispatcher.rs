@@ -67,6 +67,10 @@ pub enum DispatchResult {
     NotHandled, // Pass to next handler
 }
 
+unsafe impl Send for DispatchResult {}
+
+unsafe impl Sync for DispatchResult {}
+
 /// Action source tracking for debugging and metrics
 #[derive(Debug, Clone, Copy, PartialEq, Eq, enum_map::Enum)]
 pub enum ActionSource {

@@ -69,7 +69,7 @@ impl OptimizedFileTable {
         );
 
         // Header row with column names
-        let header = Row::new(vec!["Name", "Size", "Modified"])
+        let header = Row::new(vec!["Name", "Size", "Count", "Modified"])
             .style(Style::default().fg(theme::YELLOW).bold())
             .bottom_margin(1);
 
@@ -93,15 +93,32 @@ impl OptimizedFileTable {
                     (icons::FILE_ICON, Style::default().fg(theme::FOREGROUND))
                 };
 
-                let size_str = if obj.is_dir {
-                    String::new()
+                let (size_str, count_str) = if obj.is_dir {
+                    let size_display = if obj.metadata_loaded && obj.items_count > 0 {
+                        if obj.items_count == 1 {
+                            "1 item".to_string()
+                        } else {
+                            format!("{} items", obj.items_count)
+                        }
+                    } else if obj.metadata_loaded {
+                        "empty".to_string()
+                    } else {
+                        "-".to_string()
+                    };
+                    (size_display, "-".to_string()) // Directories show '-' in Count column
                 } else {
-                    crate::util::humanize::human_readable_size(obj.size)
+                    let size_display = if obj.metadata_loaded {
+                        crate::util::humanize::human_readable_size(obj.size)
+                    } else {
+                        "-".to_string()
+                    };
+                    (size_display, "1".to_string()) // Files always count as 1
                 };
 
                 Row::new(vec![
                     Cell::from(format!("{icon} {}", obj.name)),
                     Cell::from(size_str),
+                    Cell::from(count_str),
                     Cell::from(obj.modified.format("%d/%m/%Y %I:%M %p").to_string()),
                 ])
                 .style(style)
@@ -109,6 +126,11 @@ impl OptimizedFileTable {
             .collect();
 
         let row_build_time_us = row_build_start.elapsed().as_micros();
+        
+        // Count metadata loading status for live update tracking
+        let metadata_loaded_count = entries.iter().filter(|e| e.metadata_loaded).count();
+        let pending_metadata_count = entries.len() - metadata_loaded_count;
+        
         trace!(
             target: "fsm_core::view::object_table",
             row_build_time_us = row_build_time_us,
@@ -116,14 +138,17 @@ impl OptimizedFileTable {
             files_count = files_count,
             symlinks_count = symlinks_count,
             total_rows = rows.len(),
-            "Row construction completed"
+            metadata_loaded_count = metadata_loaded_count,
+            pending_metadata_count = pending_metadata_count,
+            "Row construction completed with live update tracking"
         );
 
         // Column widths
         let widths = [
-            Constraint::Fill(1),
-            Constraint::Length(12),
-            Constraint::Length(22),
+            Constraint::Fill(1),    // Name
+            Constraint::Length(10), // Size
+            Constraint::Length(8),  // Count  
+            Constraint::Length(22), // Modified
         ];
 
         // Table selection state based on pane's selected index
@@ -196,9 +221,16 @@ impl OptimizedFileTable {
             dirs_count = dirs_count,
             files_count = files_count,
             symlinks_count = symlinks_count,
+            metadata_loaded_count = metadata_loaded_count,
+            pending_metadata_count = pending_metadata_count,
+            live_update_progress = if entries.len() > 0 { 
+                (metadata_loaded_count as f32 / entries.len() as f32 * 100.0) as u32 
+            } else { 
+                100 
+            },
             table_area = format!("{}x{}", area.width, area.height),
             cwd = %path.display(),
-            "File table render completed"
+            "File table render completed with live update progress"
         );
 
         // performance monitoring and alerting

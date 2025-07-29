@@ -89,8 +89,6 @@ pub mod fs {
 pub mod operators {
     pub mod filename_search_task;
 
-    pub mod metadata_task;
-
     pub mod search_task;
 
     pub mod size_task;

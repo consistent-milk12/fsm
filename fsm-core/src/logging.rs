@@ -1176,6 +1176,7 @@ macro_rules! trace_operation {
     ($operation_name:expr) => {
         tracing::info_span!($operation_name).entered()
     };
+
     ($operation_name:expr, $($field:tt)*) => {
         tracing::info_span!($operation_name, $($field)*).entered()
     };
@@ -1187,12 +1188,14 @@ macro_rules! measure_time {
         let start = std::time::Instant::now();
         let result = $block;
         let duration = start.elapsed();
+
         tracing::info!(
             operation = $name,
             duration_ms = duration.as_millis(),
             duration_us = duration.as_micros(),
             "Operation completed"
         );
+
         result
     }};
 }
@@ -1202,6 +1205,7 @@ macro_rules! trace_fn {
     ($fn_name:expr) => {
         tracing::debug_span!("fn", name = $fn_name).entered()
     };
+
     ($fn_name:expr, $($field:tt)*) => {
         tracing::debug_span!("fn", name = $fn_name, $($field)*).entered()
     };
@@ -1216,6 +1220,7 @@ macro_rules! trace_err {
             "Error occurred"
         )
     };
+
     ($error:expr, $($field:tt)*) => {
         tracing::error!(
             error = %$error,

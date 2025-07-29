@@ -3,7 +3,7 @@
 
 use std::{
     path::PathBuf,
-    sync::{Arc, atomic::Ordering},
+    sync::{Arc, MutexGuard, atomic::Ordering},
     time::{Duration, Instant},
 };
 
@@ -14,14 +14,14 @@ use tokio::{
     time::{MissedTickBehavior, interval},
 };
 use tracing::{
-    Level, debug, debug_span, error, event, field::Empty, info, info_span, instrument, trace, warn,
+    Level, Span, debug, debug_span, error, event, field::Empty, info, info_span, instrument,
+    span::Entered, trace, warn,
 };
 
 use futures::StreamExt;
-use tokio::select;
 
 use crate::{
-    UIState,
+    AppState, FSState, UIState,
     controller::{
         action_dispatcher::{ActionDispatcher, ActionSource},
         actions::{Action, OperationId},
@@ -29,7 +29,7 @@ use crate::{
     },
     error::AppError,
     fs::object_info::ObjectInfo,
-    model::ui_state::RedrawFlag,
+    model::{PaneState, ui_state::RedrawFlag},
 };
 
 /// Task results from background operations - matches dir_scanner.rs TaskResult
@@ -68,6 +68,15 @@ pub enum TaskResult {
         query: String,        // search pattern
         results: Vec<String>, // matching lines/snippets
         exec: Duration,       // execution time
+    },
+
+    /// Metadata update result for individual entries
+    Metadata {
+        task_id: u64,
+        path: PathBuf,
+        entry_path: PathBuf,
+        result: Result<ObjectInfo, Arc<AppError>>,
+        exec: Duration,
     },
 
     /// Progress update for a long‑running task.
@@ -257,7 +266,7 @@ impl EventLoop {
         loop {
             iteration += 1;
 
-            select! {
+            tokio::select! {
                 // 1) Shutdown requested
                 _ = self.shutdown.notified() => {
                     info!(
@@ -266,6 +275,7 @@ impl EventLoop {
                         uptime = ?self.start_time.elapsed(),
                         "Event loop shutdown initiated"
                     );
+
                     break;
                 }
 
@@ -277,15 +287,19 @@ impl EventLoop {
                                 let continue_loop = self
                                     .dispatch_action(action, ActionSource::Keyboard)
                                     .await?;
+
                                 if !continue_loop {
                                     info!("Event loop termination requested by action");
+
                                     break;
                                 }
                             }
                         }
+
                         Some(Err(err)) => {
                             warn!(error = %err, "Terminal event error, continuing");
                         }
+
                         None => {
                             warn!("Terminal event stream closed unexpectedly");
                         }
@@ -295,6 +309,7 @@ impl EventLoop {
                 // 3) Background task results
                 Some(task_res) = self.task_rx.recv() => {
                     self.handle_task_result(task_res).await;
+
                     self.tasks_processed += 1;
                 }
 
@@ -307,6 +322,7 @@ impl EventLoop {
             // Periodic metrics report
             if last_metrics.elapsed() >= METRICS_INTERVAL {
                 self.report_performance_metrics(iteration);
+
                 last_metrics = Instant::now();
             }
         }
@@ -336,7 +352,7 @@ impl EventLoop {
             }
 
             TerminalEvent::Resize(w, h) => {
-                let action = Some(Action::Resize(w, h));
+                let action: Option<Action> = Some(Action::Resize(w, h));
 
                 debug!(width = w, height = h, "Terminal resize event processed");
 
@@ -531,7 +547,7 @@ impl EventLoop {
         )
     )]
     async fn dispatch_action(&mut self, action: Action, source: ActionSource) -> Result<bool> {
-        let dispatch_start = Instant::now();
+        let dispatch_start: Instant = Instant::now();
 
         debug!(
             action = ?action,
@@ -542,10 +558,10 @@ impl EventLoop {
 
         // Perform the dispatch and take ownership of its Result
         let result: Result<bool> = self.action_dispatcher.dispatch(action, source).await;
-        let dispatch_time = dispatch_start.elapsed();
+        let dispatch_time: Duration = dispatch_start.elapsed();
 
         // Record metrics on the current span *before* we move `result` out
-        let span = tracing::Span::current();
+        let span: Span = tracing::Span::current();
         span.record("dispatch_time", tracing::field::debug(dispatch_time));
         span.record("result", tracing::field::debug(&result));
 
@@ -561,8 +577,10 @@ impl EventLoop {
                     total_actions = self.actions_processed,
                     "Action dispatched successfully"
                 );
+
                 Ok(should_continue)
             }
+
             Err(err) => {
                 error!(
                     error = %err,
@@ -571,6 +589,7 @@ impl EventLoop {
                     total_actions = self.actions_processed,
                     "Action dispatch failed"
                 );
+
                 Err(err)
             }
         }
@@ -612,20 +631,21 @@ impl EventLoop {
                             path = %path.display(),
                             entries_count = entries.len(),
                             execution_time = ?exec,
-                            "Directory load completed successfully"
+                            "FILE_SYSTEM | BACKGROUND_OPERATION | SUCCESS : Directory load completed successfully"
                         );
 
                         // Update filesystem state
                         {
-                            let update_span = debug_span!(
+                            let update_span: Span = debug_span!(
                                 "fs_state_update",
                                 task_id = task_id,
                                 entries_count = entries.len(),
                             );
-                            let _guard = update_span.enter();
 
-                            let mut fs = self.state_coordinator.fs_state();
-                            let pane = fs.active_pane_mut();
+                            let _guard: Entered<'_> = update_span.enter();
+
+                            let mut fs: MutexGuard<'_, FSState> = self.state_coordinator.fs_state();
+                            let pane: &mut PaneState = fs.active_pane_mut();
 
                             if pane.cwd == path {
                                 // Use set_entries which includes proper sorting and filtering
@@ -635,13 +655,13 @@ impl EventLoop {
                                 debug!(
                                     pane_path = %pane.cwd.display(),
                                     entries_final_count = pane.entries.len(),
-                                    "Filesystem state updated with sorted entries"
+                                    "FILE_SYSTEM | BACKGROUND_OPERATION | SUCCESS : Sorted entries in the active pane"
                                 );
                             } else {
                                 warn!(
                                     expected_path = %pane.cwd.display(),
                                     received_path = %path.display(),
-                                    "Directory load result path mismatch - skipping update"
+                                    "ERROR: FILE_SYSTEM | BACKGROUND_OPERATION | FAILURE : Could not sort entries in the active pane"
                                 );
                             }
                         }
@@ -655,7 +675,7 @@ impl EventLoop {
 
                         // Complete task tracking
                         {
-                            let app = self.state_coordinator.app_state();
+                            let app: MutexGuard<'_, AppState> = self.state_coordinator.app_state();
                             app.complete_task(task_id);
 
                             debug!(task_id = task_id, "Task marked as completed in app state");
@@ -677,8 +697,8 @@ impl EventLoop {
 
                         // Update filesystem state to clear loading
                         {
-                            let mut fs = self.state_coordinator.fs_state();
-                            let pane = fs.active_pane_mut();
+                            let mut fs: MutexGuard<'_, FSState> = self.state_coordinator.fs_state();
+                            let pane: &mut PaneState = fs.active_pane_mut();
                             if pane.cwd == path {
                                 pane.is_loading.store(false, Ordering::Relaxed);
                             }
@@ -693,7 +713,7 @@ impl EventLoop {
 
                         // Complete task tracking
                         {
-                            let app = self.state_coordinator.app_state();
+                            let app: MutexGuard<'_, AppState> = self.state_coordinator.app_state();
                             app.complete_task(task_id);
                         }
                     }
@@ -724,14 +744,14 @@ impl EventLoop {
 
                 // Update search results in filesystem state
                 {
-                    let search_span = debug_span!(
+                    let search_span: Span = debug_span!(
                         "search_results_update",
                         task_id = task_id,
                         results_count = results.len(),
                     );
-                    let _guard = search_span.enter();
+                    let _guard: Entered<'_> = search_span.enter();
 
-                    let mut fs = self.state_coordinator.fs_state();
+                    let mut fs: MutexGuard<'_, FSState> = self.state_coordinator.fs_state();
                     fs.active_pane_mut().search_results = results.clone();
 
                     debug!("Search results updated in filesystem state");
@@ -745,7 +765,7 @@ impl EventLoop {
 
                 // Complete task
                 {
-                    let app = self.state_coordinator.app_state();
+                    let app: MutexGuard<'_, AppState> = self.state_coordinator.app_state();
                     app.complete_task(task_id);
                 }
             }
@@ -780,7 +800,7 @@ impl EventLoop {
 
                 // Complete task
                 {
-                    let app = self.state_coordinator.app_state();
+                    let app: MutexGuard<'_, AppState> = self.state_coordinator.app_state();
                     app.complete_task(task_id);
                 }
             }
@@ -886,6 +906,43 @@ impl EventLoop {
                                 ui.error(format!("Clipboard {op_kind} failed: {e}"));
                             },
                         ));
+                    }
+                }
+            }
+
+            TaskResult::Metadata {
+                task_id,
+                path,
+                entry_path,
+                result,
+                exec,
+            } => {
+                Span::current()
+                    .record("task_variant", "Metadata")
+                    .record("task_id", task_id)
+                    .record("directory_path", path.display().to_string())
+                    .record("entry_path", entry_path.display().to_string())
+                    .record("execution_duration_us", exec.as_micros())
+                    .record(
+                        "result_status",
+                        if result.is_ok() { "success" } else { "error" },
+                    );
+
+                match result {
+                    Ok(updated_entry) => {
+                        // Update metadata for specific entry
+                        self.state_coordinator
+                            .update_entry_metadata(path, entry_path, updated_entry)
+                            .await;
+
+                        self.state_coordinator.request_redraw(RedrawFlag::All);
+                    }
+
+                    Err(error) => {
+                        warn!(entry_path = %entry_path.display(),
+                                error = %error,
+                                "Failed to load metadata for entry"
+                        );
                     }
                 }
             }

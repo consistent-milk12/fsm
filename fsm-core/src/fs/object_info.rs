@@ -30,12 +30,31 @@ impl std::fmt::Display for ObjectType {
 /// Lightweight object info for immediate display (minimal metadata)
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LightObjectInfo {
+    /// Absolute Path
     pub path: PathBuf,
+
     pub name: CompactString,
+
     pub extension: Option<CompactString>,
+
     pub object_type: ObjectType,
+
     pub is_dir: bool,
+
     pub is_symlink: bool,
+}
+
+impl LightObjectInfo {
+    pub fn new(object: ObjectInfo) -> Self {
+        Self {
+            path: object.path,
+            name: object.name,
+            extension: object.extension,
+            is_dir: object.is_dir,
+            object_type: object.object_type,
+            is_symlink: object.is_symlink,
+        }
+    }
 }
 
 /// Full object info with complete metadata
