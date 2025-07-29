@@ -26,6 +26,7 @@ indexmap = "2.10.0"
 # Fast serialization
 rmp-serde = "1.3.0" # MessagePack (faster than JSON/TOML)
 bincode = "2.0.1"
+futures = "0.3.31"
 
 # SIMD and CPU optimization
 bytemuck = "1.21.0"

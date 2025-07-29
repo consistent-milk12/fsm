@@ -301,7 +301,7 @@ impl ClipBoard {
         }
     }
 
-    /// Atomic clear operation with batch cleanup
+    /// Atomic clear operation with batch cleanup (requires mutable reference)
     pub async fn clear(&mut self) {
         // Clear all data structures
         self.items.clear();
@@ -326,6 +326,60 @@ impl ClipBoard {
         self.stats.copy_items.store(0, Ordering::Relaxed);
         self.stats.move_items.store(0, Ordering::Relaxed);
         self.stats.total_size.store(0, Ordering::Relaxed);
+    }
+
+    /// High-performance bulk clear operation that works with shared reference
+    /// Optimized for concurrent access with batched async operations
+    pub async fn clear_all(&self) -> ClipResult<usize> {
+        // Collect all item IDs first to avoid iterator invalidation
+        let item_ids: Vec<u64> = self
+            .items
+            .iter()
+            .map(|guard| *guard.key())
+            .collect();
+
+        let total_items = item_ids.len();
+        
+        // Batch removals in chunks for optimal async performance
+        let chunk_size = std::cmp::max(1, total_items / num_cpus::get());
+        let mut removed_count = 0;
+        
+        for chunk in item_ids.chunks(chunk_size) {
+            // Process chunk with concurrent futures
+            let futures: Vec<_> = chunk
+                .iter()
+                .map(|&id| self.remove_item(id))
+                .collect();
+            
+            // Await all futures in this chunk concurrently
+            let results = futures::future::join_all(futures).await;
+            removed_count += results.iter().filter(|r| r.is_ok()).count();
+        }
+
+        // Clear auxiliary data structures concurrently
+        let (_path_clear, _cache_clear, _order_clear) = tokio::join!(
+            async {
+                let mut path_index = self.path_index.write().await;
+                path_index.clear();
+            },
+            async {
+                let mut cache = self.cache.write().await;
+                cache.clear();
+            },
+            async {
+                if let Ok(mut order) = self.item_order.write() {
+                    order.clear();
+                }
+            }
+        );
+
+        // Reset statistics atomically
+        self.stats.total_items.store(0, Ordering::Relaxed);
+        self.stats.copy_items.store(0, Ordering::Relaxed);
+        self.stats.move_items.store(0, Ordering::Relaxed);
+        self.stats.total_size.store(0, Ordering::Relaxed);
+
+        Ok(removed_count)
     }
 
     /// Get high-performance statistics with atomic reads

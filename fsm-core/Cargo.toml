@@ -86,6 +86,8 @@ arc-swap = "1.7.1"
 ahash = "0.8.12"
 crossbeam-channel = "0.5.15"
 tracing-attributes = "0.1.30"
+tokio-stream = "0.1.17"
+num_cpus = "1.17.0"
 
 [[bin]]
 name = "fs"

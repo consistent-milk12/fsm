@@ -9,14 +9,21 @@ use std::{
 
 use anyhow::Result;
 use crossterm::event::{Event as TerminalEvent, EventStream, KeyCode, KeyEvent, KeyModifiers};
-use futures::StreamExt;
 use tokio::{
-    sync::{Notify, mpsc},
+    sync::{
+        Notify,
+        mpsc::{self, UnboundedReceiver},
+    },
     time::{MissedTickBehavior, interval},
 };
 use tracing::{
     Level, debug, debug_span, error, event, field::Empty, info, info_span, instrument, trace, warn,
 };
+
+use futures::{StreamExt, stream::Fuse}; // Fuse for event_stream
+use tokio::select;
+use tokio_stream::wrappers::IntervalStream; // wrap Interval in a Stream if you prefer
+use tokio_util::codec::FramedRead; // only if using a frame
 
 use crate::{
     UIState,
@@ -233,99 +240,98 @@ impl EventLoop {
 
     /// Main event processing loop with comprehensive tracing
     #[instrument(
-        level = "info",
-        name = "event_loop_run",
-        fields(
-            loop_id = tracing::field::display(nanoid::nanoid!()),
-            start_time = ?std::time::Instant::now(),
-        ),
-        err
-    )]
-    pub async fn run(&mut self) -> Result<()> {
-        info!("Starting event loop");
+    level = "info",
+    name = "event_loop_run",
+    fields(
+        loop_id = tracing::field::display(nanoid::nanoid!()),
+        start_time = ?Instant::now(),
+    ),
+    err
+)]
+    pub async fn run(&mut self, mut task_rx: UnboundedReceiver<TaskResult>) -> Result<()> {
+        // Startup log
+        info!("Event loop started");
 
-        // Initialize event stream and render timer ONCE
-        let mut event_stream = EventStream::new();
-        let mut render_timer = interval(Duration::from_millis(16)); // 60 FPS
+        // Terminal event stream (fused so it ends gracefully)
+        let mut event_stream = EventStream::new().fuse();
+
+        // Render timer at ~60 FPS
+        let mut render_timer = interval(Duration::from_millis(16));
         render_timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
-        let mut loop_iteration = 0u64;
-        let mut last_metrics_report = Instant::now();
-        const METRICS_REPORT_INTERVAL: Duration = Duration::from_secs(30);
+        // Metrics
+        let mut iteration: u64 = 0;
+        let mut last_metrics = Instant::now();
+        const METRICS_INTERVAL: Duration = Duration::from_secs(30);
 
-        // Single main event loop
         loop {
-            loop_iteration += 1;
+            iteration += 1;
 
-            tokio::select! {
-                // Shutdown signal handling
+            select! {
+                // 1) Shutdown requested
                 _ = self.shutdown.notified() => {
                     info!(
                         reason = "shutdown_requested",
-                        total_iterations = loop_iteration,
+                        total_iterations = iteration,
                         uptime = ?self.start_time.elapsed(),
                         "Event loop shutdown initiated"
                     );
                     break;
                 }
 
-                // Terminal event processing
+                // 2) Terminal input events
                 maybe_event = event_stream.next() => {
                     match maybe_event {
-                        Some(Ok(event)) => {
-                            if let Some(action) = self.process_terminal_event(event).await {
-                                let should_continue = self.dispatch_action(action, ActionSource::Keyboard).await?;
-
-                                if !should_continue {
+                        Some(Ok(ev)) => {
+                            if let Some(action) = self.process_terminal_event(ev).await {
+                                let continue_loop = self
+                                    .dispatch_action(action, ActionSource::Keyboard)
+                                    .await?;
+                                if !continue_loop {
                                     info!("Event loop termination requested by action");
                                     break;
                                 }
                             }
                         }
-                        Some(Err(e)) => {
-                            warn!(
-                                error = %e,
-                                "Terminal event stream error - continuing"
-                            );
+                        Some(Err(err)) => {
+                            warn!(error = %err, "Terminal event error, continuing");
                         }
                         None => {
-                            warn!("Terminal event stream ended unexpectedly");
+                            warn!("Terminal event stream closed unexpectedly");
                         }
                     }
                 }
 
-                // Background task result handling
-                Some(task_result) = self.task_rx.recv() => {
-                    self.handle_task_result(task_result).await;
+                // 3) Background task results
+                Some(task_res) = task_rx.recv() => {
+                    self.handle_task_result(task_res).await;
                     self.tasks_processed += 1;
                 }
 
-                // Render timer tick
+                // 4) Render tick
                 _ = render_timer.tick() => {
-                    // Update render metrics
                     self.last_render = Instant::now();
                     self.render_frame_count += 1;
+                    trace!(frame = self.render_frame_count, "Render timer tick");
+                }
 
-                    // Rendering handled externally, but we track the tick
-                    trace!(
-                        frame = self.render_frame_count,
-                        "Render timer tick"
-                    );
+                // 5) Idle back‑off
+                default => {
+                    tokio::time::sleep(Duration::from_millis(1)).await;
                 }
             }
 
-            // Periodic metrics reporting (much less frequent)
-            if last_metrics_report.elapsed() >= METRICS_REPORT_INTERVAL {
-                self.report_performance_metrics(loop_iteration);
-                last_metrics_report = Instant::now();
+            // Periodic metrics report
+            if last_metrics.elapsed() >= METRICS_INTERVAL {
+                self.report_performance_metrics(iteration);
+                last_metrics = Instant::now();
             }
         }
 
-        // Final metrics and cleanup
+        // Shutdown complete
         info!("Event loop completed successfully");
         Ok(())
     }
-
     /// Process terminal events with detailed tracing
     #[instrument(level = "trace", name = "process_terminal_event", skip(self, event))]
     async fn process_terminal_event(&self, event: TerminalEvent) -> Option<Action> {
