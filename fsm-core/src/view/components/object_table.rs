@@ -25,9 +25,11 @@ pub struct OptimizedFileTable;
 
 impl OptimizedFileTable {
     pub fn new() -> Self {
-        debug!(
-            target: "fsm_core::view::object_table",
-            "Creating new OptimizedFileTable component"
+        info!(
+            marker = "UI_COMPONENT_INIT",
+            operation_type = "ui_render",
+            component = "OptimizedFileTable",
+            message = "Creating new OptimizedFileTable component"
         );
         Self
     }
@@ -36,7 +38,20 @@ impl OptimizedFileTable {
     /// directory entries, sorting and selection state.  The selected index
     /// is loaded atomically to configure the table’s highlight row.  The
     /// provided `path` is used for the table title.
-    #[instrument(level = "trace", skip_all, fields(entry_count = pane_state.entries.len(), path = ?path))]
+    #[instrument(
+        level = "trace",
+        skip_all,
+        fields(
+            marker = "UI_RENDER_START",
+            operation_type = "file_table_render",
+            entries_count = pane_state.entries.len(),
+            current_path = %path.display(),
+            selected_index = pane_state.selected.load(Ordering::Relaxed),
+            area_width = area.width,
+            area_height = area.height,
+            message = "File table render initiated"
+        )
+    )]
     pub fn render_optimized(
         &self,
         frame: &mut Frame<'_>,
@@ -50,22 +65,22 @@ impl OptimizedFileTable {
         let selected_index = pane_state.selected.load(Ordering::Relaxed);
 
         info!(
-            target: "fsm_core::view::object_table",
+            marker = "UI_RENDER_START",
+            operation_type = "file_table_render",
             entries_count = entries.len(),
             selected_index = selected_index,
-            cwd = %path.display(),
+            current_path = %path.display(),
             area_width = area.width,
             area_height = area.height,
-            "=== UI RENDER: File table with {} entries for {} ===",
-            entries.len(),
-            path.display()
+            message = format!("File table with {} entries for {}", entries.len(), path.display())
         );
 
         trace!(
-            target: "fsm_core::view::object_table",
+            marker = "UI_TABLE_AREA_INFO",
+            operation_type = "ui_render",
             area_width = area.width,
             area_height = area.height,
-            "Table area: {}x{}", area.width, area.height
+            message = format!("Table area: {}x{}", area.width, area.height)
         );
 
         // Header row with column names

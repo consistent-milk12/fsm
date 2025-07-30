@@ -70,7 +70,11 @@ pub struct RenderStats {
 
 impl UIRenderer {
     pub fn new() -> Self {
-        debug!("Creating new UIRenderer instance");
+        tracing::info!(
+            marker = "UI_RENDERER_INIT",
+            operation_type = "ui_render",
+            message = "Creating new UIRenderer instance"
+        );
         Self {
             cache: LayoutCache::default(),
             clipboard_overlay: OptimizedClipboardOverlay::new(),
@@ -91,7 +95,18 @@ impl UIRenderer {
     }
 
     /// Main render entry point with enhanced state integration
-    #[instrument(level = "trace", skip(self, frame, coord))]
+    #[instrument(
+        level = "trace",
+        skip(self, frame, coord),
+        fields(
+            marker = "UI_RENDER_START",
+            operation_type = "ui_render",
+            area_width = frame.area().width,
+            area_height = frame.area().height,
+            frame_count = self.frame_count,
+            message = "Main UI render entry point"
+        )
+    )]
     pub fn render(&mut self, frame: &mut Frame<'_>, coord: &StateCoordinator) {
         let render_start = Instant::now();
 
@@ -102,10 +117,12 @@ impl UIRenderer {
         if self.frame_count > 0 && ui_snapshot.redraw_flags == 0 && self.dirty_flags == 0 {
             self.stats.frames_skipped += 1;
             debug!(
+                marker = "UI_FRAME_SKIPPED",
+                operation_type = "ui_render",
                 frame = self.frame_count,
                 redraw_flags = ui_snapshot.redraw_flags,
                 dirty_flags = self.dirty_flags,
-                "Frame skipped - no redraw needed"
+                message = "Frame skipped - no redraw needed"
             );
             return;
         }
@@ -137,6 +154,17 @@ impl UIRenderer {
             self.stats.slow_frames += 1;
         }
 
+        tracing::info!(
+            marker = "PERF_FRAME_RENDER",
+            operation_type = "frame_render",
+            duration_us = frame_time.as_micros(),
+            frames_rendered = self.stats.frames_rendered,
+            slow_frames = self.stats.slow_frames,
+            area_width = frame.area().width,
+            area_height = frame.area().height,
+            message = "Frame render performance measurement"
+        );
+
         self.dirty_flags = 0;
     }
 
@@ -149,15 +177,39 @@ impl UIRenderer {
     }
 
     /// Update layout cache on screen size change
-    #[instrument(level = "trace", skip(self), fields(width = screen_size.width, height = screen_size.height))]
+    #[instrument(
+        level = "trace",
+        skip(self),
+        fields(
+            marker = "UI_LAYOUT_UPDATE",
+            operation_type = "ui_render",
+            width = screen_size.width,
+            height = screen_size.height,
+            message = "Updating UI layout cache"
+        )
+    )]
     fn update_layout_cache(&mut self, screen_size: Rect) {
         if self.cache.screen_size == screen_size {
             self.cache.hit_count += 1;
+            debug!(
+                marker = "CACHE_HIT",
+                operation_type = "ui_render",
+                cache_type = "layout",
+                hit_count = self.cache.hit_count,
+                message = "Layout cache hit"
+            );
             return;
         }
 
         self.cache.screen_size = screen_size;
         self.cache.miss_count += 1;
+        debug!(
+            marker = "CACHE_MISS",
+            operation_type = "ui_render",
+            cache_type = "layout",
+            miss_count = self.cache.miss_count,
+            message = "Layout cache miss, recalculating"
+        );
 
         // Main layout: content + status bar
         let main_areas =
@@ -169,6 +221,17 @@ impl UIRenderer {
     }
 
     /// Render main file browser with enhanced pane state
+    #[instrument(
+        level = "trace",
+        skip(self, frame, ui_snapshot, coord, area),
+        fields(
+            marker = "UI_MAIN_CONTENT_RENDER_START",
+            operation_type = "ui_render",
+            area_width = area.width,
+            area_height = area.height,
+            message = "Rendering main content area"
+        )
+    )]
     fn render_main_content(
         &mut self,
         frame: &mut Frame<'_>,
@@ -183,6 +246,11 @@ impl UIRenderer {
             && ui_snapshot.redraw_flags == 0
         // No redraw flags at all
         {
+            debug!(
+                marker = "UI_MAIN_CONTENT_SKIPPED",
+                operation_type = "ui_render",
+                message = "Main content render skipped"
+            );
             return;
         }
 
@@ -195,6 +263,11 @@ impl UIRenderer {
             .load(std::sync::atomic::Ordering::Relaxed)
         {
             self.render_loading_placeholder(frame, area);
+            tracing::info!(
+                marker = "UI_LOADING_PLACEHOLDER_RENDERED",
+                operation_type = "ui_render",
+                message = "Loading placeholder rendered"
+            );
         } else {
             // Get UI state for file table
             let ui_state = coord.ui_state();
@@ -202,12 +275,36 @@ impl UIRenderer {
 
             self.file_table
                 .render_optimized(frame, &ui_guard, active_pane, &active_pane.cwd, area);
+            tracing::info!(
+                marker = "UI_FILE_TABLE_RENDERED",
+                operation_type = "ui_render",
+                message = "File table rendered"
+            );
         }
+
+        tracing::info!(
+            marker = "UI_MAIN_CONTENT_RENDER_COMPLETE",
+            operation_type = "ui_render",
+            area_width = area.width,
+            area_height = area.height,
+            message = "Main content area rendering completed"
+        );
 
         self.dirty_flags |= 1;
     }
 
     /// Render status bar with enhanced metrics
+    #[instrument(
+        level = "trace",
+        skip(self, frame, ui_snapshot, coord, area),
+        fields(
+            marker = "UI_STATUS_BAR_RENDER_START",
+            operation_type = "ui_render",
+            area_width = area.width,
+            area_height = area.height,
+            message = "Rendering status bar"
+        )
+    )]
     fn render_status_bar(
         &mut self,
         frame: &mut Frame<'_>,
@@ -218,15 +315,38 @@ impl UIRenderer {
         if ui_snapshot.redraw_flags & RedrawFlag::StatusBar.bits() as u32 == 0
             && self.dirty_flags & 2 == 0
         {
+            debug!(
+                marker = "UI_STATUS_BAR_SKIPPED",
+                operation_type = "ui_render",
+                message = "Status bar render skipped"
+            );
             return;
         }
 
         self.status_bar
             .render_with_metrics(frame, ui_snapshot, coord, area);
+
+        tracing::info!(
+            marker = "UI_STATUS_BAR_RENDER_COMPLETE",
+            operation_type = "ui_render",
+            area_width = area.width,
+            area_height = area.height,
+            message = "Status bar rendering completed"
+        );
+
         self.dirty_flags |= 2;
     }
 
     /// Render all overlays with enhanced integration
+    #[instrument(
+        level = "trace",
+        skip(self, frame, ui_snapshot, coord),
+        fields(
+            marker = "UI_OVERLAYS_RENDER_START",
+            operation_type = "ui_render",
+            message = "Rendering UI overlays"
+        )
+    )]
     fn render_overlays(
         &mut self,
         frame: &mut Frame<'_>,
@@ -249,6 +369,12 @@ impl UIRenderer {
                 .render_sync_fallback(frame, clipboard_area, ui_snapshot)
                 .is_err()
             {
+                tracing::error!(
+                    marker = "ERROR_RENDER",
+                    operation_type = "ui_render",
+                    component = "clipboard_overlay",
+                    message = "Clipboard overlay render failed"
+                );
                 self.render_error_overlay(frame, "Clipboard unavailable", clipboard_area);
             }
         }
@@ -262,9 +388,27 @@ impl UIRenderer {
             self.notification_overlay
                 .render_notification(frame, notification, notification_area);
         }
+
+        tracing::info!(
+            marker = "UI_OVERLAYS_RENDER_COMPLETE",
+            operation_type = "ui_render",
+            message = "UI overlays rendering completed"
+        );
     }
 
     /// Render modal overlays with proper snapshot creation
+    #[instrument(
+        level = "trace",
+        skip(self, frame, ui_snapshot, coord, area),
+        fields(
+            marker = "UI_MODAL_OVERLAY_RENDER_START",
+            operation_type = "ui_render",
+            overlay_type = ?ui_snapshot.overlay,
+            area_width = area.width,
+            area_height = area.height,
+            message = "Rendering modal overlay"
+        )
+    )]
     fn render_modal_overlay(
         &mut self,
         frame: &mut Frame<'_>,
@@ -275,6 +419,11 @@ impl UIRenderer {
         match ui_snapshot.overlay {
             UIOverlay::Help => {
                 self.help_overlay.render_fast(frame, area);
+                tracing::info!(
+                    marker = "UI_HELP_OVERLAY_RENDERED",
+                    operation_type = "ui_render",
+                    message = "Help overlay rendered"
+                );
             }
 
             UIOverlay::FileNameSearch | UIOverlay::ContentSearch => {
@@ -282,6 +431,11 @@ impl UIRenderer {
                 self.search_overlay = OptimizedSearchOverlay::new(ui_snapshot.overlay);
                 self.search_overlay
                     .render_with_input(frame, &search_snapshot, area);
+                tracing::info!(
+                    marker = "UI_SEARCH_OVERLAY_RENDERED",
+                    operation_type = "ui_render",
+                    message = "Search overlay rendered"
+                );
             }
 
             UIOverlay::SearchResults => {
@@ -297,12 +451,22 @@ impl UIRenderer {
                     Some(selected),
                     area,
                 );
+                tracing::info!(
+                    marker = "UI_SEARCH_RESULTS_OVERLAY_RENDERED",
+                    operation_type = "ui_render",
+                    message = "Search results overlay rendered"
+                );
             }
 
             UIOverlay::Prompt => {
                 if let Some(prompt_snapshot) = self.create_prompt_snapshot(coord) {
                     self.prompt_overlay
                         .render_input(frame, &prompt_snapshot, area);
+                    tracing::info!(
+                        marker = "UI_PROMPT_OVERLAY_RENDERED",
+                        operation_type = "ui_render",
+                        message = "Prompt overlay rendered"
+                    );
                 }
             }
 
@@ -310,6 +474,11 @@ impl UIRenderer {
                 if let Some(loading_state) = &ui_snapshot.loading {
                     self.loading_overlay
                         .render_progress(frame, loading_state, area);
+                    tracing::info!(
+                        marker = "UI_LOADING_OVERLAY_RENDERED",
+                        operation_type = "ui_render",
+                        message = "Loading overlay rendered"
+                    );
                 }
             }
 
@@ -321,12 +490,32 @@ impl UIRenderer {
                     &app_guard,
                     area,
                 );
+                tracing::info!(
+                    marker = "UI_SYSTEM_MONITOR_OVERLAY_RENDERED",
+                    operation_type = "ui_render",
+                    message = "System monitor overlay rendered"
+                );
             }
 
             _ => {
+                tracing::error!(
+                    marker = "ERROR_RENDER",
+                    operation_type = "ui_render",
+                    component = "modal_overlay",
+                    message = format!("Unknown overlay type: {:?}", ui_snapshot.overlay)
+                );
                 self.render_error_overlay(frame, "Unknown overlay", area);
             }
         }
+
+        tracing::info!(
+            marker = "UI_MODAL_OVERLAY_RENDER_COMPLETE",
+            operation_type = "ui_render",
+            overlay_type = ?ui_snapshot.overlay,
+            area_width = area.width,
+            area_height = area.height,
+            message = "Modal overlay rendering completed"
+        );
     }
 
     /// Create search snapshot with enhanced state integration

@@ -1,5 +1,0 @@
-timestamp	level	target	marker	operation_type	current_path	target_path	entries_count	selected_index	duration_us	cache_hit	area_width	area_height	message
-2025-07-29T09:31:34.000Z	INFO	fsm_core::logging	NULL	NULL	NULL	NULL	NULL	NULL	NULL	NULL	NULL	NULL	FSM-Core logging system initialized
-2025-07-29T09:31:34.000Z	INFO	fs	NULL	NULL	NULL	NULL	NULL	NULL	NULL	NULL	NULL	NULL	Starting FSM-Core with integrated FileSystemOperator
-2025-07-29T09:31:34.000Z	ERROR	fsm_core::error	NULL	NULL	NULL	NULL	NULL	NULL	NULL	NULL	NULL	NULL	Operation failed
-2025-07-29T09:31:34.000Z	ERROR	fsm_core::error	NULL	NULL	NULL	NULL	NULL	NULL	NULL	NULL	NULL	NULL	Operation failed

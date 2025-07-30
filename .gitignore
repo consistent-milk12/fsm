@@ -1,7 +1,6 @@
 /backup
 /target
 /Cargo.lock
-/logs
 Notes.md
 .claude
 init.lua

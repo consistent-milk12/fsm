@@ -5,7 +5,7 @@ use crate::controller::actions::Action;
 use crate::error::AppError;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::collections::HashMap;
-use tracing::trace;
+use tracing::{instrument, trace};
 
 use super::*;
 
@@ -61,10 +61,11 @@ impl NavigationHandler {
 
     fn handle_key(&mut self, key_event: KeyEvent) -> Result<Vec<Action>, AppError> {
         trace!(
-            marker = "NAVIGATION_HANDLER_KEY_EVENT",
+            marker = "KEY_MAPPED_TO_ACTION",
             operation_type = "input_handling",
-            "NavigationHandler: key {:?}",
-            key_event
+            key_code = ?key_event.code,
+            modifiers = ?key_event.modifiers,
+            message = format!("NavigationHandler: key {:?}", key_event)
         );
 
         // Check sequences
@@ -74,8 +75,21 @@ impl NavigationHandler {
 
         // Direct lookup
         if let Some(action) = self.bindings.get(&key_event).cloned() {
+            tracing::info!(
+                marker = "KEY_MAPPED_SUCCESS",
+                operation_type = "input_handling",
+                key_code = ?key_event.code,
+                action = ?action,
+                message = "Key mapped to action"
+            );
             Ok(vec![action])
         } else {
+            tracing::info!(
+                marker = "KEY_NOT_MAPPED",
+                operation_type = "input_handling",
+                key_code = ?key_event.code,
+                message = "Key not mapped to any action"
+            );
             Ok(vec![])
         }
     }
@@ -95,7 +109,14 @@ impl NavigationHandler {
                     code: KeyCode::Char('g'),
                     ..
                 },
-            ] => Some(Action::SelectFirst),
+            ] => {
+                tracing::info!(
+                    marker = "SELECTION_FIRST",
+                    operation_type = "navigation",
+                    message = "Sequence 'gg' detected, selecting first entry"
+                );
+                Some(Action::SelectFirst)
+            }
             _ => None,
         };
 
@@ -133,6 +154,17 @@ impl EventHandler for NavigationHandler {
         }
     }
 
+    #[instrument(
+        level = "trace",
+        name = "navigation_handler_handle",
+        skip(self, event),
+        fields(
+            marker = "NAVIGATION_HANDLER_KEY_EVENT",
+            operation_type = "input_handling",
+            event = ?event,
+            message = "Navigation handler processing event"
+        )
+    )]
     fn handle(&mut self, event: Event) -> Result<Vec<Action>, AppError> {
         if let Event::Key {
             event: key_event, ..

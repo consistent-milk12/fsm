@@ -390,7 +390,7 @@ impl LoggingConfig {
             enable_metrics: true,
             enable_error_tracking: true,
             enable_colors: false,
-            clean_on_startup: true,
+            clean_on_startup: false,
             console_level: Level::DEBUG,
             file_level: Level::TRACE,
             log_format: LogFormat::Tsv,
@@ -815,6 +815,12 @@ impl Visit for TSVFieldExtractor {
             "operation_type" => self.operation_type = formatted_value,
             "current_path" => self.current_path = formatted_value,
             "target_path" => self.target_path = formatted_value,
+            "entries_count" => self.entries_count = formatted_value,
+            "selected_index" => self.selected_index = formatted_value,
+            "duration_us" => self.duration_us = formatted_value,
+            "cache_hit" => self.cache_hit = formatted_value,
+            "area_width" => self.area_width = formatted_value,
+            "area_height" => self.area_height = formatted_value,
             _ => {}
         }
     }
@@ -826,6 +832,12 @@ impl Visit for TSVFieldExtractor {
             "operation_type" => self.operation_type = value.to_string(),
             "current_path" => self.current_path = value.to_string(),
             "target_path" => self.target_path = value.to_string(),
+            "entries_count" => self.entries_count = value.to_string(),
+            "selected_index" => self.selected_index = value.to_string(),
+            "duration_us" => self.duration_us = value.to_string(),
+            "cache_hit" => self.cache_hit = value.to_string(),
+            "area_width" => self.area_width = value.to_string(),
+            "area_height" => self.area_height = value.to_string(),
             _ => {}
         }
     }

@@ -1,4 +1,0 @@
-[
-  {"fields":{"error":"Terminal error: Failed to enable raw mode: No such device or address (os error 6)","message":"Operation failed","operation":"terminal_setup"},"file":"fsm-core/src/error.rs","level":"ERROR","line":283,"process_id":335974,"spans":[{"file":"fsm-core/src/main.rs","line":80,"name":"app_initialization","target":"fs"},{"file":"fsm-core/src/main.rs","line":78,"name":"app_new","target":"fs"}],"target":"fsm_core::error","thread_id":"ThreadId(1)","timestamp":1753781494}
-,
-  {"fields":{"error":"Terminal error: Failed to enable raw mode: No such device or address (os error 6)","message":"Operation failed","operation":"app_creation"},"file":"fsm-core/src/error.rs","level":"ERROR","line":283,"process_id":335974,"spans":[],"target":"fsm_core::error","thread_id":"ThreadId(1)","timestamp":1753781494}

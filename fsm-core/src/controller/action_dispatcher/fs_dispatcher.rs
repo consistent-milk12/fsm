@@ -51,34 +51,65 @@ impl FileOpsDispatcher {
     }
 
     /// Navigate into a directory using FileSystemOperator for all loading.
-    #[instrument(level = "info", skip(self, target), fields(target = %target.display()))]
-    async fn navigate_to(&self, target: PathBuf) -> Result<DispatchResult> {
-        info!(
+    #[instrument(
+        level = "info",
+        skip(self, target),
+        fields(
+            marker = "ENTER_START",
+            operation_type = "directory_entry",
             target_path = %target.display(),
-            "ENTER: Starting navigate_to via FileSystemOperator"
-        );
+            current_path = tracing::field::Empty,
+            entries_count = tracing::field::Empty,
+            selected_index = tracing::field::Empty,
+            duration_us = tracing::field::Empty,
+            cache_hit = false,
+            message = "Starting navigate_to via FileSystemOperator"
+        )
+    )]
+    async fn navigate_to(&self, target: PathBuf) -> Result<DispatchResult> {
+        let start = Instant::now();
+        let span = tracing::Span::current();
 
         // Validate directory existence
         if !target.exists() || !target.is_dir() {
-            error!("navigate_to: invalid directory {}", target.display());
+            error!(
+                marker = "ENTER_ERROR",
+                operation_type = "directory_entry",
+                target_path = %target.display(),
+                message = format!("navigate_to: invalid directory {}", target.display())
+            );
             self.error("Invalid directory");
             return Ok(DispatchResult::Continue);
         }
 
         // Update navigation state first
-        {
+        let (current_path_before, entries_count_before, selected_index_before) = {
             let mut fs: MutexGuard<'_, FSState> = self.state_provider.fs_state();
             fs.navigate_to(target.clone());
 
-            // Clear existing entries while waiting for FileSystemOperator results
             let pane: &mut PaneState = fs.active_pane_mut();
+
+            let current_path = pane.cwd.clone();
+            let entries_count = pane.entries.len();
+            let selected_index = pane.selected.load(Ordering::Relaxed);
+
+            // Clear existing entries while waiting for FileSystemOperator results
             pane.sort_entries(Vec::new()); // Clear entries, they will be populated by TaskResult
 
             info!(
-                target_path = %target.display(),
-                "ENTER: Navigation state updated, entries cleared"
+                marker = "STATE_AFTER",
+                operation_type = "directory_entry",
+                current_path = %pane.cwd.display(),
+                entries_count = pane.entries.len(),
+                selected_index = pane.selected.load(Ordering::Relaxed),
+                message = "Navigation state updated, entries cleared"
             );
-        }
+            (current_path, entries_count, selected_index)
+        };
+
+        span.record("current_path", &current_path_before.display().to_string());
+        span.record("entries_count", entries_count_before);
+        span.record("selected_index", selected_index_before);
 
         // Use FileSystemOperator for complete directory scanning (replaces both load_directory and load_background_metadata)
         FileSystemOperator::spawn_two_phase_directory_scan(
@@ -90,8 +121,11 @@ impl FileOpsDispatcher {
         );
 
         info!(
+            marker = "ENTER_COMPLETE",
+            operation_type = "directory_entry",
             target_path = %target.display(),
-            "ENTER: Two-phase directory scan initiated via FileSystemOperator"
+            duration_us = start.elapsed().as_micros(),
+            message = "Two-phase directory scan initiated via FileSystemOperator"
         );
 
         self.state_provider.request_redraw(RedrawFlag::All);
@@ -100,10 +134,16 @@ impl FileOpsDispatcher {
     }
 
     /// Handle the EnterSelected action by navigating if selected entry is a directory.
-    #[instrument(level = "info", skip(self))]
+    #[instrument(
+        level = "info",
+        skip(self),
+        fields(
+            marker = "ENTER_SELECTED_START",
+            operation_type = "navigation",
+            message = "Starting EnterSelected navigation"
+        )
+    )]
     async fn handle_enter_selected(&self) -> Result<DispatchResult> {
-        info!("=== ENTER: Starting EnterSelected navigation ===");
-
         // Determine selected path
         let target: Option<PathBuf> = {
             let fs: MutexGuard<'_, FSState> = self.state_provider.fs_state();
@@ -113,10 +153,12 @@ impl FileOpsDispatcher {
             let idx: usize = pane.selected.load(Ordering::Relaxed);
 
             info!(
+                marker = "STATE_BEFORE",
+                operation_type = "navigation",
                 current_path = %current_path.display(),
-                current_entries = current_entries,
+                entries_count = current_entries,
                 selected_index = idx,
-                "ENTER: Before navigation"
+                message = "Before navigation"
             );
 
             pane.entries
@@ -128,15 +170,21 @@ impl FileOpsDispatcher {
         match target {
             Some(path) => {
                 info!(
+                    marker = "NAVIGATE_TO_START",
+                    operation_type = "navigation",
                     target_path = %path.display(),
-                    "ENTER: Navigating into directory"
+                    message = "Navigating into directory"
                 );
 
                 self.navigate_to(path).await
             }
 
             None => {
-                info!("ENTER: No directory selected or selection is file");
+                info!(
+                    marker = "NO_ENTRY_AT_INDEX",
+                    operation_type = "navigation",
+                    message = "No directory selected or selection is file"
+                );
 
                 Ok(DispatchResult::Continue)
             }
@@ -144,31 +192,45 @@ impl FileOpsDispatcher {
     }
 
     /// Handle the GoToParent action by navigating to parent directory.
-    #[instrument(level = "info", skip(self))]
+    #[instrument(
+        level = "info",
+        skip(self),
+        fields(
+            marker = "NAVIGATE_PARENT_START",
+            operation_type = "navigation",
+            message = "Starting GoToParent navigation"
+        )
+    )]
     async fn handle_go_to_parent(&self) -> Result<DispatchResult> {
-        info!("=== BACKSPACE: Starting GoToParent navigation ===");
-
         let parent_path: Option<PathBuf> = {
             let mut fs: MutexGuard<'_, FSState> = self.state_provider.fs_state();
             let current_path: PathBuf = fs.active_pane().cwd.clone();
             let current_entries: usize = fs.active_pane().entries.len();
 
             info!(
+                marker = "STATE_BEFORE",
+                operation_type = "navigation",
                 current_path = %current_path.display(),
-                current_entries = current_entries,
-                "BACKSPACE: Before navigate_to_parent"
+                entries_count = current_entries,
+                message = "Before navigate_to_parent"
             );
 
             // Use FSState's navigation method to change directory only
             if let Some(parent_path) = fs.navigate_to_parent() {
                 info!(
-                    parent_path = %parent_path.display(),
-                    "BACKSPACE: Directory changed, entries need reload"
+                    marker = "NAVIGATE_PARENT_COMPLETE",
+                    operation_type = "navigation",
+                    target_path = %parent_path.display(),
+                    message = "Directory changed, entries need reload"
                 );
 
                 Some(parent_path)
             } else {
-                info!("BACKSPACE: Already at root directory");
+                info!(
+                    marker = "NAVIGATE_PARENT_BLOCKED",
+                    operation_type = "navigation",
+                    message = "Already at root directory"
+                );
 
                 None
             }
@@ -177,8 +239,10 @@ impl FileOpsDispatcher {
         match parent_path {
             Some(path) => {
                 info!(
-                    path = %path.display(),
-                    "BACKSPACE: Loading parent directory via FileSystemOperator"
+                    marker = "DIRECTORY_SCAN_START",
+                    operation_type = "file_system",
+                    current_path = %path.display(),
+                    message = "Loading parent directory via FileSystemOperator"
                 );
 
                 // Clear current entries and trigger FileSystemOperator scan
@@ -188,7 +252,9 @@ impl FileOpsDispatcher {
                     pane.sort_entries(Vec::new()); // Clear entries, they will be populated by TaskResult
 
                     info!(
-                        "BACKSPACE: Parent directory entries cleared, awaiting FileSystemOperator"
+                        marker = "DIRECTORY_ENTRIES_CLEARED",
+                        operation_type = "file_system",
+                        message = "Parent directory entries cleared, awaiting FileSystemOperator"
                     );
                 }
 
@@ -202,8 +268,10 @@ impl FileOpsDispatcher {
                 );
 
                 info!(
-                    path = %path.display(),
-                    "BACKSPACE: Two-phase directory scan initiated via FileSystemOperator"
+                    marker = "TWO_PHASE_SCAN_START",
+                    operation_type = "file_system",
+                    current_path = %path.display(),
+                    message = "Two-phase directory scan initiated via FileSystemOperator"
                 );
 
                 self.state_provider.request_redraw(RedrawFlag::All);
@@ -220,7 +288,16 @@ impl FileOpsDispatcher {
     }
 
     /// Create a new file in the current directory.
-    #[instrument(level = "info", skip(self, name), fields(name))]
+    #[instrument(
+        level = "info",
+        skip(self, name),
+        fields(
+            marker = "FILE_CREATE_START",
+            operation_type = "file_system",
+            target_path = name,
+            message = "Initiating file creation"
+        )
+    )]
     async fn create_file(&self, name: &str) -> Result<DispatchResult> {
         // Build file path
         let (cwd, file_path) = {
@@ -232,15 +309,22 @@ impl FileOpsDispatcher {
         // Attempt file creation
         match TokioFs::File::create(&file_path).await {
             Ok(_) => {
-                info!("create_file: created {}", file_path.display());
+                info!(
+                    marker = "FILE_CREATED",
+                    operation_type = "file_system",
+                    target_path = %file_path.display(),
+                    message = format!("File created: {}", file_path.display())
+                );
                 self.success(&format!("Created file: {name}"));
                 self.navigate_to(cwd).await
             }
             Err(e) => {
                 error!(
-                    "create_file: failed to create {}: {:?}",
-                    file_path.display(),
-                    e
+                    marker = "FILE_OPERATION_FAILED",
+                    operation_type = "file_system",
+                    target_path = %file_path.display(),
+                    error = %e,
+                    message = format!("Failed to create file: {}: {:?}", file_path.display(), e)
                 );
 
                 self.error(&format!("Failed to create file: {e}"));
@@ -251,7 +335,16 @@ impl FileOpsDispatcher {
     }
 
     /// Create a new directory in the current directory.
-    #[instrument(level = "info", skip(self, name), fields(name))]
+    #[instrument(
+        level = "info",
+        skip(self, name),
+        fields(
+            marker = "DIRECTORY_CREATE_START",
+            operation_type = "file_system",
+            target_path = name,
+            message = "Initiating directory creation"
+        )
+    )]
     async fn create_directory(&self, name: &str) -> Result<DispatchResult> {
         // Build directory path
         let (cwd, dir_path) = {
@@ -264,7 +357,12 @@ impl FileOpsDispatcher {
         // Attempt directory creation
         match TokioFs::create_dir(&dir_path).await {
             Ok(_) => {
-                info!("create_directory: created {}", dir_path.display());
+                info!(
+                    marker = "DIRECTORY_CREATED",
+                    operation_type = "file_system",
+                    target_path = %dir_path.display(),
+                    message = format!("Directory created: {}", dir_path.display())
+                );
 
                 self.success(&format!("Created directory: {name}"));
                 self.navigate_to(cwd).await
@@ -272,9 +370,11 @@ impl FileOpsDispatcher {
 
             Err(e) => {
                 error!(
-                    "create_directory: failed to create {}: {:?}",
-                    dir_path.display(),
-                    e
+                    marker = "FILE_OPERATION_FAILED",
+                    operation_type = "file_system",
+                    target_path = %dir_path.display(),
+                    error = %e,
+                    message = format!("Failed to create directory: {}: {:?}", dir_path.display(), e)
                 );
 
                 self.error(&format!("Failed to create directory: {e}"));
@@ -299,7 +399,12 @@ impl FileOpsDispatcher {
             Action::ReloadDirectory => {
                 let cwd: PathBuf = self.state_provider.fs_state().active_pane().cwd.clone();
 
-                info!("handle ReloadDirectory: refreshing {}", cwd.display());
+                info!(
+                    marker = "RELOAD_DIRECTORY_START",
+                    operation_type = "file_system",
+                    current_path = %cwd.display(),
+                    message = format!("Reloading directory: {}", cwd.display())
+                );
 
                 self.navigate_to(cwd).await
             }

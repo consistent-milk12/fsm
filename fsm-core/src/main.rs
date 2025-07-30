@@ -45,14 +45,26 @@ use fsm_core::{
 type AppTerminal = Terminal<Backend<Stdout>>;
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
-#[instrument(name = "main")]
+#[instrument(
+    level = "info",
+    name = "main_application_entry",
+    fields(
+        marker = "APP_START",
+        operation_type = "application_lifecycle",
+        message = "FSM-Core application started"
+    )
+)]
 async fn main() -> Result<()> {
     let startup_start: Instant = Instant::now();
     setup_panic_handler();
 
     let _logger: Logger = Logger::init_with_config(LoggingConfig::development())?;
 
-    info!("Starting FSM-Core with integrated FileSystemOperator");
+    info!(
+        marker = "APP_START",
+        operation_type = "application_lifecycle",
+        message = "Starting FSM-Core with integrated FileSystemOperator"
+    );
 
     let app: App = measure_time!("app_initialization", {
         App::new().await.trace_err("app_creation")?
@@ -61,13 +73,19 @@ async fn main() -> Result<()> {
     let startup_time: Duration = startup_start.elapsed();
 
     info!(
-        startup_time_ms = startup_time.as_millis(),
-        "FSM-Core startup completed"
+        marker = "APP_STARTUP_COMPLETE",
+        operation_type = "application_lifecycle",
+        duration_us = startup_time.as_micros(),
+        message = "FSM-Core startup completed"
     );
 
     app.run().await.trace_err("app_runtime")?;
 
-    info!("FSM-Core exited cleanly");
+    info!(
+        marker = "APP_EXIT_CLEAN",
+        operation_type = "application_lifecycle",
+        message = "FSM-Core exited cleanly"
+    );
 
     Ok(())
 }
@@ -82,7 +100,16 @@ struct App {
 }
 
 impl App {
-    #[instrument(name = "app_new", skip_all)]
+    #[instrument(
+        level = "info",
+        name = "app_new",
+        skip_all,
+        fields(
+            marker = "APP_INITIALIZATION_START",
+            operation_type = "application_lifecycle",
+            message = "Application new instance creation started"
+        )
+    )]
     async fn new() -> AppResult<Self> {
         let _span: EnteredSpan = trace_operation!("app_initialization");
 
@@ -100,13 +127,22 @@ impl App {
 
             match Config::load().await {
                 Ok(config) => {
-                    info!("Configuration loaded successfully");
+                    info!(
+                        marker = "CONFIG_LOAD_SUCCESS",
+                        operation_type = "configuration_management",
+                        message = "Configuration loaded successfully"
+                    );
 
                     Arc::new(config)
                 }
 
                 Err(e) => {
-                    warn!(error = %e, "Failed to load config, using defaults");
+                    warn!(
+                        marker = "CONFIG_LOAD_FAILED",
+                        operation_type = "configuration_management",
+                        error = %e,
+                        message = "Failed to load config, using defaults"
+                    );
 
                     Arc::new(Config::default())
                 }
@@ -121,8 +157,10 @@ impl App {
                 Arc::new(ObjectInfoCache::with_config(config.cache.clone()));
 
             info!(
+                marker = "CACHE_INIT",
+                operation_type = "cache_management",
                 cache_capacity = config.cache.max_capacity,
-                "Object cache initialized"
+                message = "Object cache initialized"
             );
 
             cache
@@ -138,7 +176,12 @@ impl App {
                 .context("Failed to resolve current directory")?
         };
 
-        info!(directory = %current_dir.display(), "Working directory resolved");
+        info!(
+            marker = "DIRECTORY_RESOLVED",
+            operation_type = "file_system",
+            current_path = %current_dir.display(),
+            message = "Working directory resolved"
+        );
 
         // State initialization
         let (app_state, fs_state, ui_state) = {
@@ -150,7 +193,11 @@ impl App {
                 Arc::new(Mutex::new(FSState::new(current_dir.clone())));
             let ui_state: Arc<RwLock<UIState>> = Arc::new(RwLock::new(UIState::default()));
 
-            info!("Application states initialized");
+            info!(
+                marker = "APP_STATE_DEFAULT_CREATED",
+                operation_type = "state_management",
+                message = "Application states initialized"
+            );
             (app_state, fs_state, ui_state)
         };
 
@@ -180,7 +227,11 @@ impl App {
 
         let ui_renderer: UIRenderer = UIRenderer::new();
 
-        info!("Application initialization with FileSystemOperator completed successfully");
+        info!(
+            marker = "APP_INITIALIZATION_COMPLETE",
+            operation_type = "application_lifecycle",
+            message = "Application initialization with FileSystemOperator completed successfully"
+        );
 
         Ok(Self {
             terminal,
@@ -227,11 +278,24 @@ impl App {
         Ok(())
     }
 
-    #[instrument(name = "app_run", skip(self))]
+    #[instrument(
+        level = "info",
+        name = "app_run",
+        skip(self),
+        fields(
+            marker = "APP_RUN_START",
+            operation_type = "application_lifecycle",
+            message = "Starting main application loop"
+        )
+    )]
     async fn run(mut self) -> AppResult<()> {
         let run_start = Instant::now();
 
-        info!("Starting main application loop with FileSystemOperator");
+        info!(
+            marker = "APP_RUN_START",
+            operation_type = "application_lifecycle",
+            message = "Starting main application loop with FileSystemOperator"
+        );
 
         // Shutdown is now handled in run_main_loop
 
@@ -243,8 +307,10 @@ impl App {
         match loop_result {
             Ok(_) => {
                 info!(
-                    runtime_secs = total_runtime.as_secs(),
-                    "Application completed successfully"
+                    marker = "APP_EXIT_CLEAN",
+                    operation_type = "application_lifecycle",
+                    duration_us = total_runtime.as_micros(),
+                    message = "Application completed successfully"
                 );
 
                 Ok(())
@@ -252,9 +318,11 @@ impl App {
 
             Err(e) => {
                 error!(
-                    runtime_secs = total_runtime.as_secs(),
+                    marker = "APPLICATION_PANIC",
+                    operation_type = "application_lifecycle",
+                    duration_us = total_runtime.as_micros(),
                     error = %e,
-                    "Application terminated with error"
+                    message = "Application terminated with error"
                 );
 
                 Err(e)
@@ -262,7 +330,16 @@ impl App {
         }
     }
 
-    #[instrument(name = "main_loop", skip(self))]
+    #[instrument(
+        level = "info",
+        name = "main_loop",
+        skip(self),
+        fields(
+            marker = "EVENT_LOOP_STARTED",
+            operation_type = "event_loop",
+            message = "Main event loop started"
+        )
+    )]
     async fn run_main_loop(&mut self) -> AppResult<()> {
         let mut frame_count: u64 = 0u64;
         let mut render_interval: Interval =
@@ -314,19 +391,33 @@ impl App {
                 result = &mut event_loop_handle => {
                     match result {
                         Ok(Ok(_)) => {
-                            info!("Event loop completed normally");
+                            info!(
+                                marker = "EVENT_LOOP_COMPLETED",
+                                operation_type = "event_loop",
+                                message = "Event loop completed normally"
+                            );
 
                             break;
                         }
 
                         Ok(Err(e)) => {
-                            error!(error = %e, "Event loop error");
+                            error!(
+                                marker = "TERMINAL_EVENT_ERROR",
+                                operation_type = "event_loop",
+                                error = %e,
+                                message = "Event loop error"
+                            );
 
                             return Err(AppError::Other(format!("Event loop failed: {e}")));
                         }
 
                         Err(e) => {
-                            error!(error = %e, "Event loop task failed");
+                            error!(
+                                marker = "TERMINAL_EVENT_ERROR",
+                                operation_type = "event_loop",
+                                error = %e,
+                                message = "Event loop task failed"
+                            );
 
                             return Err(AppError::Other(format!("Event loop task failed: {e}")));
                         }
@@ -341,7 +432,12 @@ impl App {
                         timestamp: SystemTime::now(),
                     };
                     if let Err(e) = self.action_tx.send(action) {
-                        warn!(error = %e, "Failed to send TriggerImmediateRender action");
+                        warn!(
+                            marker = "ACTION_DISPATCH_FAILED",
+                            operation_type = "action_dispatch",
+                            error = %e,
+                            message = "Failed to send TriggerImmediateRender action"
+                        );
                     }
                 }
 
@@ -351,10 +447,13 @@ impl App {
                     if self.state_coordinator.needs_redraw() {
                         if let Err(e) = self.render_frame(frame_count).trace_err("INTERVAL_FRAME_RENDER") {
                             warn!(
+                                marker = "ERROR_RENDER",
+                                operation_type = "ui_render",
                                 frame = frame_count,
                                 error = %e,
-                                "Interval frame render failed, dispatching error action"
+                                message = "Interval frame render failed, dispatching error action"
                             );
+                            
                             let error_action = Action::HandleRenderError {
                                 error: e.to_string(),
                                 frame_count,
@@ -362,8 +461,14 @@ impl App {
                                 recovery_action: None,
                                 timestamp: SystemTime::now(),
                             };
+
                             if let Err(e) = self.action_tx.send(error_action) {
-                                error!(error = %e, "Failed to send HandleRenderError action");
+                                error!(
+                                    marker = "ACTION_DISPATCH_FAILED",
+                                    operation_type = "action_dispatch",
+                                    error = %e,
+                                    message = "Failed to send HandleRenderError action"
+                                );
                             }
                         }
                         frame_count += 1;
@@ -372,14 +477,22 @@ impl App {
 
                 // 4. Handle system signals
                 _ = &mut ctrl_c => {
-                    info!("Received Ctrl+C signal");
+                    info!(
+                        marker = "SHUTDOWN_SIGNAL_SENT",
+                        operation_type = "application_lifecycle",
+                        message = "Received Ctrl+C signal"
+                    );
 
                     shutdown_handle.notify_one();
 
                     break;
                 }
                 _ = &mut terminate => {
-                    info!("Received terminate signal");
+                    info!(
+                        marker = "SHUTDOWN_SIGNAL_SENT",
+                        operation_type = "application_lifecycle",
+                        message = "Received terminate signal"
+                    );
 
                     shutdown_handle.notify_one();
 
@@ -388,7 +501,11 @@ impl App {
 
                 // 5. Handle cancellation token
                 _ = self.cancel_token.cancelled() => {
-                    info!("Received cancellation signal, shutting down gracefully");
+                    info!(
+                        marker = "SHUTDOWN_SIGNAL_SENT",
+                        operation_type = "application_lifecycle",
+                        message = "Received cancellation signal, shutting down gracefully"
+                    );
 
                     shutdown_handle.notify_one();
 
@@ -400,7 +517,17 @@ impl App {
         Ok(())
     }
 
-    #[instrument(name = "render_frame", skip(self), fields(frame = frame_count))]
+    #[instrument(
+        level = "info",
+        name = "render_frame",
+        skip(self),
+        fields(
+            marker = "UI_RENDER_START",
+            operation_type = "ui_render",
+            frame = frame_count,
+            message = "UI frame render initiated"
+        )
+    )]
     fn render_frame(&mut self, frame_count: u64) -> AppResult<()> {
         if !self.state_coordinator.needs_redraw() {
             return Ok(());
@@ -410,7 +537,15 @@ impl App {
 
         let render_result = self.terminal.draw(|frame: &mut Frame| {
             let _span: EnteredSpan =
-                tracing::info_span!("ui_render", frame = frame_count).entered();
+                tracing::info_span!(
+                    "ui_render_span",
+                    marker = "UI_RENDER_START",
+                    operation_type = "ui_render",
+                    frame = frame_count,
+                    area_width = frame.size().width,
+                    area_height = frame.size().height,
+                    message = "UI frame render initiated within span"
+                ).entered();
             self.ui_renderer.render(frame, &self.state_coordinator);
         });
 
@@ -420,23 +555,13 @@ impl App {
             Ok(_) => {
                 self.state_coordinator.clear_redraw();
 
-                // Log every 60 frames (approximately 1 second at 60fps)
-                if frame_count % 60 == 0 {
-                    tracing::debug!(
-                        frame = frame_count,
-                        render_time_us = render_duration.as_micros(),
-                        "Frame rendered"
-                    );
-                } else {
-                    // Trace individual frames for debugging
-                    trace!(
-                        marker = "FRAME_RENDERED_TRACE",
-                        operation_type = "ui_render",
-                        frame = frame_count,
-                        render_time_us = render_duration.as_micros(),
-                        "Frame rendered"
-                    );
-                }
+                info!(
+                    marker = "UI_RENDER_COMPLETE",
+                    operation_type = "ui_render",
+                    frame = frame_count,
+                    duration_us = render_duration.as_micros(),
+                    message = "UI frame render completed"
+                );
 
                 Ok(())
             }
@@ -448,10 +573,12 @@ impl App {
                 };
 
                 error!(
+                    marker = "ERROR_RENDER",
+                    operation_type = "ui_render",
                     frame = frame_count,
-                    render_time_us = render_duration.as_micros(),
+                    duration_us = render_duration.as_micros(),
                     error = %error,
-                    "Frame render failed"
+                    message = "Frame render failed"
                 );
 
                 Err(error)
@@ -462,15 +589,29 @@ impl App {
 
 impl Drop for App {
     fn drop(&mut self) {
-        let _span: EnteredSpan = trace_fn!("app_cleanup");
+        let _span: EnteredSpan = tracing::info_span!(
+            "app_cleanup",
+            marker = "APP_EXIT_CLEAN",
+            operation_type = "application_lifecycle",
+            message = "Application cleanup initiated"
+        ).entered();
 
         // Cancel all ongoing operations
         self.cancel_token.cancel();
 
         if let Err(e) = cleanup_terminal(&mut self.terminal) {
-            warn!(error = %e, "Terminal cleanup failed");
+            warn!(
+                marker = "TERMINAL_CLEANUP_FAILED",
+                operation_type = "terminal",
+                error = %e,
+                message = "Terminal cleanup failed"
+            );
         } else {
-            debug!("Terminal cleanup completed successfully");
+            debug!(
+                marker = "TERMINAL_CLEANUP_COMPLETE",
+                operation_type = "terminal",
+                message = "Terminal cleanup completed successfully"
+            );
         }
 
         // Flush logs to ensure all file system operations are recorded
@@ -478,9 +619,22 @@ impl Drop for App {
     }
 }
 
-#[instrument(name = "setup_terminal")]
+#[instrument(
+    level = "info",
+    name = "setup_terminal",
+    fields(
+        marker = "TERMINAL_SETUP_START",
+        operation_type = "terminal",
+        message = "Terminal setup initiated"
+    )
+)]
 fn setup_terminal() -> AppResult<AppTerminal> {
-    let _span: EnteredSpan = trace_operation!("terminal_initialization");
+    let _span: EnteredSpan = tracing::info_span!(
+        "terminal_initialization_span",
+        marker = "TERMINAL_SETUP_START",
+        operation_type = "terminal",
+        message = "Terminal initialization within span"
+    ).entered();
 
     enable_raw_mode().map_err(|e| AppError::Terminal(format!("Failed to enable raw mode: {e}")))?;
 
@@ -492,11 +646,23 @@ fn setup_terminal() -> AppResult<AppTerminal> {
     let terminal: Terminal<Backend<Stdout>> = Terminal::new(backend)
         .map_err(|e| AppError::Terminal(format!("Failed to create terminal: {e}")))?;
 
-    info!("Terminal setup completed successfully");
+    info!(
+        marker = "TERMINAL_SETUP_COMPLETE",
+        operation_type = "terminal",
+        message = "Terminal setup completed successfully"
+    );
     Ok(terminal)
 }
 
-#[instrument(name = "cleanup_terminal")]
+#[instrument(
+    level = "info",
+    name = "cleanup_terminal",
+    fields(
+        marker = "TERMINAL_CLEANUP_START",
+        operation_type = "terminal",
+        message = "Terminal cleanup initiated"
+    )
+)]
 fn cleanup_terminal(terminal: &mut AppTerminal) -> AppResult<()> {
     disable_raw_mode()
         .map_err(|e| AppError::Terminal(format!("Failed to disable raw mode: {e}")))?;
@@ -508,7 +674,11 @@ fn cleanup_terminal(terminal: &mut AppTerminal) -> AppResult<()> {
         .show_cursor()
         .map_err(|e| AppError::Terminal(format!("Failed to show cursor: {e}")))?;
 
-    info!("Terminal cleanup completed");
+    info!(
+        marker = "TERMINAL_CLEANUP_COMPLETE",
+        operation_type = "terminal",
+        message = "Terminal cleanup completed"
+    );
     Ok(())
 }
 
@@ -521,9 +691,11 @@ fn setup_panic_handler() {
 
         // Log panic with tracing
         error!(
+            marker = "APPLICATION_PANIC",
+            operation_type = "application_lifecycle",
             panic_info = %info,
             location = info.location().map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column())),
-            "PANIC: Application panicked"
+            message = "PANIC: Application panicked"
         );
 
         // Flush logs including file system operation logs
