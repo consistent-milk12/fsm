@@ -39,10 +39,22 @@ This document summarizes the logical inconsistencies and bugs identified during 
 *   **Status: No Action Taken**
 *   **Action Taken:** This item was not addressed as it falls outside the scope of fixing logging and rendering logic. Further analysis on new logs is required.
 
+## 6. Notification Overlay Persistence
+
+*   **Observation:** The notification overlay remained visible after actions, obscuring the `ObjectTable`.
+*   **Impact:** Obscured UI elements, degraded user experience.
+*   **Status: Resolved**
+*   **Action Taken:** The `EventLoop::run` function in `fsm-core/src/controller/event_loop.rs` was modified to periodically call `ui.poll_notification()` and also call it after injected actions. This ensures notifications are dismissed automatically based on their `auto_dismiss_ms` setting.
+
+## 7. App Exit Issue (`q` and `ctrl+c` not exiting)
+
+*   **Observation:** Pressing 'q' or 'ctrl+c' did not exit the application.
+*   **Impact:** Users could not gracefully exit the application using standard keybindings.
+*   **Status: Resolved**
+*   **Action Taken:** The `EventLoop::run` function in `fsm-core/src/controller/event_loop.rs` was modified to correctly break the main loop when `ActionDispatcher::dispatch` returns `Ok(false)`, which is the expected behavior for `Action::Quit`. Additionally, a final redraw was requested before breaking the loop to ensure the terminal state is clean.
+
 ---
 
 **Recommendations:**
 
-*   **Generate New Logs:** Generate a new `fsm-core.tsv` log file to verify that all fixes are working as expected.
-*   **Verify UI:** Confirm that the `ObjectTable` now correctly displays the size and item count for directories.
 *   **Analyze `UI_RENDER_SLOW` Events:** Examine the specific context of any `UI_RENDER_SLOW` events in the new log file to pinpoint performance bottlenecks.

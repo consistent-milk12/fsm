@@ -305,7 +305,7 @@ impl EventLoop {
 
                                 if !continue_loop {
                                     info!("Event loop termination requested by action");
-
+                                    self.state_coordinator.request_redraw(RedrawFlag::All); // Ensure final render
                                     break;
                                 }
                             }
@@ -331,8 +331,13 @@ impl EventLoop {
                 // 4) Injected actions from other parts of the application (e.g., main render loop)
                 Some(action) = self.action_rx.recv() => {
                     debug!(action = ?action, "Received injected action");
-                    if !self.dispatch_action(action, ActionSource::System).await? {
+                    let continue_loop = self.dispatch_action(action, ActionSource::System).await?;
+                    self.state_coordinator.update_ui_state(Box::new(|ui: &mut UIState| {
+                        ui.poll_notification();
+                    }));
+                    if !continue_loop {
                         info!("Event loop termination requested by injected action");
+                        self.state_coordinator.request_redraw(RedrawFlag::All); // Ensure final render
                         break;
                     }
                 }
@@ -349,6 +354,11 @@ impl EventLoop {
 
                 last_metrics = Instant::now();
             }
+
+            // Poll notifications for auto-dismissal
+            self.state_coordinator.update_ui_state(Box::new(|ui: &mut UIState| {
+                ui.poll_notification();
+            }));
         }
 
         // Shutdown complete
