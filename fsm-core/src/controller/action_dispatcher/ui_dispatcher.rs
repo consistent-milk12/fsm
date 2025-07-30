@@ -129,7 +129,7 @@ impl UIControlDispatcher {
                 timestamp: _,
             } => {
                 span.record("frame_count", *frame_count);
-                span.record("trigger_source", format!("{:?}", trigger_source));
+                span.record("trigger_source", format!("{trigger_source:?}"));
 
                 info!(
                     marker = "RENDER_NOTIFY_RECEIVED",
@@ -235,7 +235,7 @@ impl UIControlDispatcher {
                 let frame_num = *frame_count;
                 self.state_provider
                     .update_ui_state(Box::new(move |ui: &mut UIState| {
-                        ui.error(format!("Render error (frame {}): {}", frame_num, error_msg));
+                        ui.error(format!("Render error (frame {frame_num}): {error_msg}"));
                     }));
 
                 // Execute recovery action if provided

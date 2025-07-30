@@ -32,7 +32,7 @@ impl OperationId {
         &self.0
     }
 
-    pub fn from_str(id: &str) -> Self {
+    pub fn from_id_str(id: &str) -> Self {
         Self(id.to_string())
     }
 }
@@ -257,8 +257,7 @@ impl std::fmt::Display for Action {
             } => {
                 write!(
                     f,
-                    "TriggerImmediateRender(source={:?}, frame={})",
-                    trigger_source, frame_count
+                    "TriggerImmediateRender(source={trigger_source:?}, frame={frame_count})"
                 )
             }
             Action::HandleRenderError {
@@ -269,8 +268,7 @@ impl std::fmt::Display for Action {
             } => {
                 write!(
                     f,
-                    "HandleRenderError(error={}, frame={}, source={})",
-                    error, frame_count, error_source
+                    "HandleRenderError(error={error}, frame={frame_count}, source={error_source})"
                 )
             }
             Action::UpdateEntryMetadata { entry_path, .. } => {

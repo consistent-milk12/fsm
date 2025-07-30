@@ -205,7 +205,7 @@ impl SearchState {
     // Instrument adding a query; skip self
     #[instrument(level = "info", skip(self), fields(query = ?query))]
     pub fn add_query(&mut self, query: CompactString) {
-        if let Some(pos) = self.recent_queries.iter().position(|q| q == &query) {
+        if let Some(pos) = self.recent_queries.iter().position(|q| q == query) {
             self.recent_queries.remove(pos);
         }
         self.recent_queries.push_front(query.clone());

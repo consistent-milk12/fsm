@@ -276,7 +276,7 @@ impl FileSystemOperator {
         if !matches!(self.operation, FileSystemOperation::ScanDirectory { .. }) {
             // Determine the operation kind and ID
             let operation_type: FileOperationType = self.get_operation_type();
-            let op_id: OperationId = OperationId::from_str(&self.operation_id.as_str());
+            let op_id: OperationId = OperationId::from_id_str(self.operation_id.as_str());
 
             // Reconstruct a new Result<(), Arc<AppError>> by borrowing `result`
             let completion_result: Result<(), Arc<AppError>> = match &result {

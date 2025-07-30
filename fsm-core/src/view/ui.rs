@@ -318,7 +318,7 @@ impl UIRenderer {
                 self.system_monitor_overlay.render_system_monitor(
                     frame,
                     ui_snapshot,
-                    &*app_guard,
+                    &app_guard,
                     area,
                 );
             }

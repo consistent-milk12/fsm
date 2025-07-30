@@ -1,5 +1,11 @@
 //! System and process monitor overlay with proper FSM integration.
 
+use std::{
+    cmp::Ordering,
+    rc::Rc,
+    time::{Duration, Instant},
+};
+
 use ratatui::{
     prelude::*,
     widgets::{Block, Borders, Clear, Gauge, List, ListItem, ListState, Paragraph},
@@ -17,12 +23,15 @@ use crate::{
 pub struct OptimizedSystemMonitorOverlay {
     /// Process list state for selection
     process_list_state: ListState,
+
     /// Cache for process data formatting
     cached_process_items: Vec<ListItem<'static>>,
+
     /// Last update timestamp
-    last_update: std::time::Instant,
+    last_update: Instant,
+
     /// Update interval (2 seconds)
-    update_interval: std::time::Duration,
+    update_interval: Duration,
 }
 
 impl OptimizedSystemMonitorOverlay {
@@ -30,8 +39,8 @@ impl OptimizedSystemMonitorOverlay {
         Self {
             process_list_state: ListState::default(),
             cached_process_items: Vec::new(),
-            last_update: std::time::Instant::now() - std::time::Duration::from_secs(3), // Force initial update
-            update_interval: std::time::Duration::from_secs(2),
+            last_update: Instant::now() - Duration::from_secs(3), // Force initial update
+            update_interval: Duration::from_secs(2),
         }
     }
 
@@ -48,7 +57,7 @@ impl OptimizedSystemMonitorOverlay {
         frame.render_widget(Clear, area);
 
         // Check if we have system data
-        let system_data = if let Some(ref data) = app_state.system_data {
+        let system_data: SystemData = if let Some(ref data) = app_state.system_data {
             data.clone()
         } else {
             // Render placeholder if no data available
@@ -57,7 +66,7 @@ impl OptimizedSystemMonitorOverlay {
         };
 
         // Main layout: system info (top) + process list (bottom)
-        let chunks = Layout::default()
+        let chunks: Rc<[Rect]> = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Length(8), Constraint::Min(0)])
             .split(area);
@@ -71,7 +80,7 @@ impl OptimizedSystemMonitorOverlay {
 
     /// Render system information gauges
     fn render_system_info(&self, frame: &mut Frame, data: &SystemData, area: Rect) {
-        let block = Block::default()
+        let block: Block<'_> = Block::default()
             .title(" System Monitor ")
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Cyan))
@@ -80,11 +89,11 @@ impl OptimizedSystemMonitorOverlay {
         frame.render_widget(block, area);
 
         // Inner area for gauges
-        let inner = area.inner(Margin {
+        let inner: Rect = area.inner(Margin {
             vertical: 1,
             horizontal: 1,
         });
-        let gauge_chunks = Layout::default()
+        let gauge_chunks: Rc<[Rect]> = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(1), // CPU
@@ -95,18 +104,17 @@ impl OptimizedSystemMonitorOverlay {
             .split(inner);
 
         // CPU Usage Gauge
-        let cpu_percentage = data.cpu_usage.min(100.0).max(0.0) as u16;
-        let cpu_gauge = Gauge::default()
+        let cpu_percentage: u16 = data.cpu_usage.clamp(0.0, 100.0) as u16;
+        let cpu_gauge: Gauge<'_> = Gauge::default()
             .label(format!("CPU: {:.1}%", data.cpu_usage))
             .gauge_style(self.get_cpu_color(data.cpu_usage))
             .percent(cpu_percentage);
+
         frame.render_widget(cpu_gauge, gauge_chunks[0]);
 
         // Memory Usage Gauge
         let mem_ratio = if data.total_mem > 0 {
-            (data.mem_usage as f64 / data.total_mem as f64)
-                .min(1.0)
-                .max(0.0)
+            (data.mem_usage as f64 / data.total_mem as f64).clamp(0.0, 1.0)
         } else {
             0.0
         };
@@ -121,14 +129,13 @@ impl OptimizedSystemMonitorOverlay {
         frame.render_widget(mem_gauge, gauge_chunks[1]);
 
         // Swap Usage Gauge
-        let swap_ratio = if data.total_swap > 0 {
-            (data.swap_usage as f64 / data.total_swap as f64)
-                .min(1.0)
-                .max(0.0)
+        let swap_ratio: f64 = if data.total_swap > 0 {
+            (data.swap_usage as f64 / data.total_swap as f64).clamp(0.0, 1.0)
         } else {
             0.0
         };
-        let swap_gauge = Gauge::default()
+
+        let swap_gauge: Gauge<'_> = Gauge::default()
             .label(format!(
                 "Swap: {} / {}",
                 format_bytes(data.swap_usage),
@@ -136,6 +143,7 @@ impl OptimizedSystemMonitorOverlay {
             ))
             .gauge_style(self.get_swap_color(swap_ratio))
             .ratio(swap_ratio);
+
         frame.render_widget(swap_gauge, gauge_chunks[2]);
     }
 
@@ -147,7 +155,7 @@ impl OptimizedSystemMonitorOverlay {
         ui_snapshot: &UiSnapshot,
         area: Rect,
     ) {
-        let block = Block::default()
+        let block: Block<'_> = Block::default()
             .title(" Processes ")
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Green))
@@ -166,7 +174,7 @@ impl OptimizedSystemMonitorOverlay {
         }
 
         // Create process list widget
-        let process_list = List::new(self.cached_process_items.clone())
+        let process_list: List<'_> = List::new(self.cached_process_items.clone())
             .block(block)
             .highlight_style(
                 Style::default()
@@ -187,14 +195,14 @@ impl OptimizedSystemMonitorOverlay {
 
     /// Update cached process items
     fn update_process_cache(&mut self, processes: &[ProcessData]) {
-        let now = std::time::Instant::now();
+        let now: Instant = Instant::now();
 
         // Sort processes by CPU usage (descending)
-        let mut sorted_processes = processes.to_vec();
-        sorted_processes.sort_by(|a, b| {
+        let mut sorted_processes: Vec<ProcessData> = processes.to_vec();
+        sorted_processes.sort_by(|a: &ProcessData, b: &ProcessData| {
             b.cpu_usage
                 .partial_cmp(&a.cpu_usage)
-                .unwrap_or(std::cmp::Ordering::Equal)
+                .unwrap_or(Ordering::Equal)
         });
 
         // Take top 50 processes to avoid UI clutter
@@ -243,7 +251,7 @@ impl OptimizedSystemMonitorOverlay {
 
     /// Render placeholder when no system data is available
     fn render_placeholder(&self, frame: &mut Frame, area: Rect) {
-        let block = Block::default()
+        let block: Block<'_> = Block::default()
             .title(" System Monitor ")
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Gray))
@@ -251,16 +259,17 @@ impl OptimizedSystemMonitorOverlay {
 
         frame.render_widget(block, area);
 
-        let inner = area.inner(Margin {
+        let inner: Rect = area.inner(Margin {
             vertical: 2,
             horizontal: 2,
         });
-        let text = Text::from(vec![
+
+        let text: Text<'_> = Text::from(vec![
             Line::from("System monitoring not available"),
             Line::from("Press 'S' to enable system monitoring"),
         ]);
 
-        let paragraph = Paragraph::new(text)
+        let paragraph: Paragraph<'_> = Paragraph::new(text)
             .style(Style::default().fg(Color::Gray))
             .alignment(Alignment::Center);
 
@@ -322,7 +331,8 @@ impl OptimizedSystemMonitorOverlay {
 
     /// Move selection up
     pub fn select_previous(&mut self) {
-        let selected = self.process_list_state.selected().unwrap_or(0);
+        let selected: usize = self.process_list_state.selected().unwrap_or(0);
+
         if selected > 0 {
             self.process_list_state.select(Some(selected - 1));
         }
@@ -331,6 +341,7 @@ impl OptimizedSystemMonitorOverlay {
     /// Move selection down
     pub fn select_next(&mut self) {
         let selected = self.process_list_state.selected().unwrap_or(0);
+
         if selected + 1 < self.cached_process_items.len() {
             self.process_list_state.select(Some(selected + 1));
         }
@@ -357,9 +368,9 @@ fn format_bytes(bytes: u64) -> String {
         return "0 B".to_string();
     }
 
-    let bytes_f = bytes as f64;
-    let unit_index = ((bytes_f.ln() / THRESHOLD.ln()) as usize).min(UNITS.len() - 1);
-    let value = bytes_f / THRESHOLD.powi(unit_index as i32);
+    let bytes_f: f64 = bytes as f64;
+    let unit_index: usize = ((bytes_f.ln() / THRESHOLD.ln()) as usize).min(UNITS.len() - 1);
+    let value: f64 = bytes_f / THRESHOLD.powi(unit_index as i32);
 
     if unit_index == 0 {
         format!("{} {}", bytes, UNITS[unit_index])
@@ -375,7 +386,7 @@ fn truncate_string(s: &str, max_len: usize) -> String {
     } else if max_len <= 3 {
         s.chars().take(max_len).collect()
     } else {
-        let mut result = s.chars().take(max_len - 3).collect::<String>();
+        let mut result: String = s.chars().take(max_len - 3).collect::<String>();
         result.push_str("...");
         result
     }

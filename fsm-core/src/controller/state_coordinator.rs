@@ -3,7 +3,7 @@
 
 use anyhow::Result;
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard},
     time::Instant,
 };
@@ -260,7 +260,7 @@ impl StateProvider for StateCoordinator {
 
     fn update_entry_metadata(
         &self,
-        directory_path: &PathBuf,
+        directory_path: &Path,
         entry_path: PathBuf,
         updated_entry: ObjectInfo,
     ) -> StdResult<(), String> {

@@ -124,7 +124,7 @@ impl Logger {
                 let _ = fs::OpenOptions::new()
                     .create(true) // create file if missing
                     .append(true) // append to avoid clobbering
-                    .write(true) // enable write access
+                    // enable write access
                     .open(&header_path)
                     .and_then(|mut f| {
                         // Write the header row, followed by newline
@@ -807,7 +807,7 @@ impl TSVFieldExtractor {
 impl Visit for TSVFieldExtractor {
     fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
         let field_name = field.name();
-        let formatted_value = format!("{:?}", value).trim_matches('"').to_string();
+        let formatted_value = format!("{value:?}").trim_matches('"').to_string();
 
         match field_name {
             "message" => self.message = formatted_value,
@@ -943,7 +943,7 @@ where
             "fields": visitor.fields,
         });
 
-        writeln!(writer, "{}", log_record)
+        writeln!(writer, "{log_record}")
     }
 }
 
@@ -1121,9 +1121,9 @@ where
             {
                 // Prepend comma for non-first entries
                 if self.is_first.swap(false, Ordering::SeqCst) {
-                    let _ = writeln!(file, "  {}", error_record);
+                    let _ = writeln!(file, "  {error_record}");
                 } else {
-                    let _ = writeln!(file, ",\n  {}", error_record);
+                    let _ = writeln!(file, ",\n  {error_record}");
                 }
             }
         }

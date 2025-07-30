@@ -2,7 +2,6 @@ use crate::controller::actions::{Action, InputPromptType};
 use crate::error::AppError;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::collections::HashMap;
-use std::path::PathBuf;
 use tracing::trace;
 
 use super::*;

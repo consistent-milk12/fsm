@@ -223,7 +223,7 @@ impl OptimizedFileTable {
             symlinks_count = symlinks_count,
             metadata_loaded_count = metadata_loaded_count,
             pending_metadata_count = pending_metadata_count,
-            live_update_progress = if entries.len() > 0 {
+            live_update_progress = if !entries.is_empty() {
                 (metadata_loaded_count as f32 / entries.len() as f32 * 100.0) as u32
             } else {
                 100

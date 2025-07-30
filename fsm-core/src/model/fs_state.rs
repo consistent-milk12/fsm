@@ -749,7 +749,8 @@ impl FSState {
     #[instrument(skip(self))]
     pub fn get_selected_paths(&self) -> Vec<PathBuf> {
         let active_pane = self.active_pane();
-        let paths = if active_pane.marked_entries.is_empty() {
+
+        if active_pane.marked_entries.is_empty() {
             // If nothing marked, return current selection
             let path = self.get_selected_path().into_iter().collect();
             trace!(
@@ -761,8 +762,7 @@ impl FSState {
             let paths = active_pane.get_marked_paths();
             debug!("Returning {} marked paths.", paths.len());
             paths
-        };
-        paths
+        }
     }
 }
 

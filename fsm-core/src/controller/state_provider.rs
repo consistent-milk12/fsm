@@ -4,7 +4,7 @@
 //! without requiring direct StateCoordinator dependencies.
 
 use std::fmt::Debug;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, MutexGuard, RwLock};
 
 use crate::fs::object_info::ObjectInfo;
@@ -22,7 +22,7 @@ pub trait StateProvider: Send + Sync + Debug {
     /// Update entry metadata for a specific file
     fn update_entry_metadata(
         &self,
-        directory_path: &PathBuf,
+        directory_path: &Path,
         entry_path: PathBuf,
         updated_entry: ObjectInfo,
     ) -> Result<(), String>;

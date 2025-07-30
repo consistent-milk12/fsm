@@ -25,7 +25,6 @@ use fsm_core::{
     cache::cache_manager::ObjectInfoCache,
     config::Config,
     controller::{
-        action_dispatcher::ActionSource,
         actions::{Action, RenderTrigger},
         event_loop::{EventLoop, TaskResult},
         state_coordinator::StateCoordinator,
