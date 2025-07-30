@@ -64,6 +64,7 @@ pub enum UIOverlay {
     Loading,
     Search,
     SystemMonitor,
+    ClipBoard,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
