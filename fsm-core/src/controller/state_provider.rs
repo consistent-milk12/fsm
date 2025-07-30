@@ -4,8 +4,10 @@
 //! without requiring direct StateCoordinator dependencies.
 
 use std::fmt::Debug;
+use std::path::PathBuf;
 use std::sync::{Arc, MutexGuard, RwLock};
 
+use crate::fs::object_info::ObjectInfo;
 use crate::model::{app_state::AppState, fs_state::FSState, ui_state::UIState};
 
 /// Trait for providing access to application state components
@@ -16,6 +18,14 @@ pub trait StateProvider: Send + Sync + Debug {
 
     /// Atomically update UI state with boxed transformation function
     fn update_ui_state(&self, update: Box<dyn FnOnce(&mut UIState) + Send>);
+
+    /// Update entry metadata for a specific file
+    fn update_entry_metadata(
+        &self,
+        directory_path: &PathBuf,
+        entry_path: PathBuf,
+        updated_entry: ObjectInfo,
+    ) -> Result<(), String>;
 
     /// Get mutable access to filesystem state
     fn fs_state(&self) -> MutexGuard<'_, FSState>;

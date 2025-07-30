@@ -878,18 +878,80 @@ impl EventLoop {
 
                 match result {
                     Ok(updated_entry) => {
-                        // Update metadata for specific entry
-                        self.state_coordinator
-                            .update_entry_metadata(path, entry_path, updated_entry)
-                            .await;
+                        info!(
+                            marker = "ACTION_DISPATCH_START",
+                            operation_type = "metadata_update",
+                            current_path = %path.display(),
+                            target_path = %entry_path.display(),
+                            entries_count = 1,
+                            selected_index = "NULL",
+                            duration_us = exec.as_micros(),
+                            cache_hit = false,
+                            area_width = "NULL",
+                            area_height = "NULL",
+                            updated_entry = %entry_path.display(),
+                            "CONVERSION : TaskResult::Metadata -> Action::UpdateEntryMetadata"
+                        );
 
-                        self.state_coordinator.request_redraw(RedrawFlag::All);
+                        // Convert TaskResult::Metadata to Action::UpdateEntryMetadata
+                        let action: Action = Action::UpdateEntryMetadata {
+                            directory_path: path.clone(),
+                            entry_path: entry_path.clone(),
+                            updated_entry,
+                        };
+
+                        // Dispatch through ActionDispatcher (clean architecture)
+                        if let Err(e) = self
+                            .action_dispatcher
+                            .dispatch(action, ActionSource::System)
+                            .await
+                        {
+                            error!(
+                                marker = "ACTION_DISPATCH_FAILED",
+                                operation_type = "metadata_update",
+                                current_path = %path.display(),
+                                target_path = %entry_path.display(),
+                                entries_count = 1,
+                                selected_index = "NULL",
+                                duration_us = exec.as_micros(),
+                                cache_hit = false,
+                                area_width = "NULL",
+                                area_height = "NULL",
+                                error = %e,
+                                "ACTION_ORCHESTRATOR: Failed to dispatch UpdateEntryMetadata"
+                            );
+                        } else {
+                            info!(
+                                marker = "ACTION_DISPATCH_COMPLETE",
+                                operation_type = "metadata_update",
+                                current_path = %path.display(),
+                                target_path = %entry_path.display(),
+                                entries_count = 1,
+                                selected_index = "NULL",
+                                duration_us = exec.as_micros(),
+                                cache_hit = false,
+                                area_width = "NULL",
+                                area_height = "NULL",
+                                "ACTION_ORCHESTRATOR: UpdateEntryMetadata action dispatched successfully"
+                            );
+                        }
                     }
 
                     Err(error) => {
-                        warn!(entry_path = %entry_path.display(),
-                                error = %error,
-                                "Failed to load metadata for entry"
+                        warn!(
+                            marker = "METADATA_LOAD_FAILED",
+                            operation_type = "metadata_update",
+                            current_path = %path.display(),
+                            target_path = %entry_path.display(),
+                            entries_count = 1,
+                            selected_index = "NULL",
+                            duration_us = exec.as_micros(),
+                            cache_hit = false,
+                            area_width = "NULL",
+                            area_height = "NULL",
+                            entry_path = %entry_path.display(),
+                            error = %error,
+                            "Conversion: Failed to load metadata for entry"
                         );
                     }
                 }
@@ -913,6 +975,7 @@ impl EventLoop {
                     .update_ui_state(Box::new(move |ui: &mut UIState| {
                         if let Some(ref mut loading) = ui.loading {
                             loading.set_progress(pct);
+
                             if let Some(m) = msg {
                                 loading.message = m.into();
                             }

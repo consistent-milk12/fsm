@@ -15,22 +15,26 @@ use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, Span, debug, error, info, instrument, warn};
 
 use std::io::Error as StdIoError;
+use std::result::Result as StdResult;
 
 /// Scan update for streaming directory operations
 #[derive(Debug, Clone)]
 pub enum ScanUpdate {
     /// New entry discovered (immediate display)
     EntryAdded(ObjectInfo),
+
     /// Batch of entries processed
     BatchComplete {
         processed: usize,
         total: Option<usize>,
     },
+
     /// Scanning completed
     ScanComplete {
         total_entries: usize,
         exec: Duration,
     },
+
     /// Error during scanning
     ScanError(String),
 }
@@ -50,16 +54,19 @@ pub struct FileSystemOperator {
 
 #[derive(Debug, Clone)]
 pub enum FileSystemOperation {
+    CreateFile {
+        path: PathBuf,
+    },
+
+    CreateDirectory {
+        path: PathBuf,
+    },
+
     // File/Directory operations
     Delete {
         path: PathBuf,
     },
-    CreateFile {
-        path: PathBuf,
-    },
-    CreateDirectory {
-        path: PathBuf,
-    },
+
     Rename {
         source: PathBuf,
         new_name: String,
@@ -77,8 +84,10 @@ pub enum FileSystemOperation {
 pub enum ScanMode {
     /// Fast scan with light metadata only
     Fast,
+
     /// Streaming scan with progress updates
     Streaming { batch_size: usize },
+
     /// Two-phase: quick display + background metadata
     TwoPhase,
 }
@@ -89,24 +98,31 @@ impl FileSystemOperation {
     pub fn operation_name(&self) -> &'static str {
         let name = match self {
             FileSystemOperation::CreateFile { .. } => "create_file",
+
             FileSystemOperation::CreateDirectory { .. } => "create_directory",
+
             FileSystemOperation::Rename { .. } => "rename",
+
             FileSystemOperation::Delete { .. } => "delete",
+
             FileSystemOperation::ScanDirectory { scan_mode, .. } => match scan_mode {
                 ScanMode::Fast => "scan_directory_fast",
+
                 ScanMode::Streaming { .. } => "scan_directory_streaming",
+
                 ScanMode::TwoPhase => "scan_directory_two_phase",
             },
         };
 
         debug!(operation_name = name, "Retrieved operation name");
+
         name
     }
 
     /// Get primary path for logging
     #[instrument(level = "trace")]
     pub fn primary_path(&self) -> &Path {
-        let path = match self {
+        let path: &PathBuf = match self {
             FileSystemOperation::CreateFile { path }
             | FileSystemOperation::CreateDirectory { path }
             | FileSystemOperation::Rename { source: path, .. }
@@ -123,13 +139,17 @@ impl std::fmt::Display for FileSystemOperation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             FileSystemOperation::Delete { path } => write!(f, "Delete({})", path.display()),
+
             FileSystemOperation::CreateFile { path } => write!(f, "CreateFile({})", path.display()),
+
             FileSystemOperation::CreateDirectory { path } => {
                 write!(f, "CreateDirectory({})", path.display())
             }
+
             FileSystemOperation::Rename { source, new_name } => {
                 write!(f, "Rename({} -> {})", source.display(), new_name)
             }
+
             FileSystemOperation::ScanDirectory {
                 path,
                 show_hidden,
@@ -180,12 +200,16 @@ impl FileSystemOperator {
         let operation_type = match &self.operation {
             FileSystemOperation::CreateFile { .. }
             | FileSystemOperation::CreateDirectory { .. } => FileOperationType::Create,
+
             FileSystemOperation::Rename { .. } => FileOperationType::Rename,
+
             FileSystemOperation::Delete { .. } => FileOperationType::Delete,
+
             FileSystemOperation::ScanDirectory { .. } => FileOperationType::Scan,
         };
 
         debug!(operation_type = %operation_type, "Determined operation type");
+
         operation_type
     }
 
@@ -212,7 +236,7 @@ impl FileSystemOperator {
             return Err(anyhow::anyhow!("Operation Cancelled"));
         }
 
-        let result = match &self.operation {
+        let result: StdResult<(), anyhow::Error> = match &self.operation {
             FileSystemOperation::CreateFile { path } => self.create_file_operation(path).await,
             FileSystemOperation::CreateDirectory { path } => self.create_dir_operation(path).await,
             FileSystemOperation::Rename { source, new_name } => {
@@ -298,7 +322,7 @@ impl FileSystemOperator {
         skip(self)
     )]
     async fn create_file_operation(&self, path: &Path) -> Result<()> {
-        let span = Span::current();
+        let span: Span = Span::current();
 
         if let Some(parent) = path.parent() {
             if !parent.exists() {
@@ -329,7 +353,7 @@ impl FileSystemOperator {
         skip(self)
     )]
     async fn create_dir_operation(&self, path: &Path) -> Result<()> {
-        let span = Span::current();
+        let span: Span = Span::current();
 
         if let Some(parent) = path.parent() {
             if !parent.exists() {
@@ -356,10 +380,10 @@ impl FileSystemOperator {
         skip(self)
     )]
     async fn rename_operation(&self, source: &Path, new_name: &str) -> Result<()> {
-        let span = Span::current();
+        let span: Span = Span::current();
 
-        let parent = source.parent().context("Cannot rename root directory")?;
-        let new_path = parent.join(new_name);
+        let parent: &Path = source.parent().context("Cannot rename root directory")?;
+        let new_path: PathBuf = parent.join(new_name);
 
         span.record("destination", tracing::field::display(&new_path.display()));
 
@@ -386,7 +410,7 @@ impl FileSystemOperator {
         skip(self)
     )]
     async fn delete_operation(&self, path: &Path) -> Result<()> {
-        let span = Span::current();
+        let span: Span = Span::current();
 
         if !path.exists() {
             return Err(anyhow::anyhow!("Path does not exist: {}", path.display()));
@@ -439,7 +463,7 @@ impl FileSystemOperator {
         show_hidden: bool,
         scan_mode: &ScanMode,
     ) -> Result<()> {
-        let span = Span::current();
+        let span: Span = Span::current();
 
         info!(
             path = %path.display(),
@@ -450,7 +474,7 @@ impl FileSystemOperator {
 
         match scan_mode {
             ScanMode::Fast => {
-                let entries = self.scan_directory_fast(path, show_hidden).await?;
+                let entries: Vec<ObjectInfo> = self.scan_directory_fast(path, show_hidden).await?;
                 span.record("entries_found", entries.len());
 
                 info!(
@@ -460,7 +484,7 @@ impl FileSystemOperator {
                 );
             }
             ScanMode::Streaming { batch_size } => {
-                let entries = self
+                let entries: Vec<ObjectInfo> = self
                     .scan_directory_streaming(path, show_hidden, *batch_size)
                     .await?;
                 span.record("entries_found", entries.len());
@@ -473,7 +497,8 @@ impl FileSystemOperator {
                 );
             }
             ScanMode::TwoPhase => {
-                let entries = self.scan_directory_two_phase(path, show_hidden).await?;
+                let entries: Vec<ObjectInfo> =
+                    self.scan_directory_two_phase(path, show_hidden).await?;
                 span.record("entries_found", entries.len());
 
                 info!(
@@ -500,13 +525,13 @@ impl FileSystemOperator {
         skip(self)
     )]
     async fn scan_directory_fast(&self, path: &Path, show_hidden: bool) -> Result<Vec<ObjectInfo>> {
-        let span = Span::current();
-        let start_time = Instant::now();
+        let span: Span = Span::current();
+        let start_time: Instant = Instant::now();
 
         debug!(path = %path.display(), "Starting fast directory scan");
 
-        let mut entries = Vec::new();
-        let mut read_dir = TokioFs::read_dir(path)
+        let mut entries: Vec<ObjectInfo> = Vec::new();
+        let mut read_dir: TokioFs::ReadDir = TokioFs::read_dir(path)
             .await
             .with_context(|| format!("Failed to read directory: {}", path.display()))?;
 
@@ -519,25 +544,27 @@ impl FileSystemOperator {
             // Check cancellation periodically
             if processed % 100 == 0 && self.cancel_token.is_cancelled() {
                 warn!("Directory scan cancelled");
+
                 return Err(anyhow::anyhow!("Scan cancelled"));
             }
 
-            let entry_path = entry.path();
+            let entry_path: PathBuf = entry.path();
 
             // Filter hidden files
-            if !show_hidden {
-                if let Some(name) = entry_path.file_name().and_then(|n| n.to_str()) {
-                    if name.starts_with('.') {
-                        filtered += 1;
-                        continue;
-                    }
-                }
+            if !show_hidden
+                && let Some(name) = entry_path.file_name().and_then(|n: &OsStr| n.to_str())
+                && name.starts_with('.')
+            {
+                filtered += 1;
+
+                continue;
             }
 
             match ObjectInfo::from_path_light(&entry_path).await {
                 Ok(light_info) => {
                     entries.push(ObjectInfo::with_placeholder_metadata(light_info));
                 }
+
                 Err(e) => {
                     debug!(
                         path = %entry_path.display(),
@@ -557,15 +584,15 @@ impl FileSystemOperator {
 
         debug!("Directory entries sorted - {} total entries", entries.len());
 
-        let exec = start_time.elapsed();
+        let exec: Duration = start_time.elapsed();
 
         span.record("entries_processed", processed);
         span.record("entries_filtered", filtered);
 
         // Generate task ID for this scan
-        let task_id = self.operation_id.parse::<u64>().unwrap_or(0);
+        let task_id: u64 = self.operation_id.parse::<u64>().unwrap_or(0);
 
-        let task_result = TaskResult::DirectoryLoad {
+        let task_result: TaskResult = TaskResult::DirectoryLoad {
             task_id,
             path: path.to_path_buf(),
             result: Ok(entries.clone()),
@@ -605,11 +632,11 @@ impl FileSystemOperator {
         show_hidden: bool,
         batch_size: usize,
     ) -> Result<Vec<ObjectInfo>> {
-        let span = Span::current();
-        let start_time = Instant::now();
-        let mut entries = Vec::new();
-        let mut processed = 0;
-        let mut batches_sent = 0;
+        let span: Span = Span::current();
+        let start_time: Instant = Instant::now();
+        let mut entries: Vec<ObjectInfo> = Vec::new();
+        let mut processed: usize = 0;
+        let mut batches_sent: i32 = 0;
 
         debug!(
             path = %path.display(),
@@ -617,7 +644,7 @@ impl FileSystemOperator {
             "Starting streaming directory scan"
         );
 
-        let mut read_dir = TokioFs::read_dir(path)
+        let mut read_dir: TokioFs::ReadDir = TokioFs::read_dir(path)
             .await
             .with_context(|| format!("Failed to read directory: {}", path.display()))?;
 
@@ -651,7 +678,8 @@ impl FileSystemOperator {
 
             match ObjectInfo::from_path_light(&entry_path).await {
                 Ok(light_info) => {
-                    let object_info = ObjectInfo::with_placeholder_metadata(light_info);
+                    let object_info: ObjectInfo = ObjectInfo::with_placeholder_metadata(light_info);
+
                     entries.push(object_info);
                     processed += 1;
 
@@ -659,7 +687,7 @@ impl FileSystemOperator {
                     if processed % batch_size == 0 {
                         batches_sent += 1;
 
-                        let progress_result = TaskResult::Progress {
+                        let progress_result: TaskResult = TaskResult::Progress {
                             task_id,
                             pct: processed as f32, // TODO: Calculate proper percentage
                             msg: Some(format!("Scanned {processed} entries")),
@@ -692,13 +720,13 @@ impl FileSystemOperator {
 
         debug!("Directory entries sorted - {} total entries", entries.len());
 
-        let exec = start_time.elapsed();
+        let exec: Duration = start_time.elapsed();
 
         span.record("entries_processed", processed);
         span.record("batches_sent", batches_sent);
 
         // Send final completion
-        let task_result = TaskResult::DirectoryLoad {
+        let task_result: TaskResult = TaskResult::DirectoryLoad {
             task_id,
             path: path.to_path_buf(),
             result: Ok(entries.clone()),
@@ -751,7 +779,7 @@ impl FileSystemOperator {
         let task_id = self.operation_id.parse::<u64>().unwrap_or(0);
 
         // Send quick results for immediate display
-        let quick_result = TaskResult::DirectoryLoad {
+        let quick_result: TaskResult = TaskResult::DirectoryLoad {
             task_id,
             path: path.to_path_buf(),
             result: Ok(entries.clone()),
@@ -1298,25 +1326,37 @@ impl FileSystemOperator {
         batch_size: usize,
     ) {
         tokio::spawn(async move {
-            let start_time = Instant::now();
-            let total_entries = light_entries.len();
+            let start_time: Instant = Instant::now();
+            let total_entries: usize = light_entries.len();
 
             debug!(
                 "Starting batch metadata load for {total_entries} entries in {}",
                 parent_dir.display()
             );
 
-            let mut processed = 0;
-            let mut successful = 0;
+            let mut processed: usize = 0;
+            let mut successful: i32 = 0;
 
             for (index, light_info) in light_entries.into_iter().enumerate() {
-                let path = light_info.path.clone();
+                let path: PathBuf = light_info.path.clone();
 
                 match ObjectInfo::from_light_info(light_info).await {
                     Ok(_full_info) => {
                         successful += 1;
-                        debug!("Loaded metadata for: {}", path.display());
+
+                        let metadata_result: TaskResult = TaskResult::Metadata {
+                            task_id: task_id + index as u64,
+                            path: parent_dir.clone(),
+                            entry_path: path.clone(),
+                            result: Ok(_full_info),
+                            exec: start_time.elapsed(),
+                        };
+
+                        let _ = task_tx.send(metadata_result);
+
+                        debug!("Sent metadata result for: {}", path.display());
                     }
+
                     Err(e) => {
                         debug!("Failed to load metadata for {}: {}", path.display(), e);
                     }
@@ -1326,7 +1366,7 @@ impl FileSystemOperator {
 
                 // Report progress periodically
                 if processed % batch_size == 0 || processed == total_entries {
-                    let pct = (processed as f32 / total_entries as f32) * 100.0;
+                    let pct: f32 = (processed as f32 / total_entries as f32) * 100.0;
 
                     let progress_result = TaskResult::Progress {
                         task_id,
@@ -1345,13 +1385,14 @@ impl FileSystemOperator {
                 }
             }
 
-            let exec = start_time.elapsed();
+            let exec: Duration = start_time.elapsed();
+
             info!(
                 "Batch metadata loading completed: {}/{} successful in {:?}",
                 successful, total_entries, exec
             );
 
-            let completion_result = TaskResult::Generic {
+            let completion_result: TaskResult = TaskResult::Generic {
                 task_id,
                 result: Ok(()),
                 msg: Some(format!(

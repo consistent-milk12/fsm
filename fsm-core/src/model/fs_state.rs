@@ -133,13 +133,14 @@ impl PaneState {
 
     /// Enhanced set_entries with action support
     #[instrument(skip(self, entries), fields(num_entries = entries.len()))]
-    pub fn set_entries(&mut self, mut entries: Vec<ObjectInfo>) {
-        let start = Instant::now();
+    pub fn sort_entries(&mut self, mut entries: Vec<ObjectInfo>) {
+        let start: Instant = Instant::now();
         debug!("Setting new entries. Initial count: {}.", entries.len());
 
         // Apply filter
-        let initial_len = entries.len();
+        let initial_len: usize = entries.len();
         self.apply_filter(&mut entries);
+
         debug!(
             "Applied filter. Entries after filtering: {}. (Removed {} entries)",
             entries.len(),
@@ -147,9 +148,10 @@ impl PaneState {
         );
 
         // SIMD-optimized sorting
-        let sort_start = Instant::now();
+        let sort_start: Instant = Instant::now();
         self.sort_entries_optimized(&mut entries);
-        let sort_duration = sort_start.elapsed().as_micros() as u64;
+        let sort_duration: u64 = sort_start.elapsed().as_micros() as u64;
+
         self.last_sort_duration
             .store(sort_duration, Ordering::Relaxed);
         debug!("Entries sorted in {} us.", sort_duration);
@@ -160,7 +162,7 @@ impl PaneState {
         self.entries_loaded
             .store(self.entries.len(), Ordering::Relaxed);
 
-        let duration_us = start.elapsed().as_micros() as u64;
+        let duration_us: u64 = start.elapsed().as_micros() as u64;
         self.last_scan_duration
             .store(duration_us, Ordering::Relaxed);
         info!(
@@ -170,92 +172,18 @@ impl PaneState {
         );
     }
 
-    /// Ensure current entries are properly sorted (for navigation cache consistency)
-    #[instrument(skip(self))]
-    pub fn ensure_entries_sorted(&mut self) {
-        let entries_len = self.entries.len();
-        if entries_len == 0 {
-            trace!("No entries to sort - skipping");
-            return;
-        }
-
-        let sort_start = Instant::now();
-        // Use the same sorting logic as sort_entries_optimized but inline to avoid borrowing issues
-        match self.sort {
-            EntrySort::NameAsc => {
-                self.entries
-                    .sort_unstable_by(|a, b| match (a.is_dir, b.is_dir) {
-                        (true, false) => std::cmp::Ordering::Less,
-                        (false, true) => std::cmp::Ordering::Greater,
-                        _ => a.name.cmp(&b.name),
-                    });
-            }
-            EntrySort::NameDesc => {
-                self.entries
-                    .sort_unstable_by(|a, b| match (a.is_dir, b.is_dir) {
-                        (true, false) => std::cmp::Ordering::Less,
-                        (false, true) => std::cmp::Ordering::Greater,
-                        _ => b.name.cmp(&a.name),
-                    });
-            }
-            EntrySort::SizeAsc => {
-                self.entries
-                    .sort_unstable_by(|a, b| match (a.is_dir, b.is_dir) {
-                        (true, false) => std::cmp::Ordering::Less,
-                        (false, true) => std::cmp::Ordering::Greater,
-                        _ => a.size.cmp(&b.size),
-                    });
-            }
-            EntrySort::SizeDesc => {
-                self.entries
-                    .sort_unstable_by(|a, b| match (a.is_dir, b.is_dir) {
-                        (true, false) => std::cmp::Ordering::Less,
-                        (false, true) => std::cmp::Ordering::Greater,
-                        _ => b.size.cmp(&a.size),
-                    });
-            }
-            EntrySort::ModifiedAsc => self.entries.sort_unstable_by_key(|e| e.modified),
-            EntrySort::ModifiedDesc => self
-                .entries
-                .sort_unstable_by(|a, b| b.modified.cmp(&a.modified)),
-            EntrySort::TypeAsc => {
-                self.entries.sort_unstable_by(|a, b| {
-                    a.extension
-                        .cmp(&b.extension)
-                        .then_with(|| a.name.cmp(&b.name))
-                });
-            }
-            EntrySort::TypeDesc => {
-                self.entries.sort_unstable_by(|a, b| {
-                    b.extension
-                        .cmp(&a.extension)
-                        .then_with(|| a.name.cmp(&b.name))
-                });
-            }
-        }
-
-        let sort_duration = sort_start.elapsed().as_micros() as u64;
-        self.last_sort_duration
-            .store(sort_duration, Ordering::Relaxed);
-
-        debug!(
-            marker = "NAVIGATION_SORT_APPLIED",
-            operation_type = "state_management",
-            "Navigation sort applied to {} entries in {} us",
-            entries_len,
-            sort_duration
-        );
-    }
-
     /// Action-compatible selection movement
     #[instrument(skip(self), fields(current_selection = self.selected.load(Ordering::Relaxed)))]
     pub fn move_selection_up(&self) -> bool {
-        let current = self.selected.load(Ordering::Relaxed);
+        let current: usize = self.selected.load(Ordering::Relaxed);
+
         if current > 0 {
-            let new_selected = current - 1;
+            let new_selected: usize = current - 1;
             self.selected.store(new_selected, Ordering::Relaxed);
             self.adjust_scroll_for_selection(new_selected);
+
             debug!("Moved selection up to {}.", new_selected);
+
             true
         } else {
             trace!("Cannot move selection up, already at top.");
@@ -265,12 +193,15 @@ impl PaneState {
 
     #[instrument(skip(self), fields(current_selection = self.selected.load(Ordering::Relaxed)))]
     pub fn move_selection_down(&self) -> bool {
-        let current = self.selected.load(Ordering::Relaxed);
+        let current: usize = self.selected.load(Ordering::Relaxed);
+
         if current + 1 < self.entries.len() {
-            let new_selected = current + 1;
+            let new_selected: usize = current + 1;
             self.selected.store(new_selected, Ordering::Relaxed);
             self.adjust_scroll_for_selection(new_selected);
+
             debug!("Moved selection down to {}.", new_selected);
+
             true
         } else {
             trace!("Cannot move selection down, already at bottom.");
@@ -284,6 +215,7 @@ impl PaneState {
         if !self.entries.is_empty() {
             self.selected.store(0, Ordering::Relaxed);
             self.scroll_offset.store(0, Ordering::Relaxed);
+
             debug!("Selected first entry.");
         } else {
             trace!("No entries to select first.");
@@ -408,6 +340,7 @@ impl PaneState {
                     _ => a.name.cmp(&b.name),
                 });
             }
+
             EntrySort::NameDesc => {
                 entries.sort_unstable_by(|a, b| match (a.is_dir, b.is_dir) {
                     (true, false) => std::cmp::Ordering::Less,
@@ -415,6 +348,7 @@ impl PaneState {
                     _ => b.name.cmp(&a.name),
                 });
             }
+
             EntrySort::SizeAsc => {
                 entries.sort_unstable_by(|a, b| match (a.is_dir, b.is_dir) {
                     (true, false) => std::cmp::Ordering::Less,
@@ -422,6 +356,7 @@ impl PaneState {
                     _ => a.size.cmp(&b.size),
                 });
             }
+
             EntrySort::SizeDesc => {
                 entries.sort_unstable_by(|a, b| match (a.is_dir, b.is_dir) {
                     (true, false) => std::cmp::Ordering::Less,
@@ -429,8 +364,11 @@ impl PaneState {
                     _ => b.size.cmp(&a.size),
                 });
             }
+
             EntrySort::ModifiedAsc => entries.sort_unstable_by_key(|e| e.modified),
+
             EntrySort::ModifiedDesc => entries.sort_unstable_by(|a, b| b.modified.cmp(&a.modified)),
+
             EntrySort::TypeAsc => {
                 entries.sort_unstable_by(|a, b| {
                     a.extension
@@ -438,6 +376,7 @@ impl PaneState {
                         .then_with(|| a.name.cmp(&b.name))
                 });
             }
+
             EntrySort::TypeDesc => {
                 entries.sort_unstable_by(|a, b| {
                     b.extension
@@ -460,22 +399,27 @@ impl PaneState {
                     entries.retain(|e| !e.name.starts_with('.') || e.name == "..");
                 }
             }
+
             EntryFilter::FilesOnly => {
                 entries.retain(|e| !e.is_dir && (show_hidden || !e.name.starts_with('.')));
             }
+
             EntryFilter::DirsOnly => {
                 entries.retain(|e| e.is_dir && (show_hidden || !e.name.starts_with('.')));
             }
+
             EntryFilter::Extension(ext) => {
                 entries.retain(|e| {
                     (e.extension.as_ref() == Some(ext)) && (show_hidden || !e.name.starts_with('.'))
                 });
             }
+
             EntryFilter::Pattern(pattern) => {
                 entries.retain(|e| {
                     e.name.contains(pattern.as_str()) && (show_hidden || !e.name.starts_with('.'))
                 });
             }
+
             EntryFilter::Regex(pattern) => {
                 if let Ok(regex) = regex::Regex::new(pattern) {
                     entries.retain(|e| {
@@ -483,12 +427,15 @@ impl PaneState {
                     });
                 }
             }
+
             EntryFilter::Hidden(hidden) => {
                 entries.retain(|e| e.name.starts_with('.') == *hidden);
             }
+
             EntryFilter::Marked => {
                 entries.retain(|e| self.marked_entries.contains_key(&e.path));
             }
+
             _ => {}
         }
     }
@@ -607,8 +554,6 @@ impl FSState {
         self.add_to_history(path.clone());
         self.active_pane_mut().cwd = path;
 
-        // Ensure entries are sorted after directory change
-        self.active_pane_mut().ensure_entries_sorted();
         trace!("Navigation completed with sorted entries");
     }
 
@@ -624,8 +569,6 @@ impl FSState {
             self.add_to_history(parent_path.clone());
             self.active_pane_mut().cwd = parent_path.clone();
 
-            // Critical: Ensure entries are sorted after parent navigation
-            self.active_pane_mut().ensure_entries_sorted();
             debug!("Parent navigation completed with re-sorted entries");
 
             Some(parent_path)
@@ -646,9 +589,6 @@ impl FSState {
             // Reset any cached sort indicators
             entry.metadata_loaded = false;
         });
-
-        // Force re-sort
-        pane.ensure_entries_sorted();
 
         debug!(
             "Directory cache invalidated and {} entries re-sorted",

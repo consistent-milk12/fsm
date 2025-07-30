@@ -6,5 +6,6 @@ Notes.md
 .claude
 init.lua
 diff.rs
-.back_up
+.backup
 .docs
+docs

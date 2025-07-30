@@ -7,6 +7,7 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, MutexGuard};
+use std::time::Instant;
 use tokio::fs as TokioFs;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio_util::sync::CancellationToken;
@@ -83,7 +84,7 @@ impl FileOpsDispatcher {
 
             // Set entries with proper sorting
             let pane: &mut PaneState = fs.active_pane_mut();
-            pane.set_entries(entries);
+            pane.sort_entries(entries);
 
             result = Self::load_background_metadata(pane, &target, &self.task_tx)?;
 
@@ -104,7 +105,7 @@ impl FileOpsDispatcher {
     /// Read a directory and collect non-hidden entries.
     #[instrument(level = "debug", skip(self, dir), fields(dir = %dir.display()))]
     async fn load_directory(&self, dir: &Path) -> Result<Vec<ObjectInfo>> {
-        let mut entries = Vec::new();
+        let mut entries: Vec<ObjectInfo> = Vec::new();
         // Open directory reader
         let mut dir_reader: TokioFs::ReadDir = TokioFs::read_dir(dir)
             .await
@@ -227,7 +228,7 @@ impl FileOpsDispatcher {
                 {
                     let mut fs: MutexGuard<'_, FSState> = self.state_provider.fs_state();
                     let pane: &mut PaneState = fs.active_pane_mut();
-                    pane.set_entries(entries);
+                    pane.sort_entries(entries);
 
                     result = Self::load_background_metadata(pane, &path, &self.task_tx)?;
 
@@ -379,6 +380,76 @@ impl FileOpsDispatcher {
                 self.navigate_to(cwd).await
             }
 
+            Action::UpdateEntryMetadata {
+                directory_path,
+                entry_path,
+                updated_entry,
+            } => {
+                info!(
+                    marker = "FILE_OPERATION_DISPATCH_START",
+                    operation_type = "update_entry_metadata",
+                    current_path = %directory_path.display(),
+                    target_path = %entry_path.display(),
+                    entries_count = 1,
+                    selected_index ="NULL",
+                    duration_us = "NULL",
+                    cache_hit = false,
+                    area_width = "NULL",
+                    area_height = "NULL",
+                    "FILE_OPERATION_DISPATCHER : Handling UpdateEntryMetadata action"
+                );
+
+                let start = Instant::now();
+
+                // Update entry metadata through StateCoordinator
+                match self.state_provider.update_entry_metadata(
+                    &directory_path,
+                    entry_path.clone(),
+                    updated_entry.clone(),
+                ) {
+                    Ok(()) => {
+                        info!(
+                            marker = "FILE_OPERATION_DISPATCH_COMPLETE",
+                            operation_type = "update_entry_metadata",
+                            current_path = %directory_path.display(),
+                            target_path = %entry_path.display(),
+                            entries_count = 1,
+                            selected_index = "NULL",
+                            duration_us = start.elapsed().as_micros(),
+                            cache_hit = false,
+                            area_width = "NULL",
+                            area_height = "NULL",
+                            "FILE_OPERATION_DISPATCHER : Entry metadata updated successfully"
+                        );
+
+                        // Request UI redraw to show updated metadata
+                        self.state_provider.request_redraw(RedrawFlag::All);
+
+                        Ok(DispatchResult::Continue)
+                    }
+
+                    Err(e) => {
+                        error!(
+                            marker = "FILE_OPERATION_DISPATCH_FAILED",
+                            operation_type = "update_entry_metadata",
+                            current_path = %directory_path.display(),
+                            target_path = %entry_path.display(),
+                            entries_count = 1,
+                            selected_index = "NULL",
+                            duration_us = start.elapsed().as_micros(),
+                            cache_hit = false,
+                            area_width = "NULL",
+                            area_height = "NULL",
+                            "FILE_OPERATION_DISPATCHER : Failed to update entry metadata: {e}"
+                        );
+
+                        self.error(&format!("Failed to update entry metadata: {e}"));
+
+                        Ok(DispatchResult::Continue)
+                    }
+                }
+            }
+
             _ => {
                 trace!("handle: action not handled by file_ops");
 
@@ -428,6 +499,7 @@ impl ActionMatcher for FileOpsDispatcher {
                 | Action::CreateFileWithName(_)
                 | Action::CreateDirectoryWithName(_)
                 | Action::ReloadDirectory
+                | Action::UpdateEntryMetadata { .. }
         )
     }
 

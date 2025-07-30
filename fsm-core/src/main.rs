@@ -263,6 +263,12 @@ impl App {
         let mut render_interval: Interval =
             TokioTime::interval(TokioTime::Duration::from_millis(16));
 
+        // Render notification channel
+        let (render_notify_tx, mut render_notify_rx) = mpsc::unbounded_channel::<()>();
+
+        // Share render notifier with StateCoordinator
+        self.state_coordinator.set_render_notifier(render_notify_tx);
+
         // Get shutdown handle before moving event loop
         let shutdown_handle: Arc<Notify> = self
             .event_loop
@@ -275,6 +281,7 @@ impl App {
             .event_loop
             .take()
             .expect("EventLoop should be available");
+
         let mut event_loop_handle = tokio::spawn(async move { event_loop.run().await });
 
         // Setup signal handlers
@@ -321,27 +328,42 @@ impl App {
                     }
                 }
 
-                // 2. Frame tick (~60 FPS)
-                _ = render_interval.tick() => {
-                    // ==== NEW: poll for notification expiry ====
-                    // Before drawing, clear any auto‑expired notification.
+                // 2. Immediate render on redraw request
+                _ = render_notify_rx.recv() => {
+                    // Immediate redraw triggered by metadata updates
                     self.state_coordinator.update_ui_state(Box::new(|ui: &mut UIState| {
-                        // If the banner has timed out, poll_notification()
-                        // will clear it and request a Notification redraw.
                         ui.poll_notification();
                     }));
-                    // ==== end new ====
 
-                    // Now render the full frame (status bar, overlays, etc.)
-                    if let Err(e) = self.render_frame(frame_count).trace_err("frame_render") {
+                    if let Err(e) = self.render_frame(frame_count).trace_err("IMMEDIATE_FRAME_RENDER") {
                         warn!(
                             frame = frame_count,
                             error = %e,
-                            "Frame render failed"
+                            "Immediate frame render failed"
                         );
                     }
 
                     frame_count += 1;
+                }
+
+                // 3. Maximum 60_FPS interval render (fallback)
+                _ = render_interval.tick() => {
+                    // Only render if there's a pending redraw request
+                    if self.state_coordinator.needs_redraw() {
+                        self.state_coordinator.update_ui_state(Box::new(|ui: &mut UIState| {
+                            ui.poll_notification();
+                        }));
+
+                        if let Err(e) = self.render_frame(frame_count).trace_err("INTERVAL_FRAME_RENDER") {
+                            warn!(
+                                frame = frame_count,
+                                error = %e,
+                                "Interval frame render failed"
+                            );
+                        }
+
+                        frame_count += 1;
+                    };
                 }
 
                 // 3. Handle system signals
