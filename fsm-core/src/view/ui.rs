@@ -361,24 +361,13 @@ impl UIRenderer {
     /// Enhanced file operations progress with proper FSState integration
     fn render_file_operations_progress(
         &mut self,
-        frame: &mut Frame<'_>,
-        coord: &StateCoordinator,
-        screen_size: Rect,
+        _frame: &mut Frame<'_>,
+        _coord: &StateCoordinator,
+        _screen_size: Rect,
     ) {
-        let fs_state = coord.fs_state();
-
-        // Use enhanced FSState active_operations
-        if let Some((avg_progress, count)) = fs_state.get_operation_summary() {
-            let progress_area = Rect {
-                x: screen_size.width.saturating_sub(30),
-                y: screen_size.height.saturating_sub(4),
-                width: 28,
-                height: 3,
-            };
-
-            self.file_ops_overlay
-                .render_summary(frame, avg_progress, count, progress_area);
-        }
+        // Operation tracking is now handled by FileSystemOperator
+        // TODO: Implement operation progress display via FileSystemOperator if needed
+        // The old operation progress display has been removed as part of cleanup
     }
 
     /// Get or compute overlay area with caching

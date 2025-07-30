@@ -1,10 +1,9 @@
 //! fsm-core/src/controller/action_dispatcher/fs_dispatcher.rs
 //! File operations dispatcher with comprehensive tracing
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use dashmap::DashMap;
-use std::ffi::OsStr;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, MutexGuard};
 use std::time::Instant;
@@ -17,7 +16,7 @@ use crate::FSState;
 use crate::controller::actions::OperationId;
 use crate::controller::state_provider::StateProvider;
 use crate::controller::{Action, TaskResult};
-use crate::fs::object_info::{LightObjectInfo, ObjectInfo};
+use crate::fs::object_info::ObjectInfo;
 use crate::model::PaneState;
 use crate::model::ui_state::{RedrawFlag, UIState};
 use crate::operators::file_system_operator::FileSystemOperator;
@@ -51,12 +50,12 @@ impl FileOpsDispatcher {
         }
     }
 
-    /// Navigate into a directory, reload entries, and request redraw.
+    /// Navigate into a directory using FileSystemOperator for all loading.
     #[instrument(level = "info", skip(self, target), fields(target = %target.display()))]
     async fn navigate_to(&self, target: PathBuf) -> Result<DispatchResult> {
         info!(
             target_path = %target.display(),
-            "ENTER: Starting navigate_to"
+            "ENTER: Starting navigate_to via FileSystemOperator"
         );
 
         // Validate directory existence
@@ -66,77 +65,38 @@ impl FileOpsDispatcher {
             return Ok(DispatchResult::Continue);
         }
 
-        // Load entries asynchronously
-        let entries: Vec<ObjectInfo> = self.load_directory(&target).await?;
-
-        info!(
-            target_path = %target.display(),
-            loaded_entries = entries.len(),
-            "ENTER: Loaded directory entries"
-        );
-
-        let result: DispatchResult;
-
-        // Update FS state using proper navigation method (includes sorting)
+        // Update navigation state first
         {
             let mut fs: MutexGuard<'_, FSState> = self.state_provider.fs_state();
             fs.navigate_to(target.clone());
 
-            // Set entries with proper sorting
+            // Clear existing entries while waiting for FileSystemOperator results
             let pane: &mut PaneState = fs.active_pane_mut();
-            pane.sort_entries(entries);
-
-            result = Self::load_background_metadata(pane, &target, &self.task_tx)?;
+            pane.sort_entries(Vec::new()); // Clear entries, they will be populated by TaskResult
 
             info!(
                 target_path = %target.display(),
-                final_entries = pane.entries.len(),
-                "ENTER: Navigation and sorting completed"
+                "ENTER: Navigation state updated, entries cleared"
             );
         }
 
-        info!("ENTER: Requesting redraw after navigate_to");
+        // Use FileSystemOperator for complete directory scanning (replaces both load_directory and load_background_metadata)
+        FileSystemOperator::spawn_two_phase_directory_scan(
+            2001, // task_id for navigation
+            target.clone(),
+            false, // show_hidden
+            self.task_tx.clone(),
+            CancellationToken::new(),
+        );
+
+        info!(
+            target_path = %target.display(),
+            "ENTER: Two-phase directory scan initiated via FileSystemOperator"
+        );
 
         self.state_provider.request_redraw(RedrawFlag::All);
 
-        Ok(result)
-    }
-
-    /// Read a directory and collect non-hidden entries.
-    #[instrument(level = "debug", skip(self, dir), fields(dir = %dir.display()))]
-    async fn load_directory(&self, dir: &Path) -> Result<Vec<ObjectInfo>> {
-        let mut entries: Vec<ObjectInfo> = Vec::new();
-        // Open directory reader
-        let mut dir_reader: TokioFs::ReadDir = TokioFs::read_dir(dir)
-            .await
-            .with_context(|| format!("Failed to read directory: {}", dir.display()))?;
-
-        // Iterate entries
-        while let Some(entry) = dir_reader.next_entry().await? {
-            let path: PathBuf = entry.path();
-
-            // Filter hidden and non-UTF8 names
-            if let Some(name) = path.file_name().and_then(OsStr::to_str)
-                && !name.starts_with('.')
-            {
-                // Attempt lightweight metadata
-                match ObjectInfo::from_path_light(&path).await {
-                    Ok(info) => {
-                        entries.push(ObjectInfo::with_placeholder_metadata(info));
-
-                        trace!("load_directory: added entry {}", name);
-                    }
-
-                    Err(e) => {
-                        debug!("load_directory: failed to load {}: {:?}", name, e);
-                    }
-                }
-            }
-        }
-
-        trace!("load_directory: total entries = {}", entries.len());
-
-        Ok(entries)
+        Ok(DispatchResult::Continue)
     }
 
     /// Handle the EnterSelected action by navigating if selected entry is a directory.
@@ -218,31 +178,37 @@ impl FileOpsDispatcher {
             Some(path) => {
                 info!(
                     path = %path.display(),
-                    "BACKSPACE: Always reload parent directory entries"
+                    "BACKSPACE: Loading parent directory via FileSystemOperator"
                 );
 
-                // Always reload parent directory entries (never use cache)
-                let entries: Vec<ObjectInfo> = self.load_directory(&path).await?;
-                let result: DispatchResult;
-
+                // Clear current entries and trigger FileSystemOperator scan
                 {
                     let mut fs: MutexGuard<'_, FSState> = self.state_provider.fs_state();
                     let pane: &mut PaneState = fs.active_pane_mut();
-                    pane.sort_entries(entries);
-
-                    result = Self::load_background_metadata(pane, &path, &self.task_tx)?;
+                    pane.sort_entries(Vec::new()); // Clear entries, they will be populated by TaskResult
 
                     info!(
-                        entries_count = pane.entries.len(),
-                        "BACKSPACE: Parent directory entries reloaded"
+                        "BACKSPACE: Parent directory entries cleared, awaiting FileSystemOperator"
                     );
                 }
 
-                info!("BACKSPACE: Requesting redraw after parent reload");
+                // Use FileSystemOperator for complete directory scanning
+                FileSystemOperator::spawn_two_phase_directory_scan(
+                    2002, // task_id for parent navigation
+                    path.clone(),
+                    false, // show_hidden
+                    self.task_tx.clone(),
+                    CancellationToken::new(),
+                );
+
+                info!(
+                    path = %path.display(),
+                    "BACKSPACE: Two-phase directory scan initiated via FileSystemOperator"
+                );
 
                 self.state_provider.request_redraw(RedrawFlag::All);
 
-                Ok(result)
+                Ok(DispatchResult::Continue)
             }
 
             None => {
@@ -251,48 +217,6 @@ impl FileOpsDispatcher {
                 Ok(DispatchResult::Continue)
             }
         }
-    }
-
-    fn load_background_metadata(
-        pane: &mut PaneState,
-        target: &PathBuf,
-        task_tx: &UnboundedSender<TaskResult>,
-    ) -> Result<DispatchResult> {
-        let entries_needing_metadata: Vec<ObjectInfo> = pane
-            .entries
-            .iter()
-            .filter(|entry: &&ObjectInfo| !entry.metadata_loaded)
-            .cloned()
-            .collect();
-
-        if !entries_needing_metadata.is_empty() {
-            debug!(
-                metadata_entries_count = entries_needing_metadata.len(),
-                "BACKGROUND_TASK_PREPARING: Triggering background metadata loading"
-            );
-
-            // Convert to LightObjectInfo for metadata loading
-            let entries: Vec<LightObjectInfo> = entries_needing_metadata
-                .into_iter()
-                .map(|entry: ObjectInfo| LightObjectInfo::new(entry))
-                .collect();
-
-            FileSystemOperator::spawn_batch_metadata_load(
-                1000,
-                target.clone(),
-                entries,
-                task_tx.clone(),
-                10,
-            );
-        }
-
-        info!(
-            target_path = %target.display(),
-            final_entries = pane.entries.len(),
-            "BACKGROUND_TASK: Successfully loaded metadata in the active pane"
-        );
-
-        Ok(DispatchResult::Continue)
     }
 
     /// Create a new file in the current directory.

@@ -1,13 +1,14 @@
-//! Enhanced Actions with comprehensive clipboard and file operations support
+//! Optimized Actions module with render system integration and TSV tracing
 use crate::fs::object_info::ObjectInfo;
 use crate::fs::utils::ScanUpdate;
 
 use crossterm::event::{KeyEvent, MouseEvent};
 use std::path::PathBuf;
+use std::time::SystemTime;
 
 use super::TaskResult;
 
-/// Type of input prompt to show
+/// Input prompt types for user interactions
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InputPromptType {
     CreateFile,
@@ -16,38 +17,29 @@ pub enum InputPromptType {
     Search,
     GoToPath,
     Custom(String),
-    // File operations
-    CopyDestination,
-    MoveDestination,
-    RenameFile,
-    // Clipboard operations
-    PasteDestination,
 }
 
-/// Unique identifier for tracking file operations
+/// Unique identifier for tracking operations
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct OperationId(pub String);
 
-impl Default for OperationId {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl OperationId {
-    /// Generate a new unique operation ID
     pub fn new() -> Self {
         Self(nanoid::nanoid!())
     }
 
-    /// Create from existing string
-    pub fn from_string(id: String) -> Self {
-        Self(id)
-    }
-
-    /// Get the inner string value
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    pub fn from_str(id: &str) -> Self {
+        Self(id.to_string())
+    }
+}
+
+impl Default for OperationId {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -57,7 +49,7 @@ impl std::fmt::Display for OperationId {
     }
 }
 
-/// Data for system monitor
+/// System monitoring data
 #[derive(Debug, Clone, Default)]
 pub struct SystemData {
     pub cpu_usage: f32,
@@ -67,7 +59,7 @@ pub struct SystemData {
     pub total_swap: u64,
 }
 
-/// Data for a single process
+/// Process data for monitoring
 #[derive(Debug, Clone)]
 pub struct ProcessData {
     pub pid: u32,
@@ -77,441 +69,149 @@ pub struct ProcessData {
     pub status: String,
 }
 
-/// Represents a high-level action that the application can perform.
+/// Render trigger sources for performance tracking
+#[derive(Clone, Debug)]
+pub enum RenderTrigger {
+    MetadataUpdate,
+    StateChange,
+    UserInteraction,
+    SystemEvent,
+}
+
+/// Core application actions with clean architecture compliance
 #[derive(Debug, Clone)]
 pub enum Action {
-    /// A keyboard event.
+    // ===== Core Input Events =====
     Key(KeyEvent),
-
-    /// A mouse event.
     Mouse(MouseEvent),
-
-    /// A terminal resize event.
     Resize(u16, u16),
-
-    /// Quit the application.
-    Quit,
-
-    /// Toggle the help overlay visibility.
-    ToggleHelp,
-
-    /// Enter vim-style command mode.
-    EnterCommandMode,
-
-    /// Exit command mode.
-    ExitCommandMode,
-
-    /// Toggle the file name search overlay.
-    ToggleFileNameSearch,
-
-    /// Toggle the content search overlay.
-    ToggleContentSearch,
-
-    /// Toggle the clipboard overlay visibility.
-    ToggleClipboardOverlay,
-
-    /// Perform a file name search (instant).
-    FileNameSearch(String),
-
-    /// Perform a content search (ripgrep).
-    ContentSearch(String),
-
-    /// Direct content search with pattern (no overlay).
-    DirectContentSearch(String),
-
-    /// Toggle showing hidden files.
-    ToggleShowHidden,
-
-    /// Show search results.
-    ShowSearchResults(Vec<ObjectInfo>),
-
-    /// Show filename search results.
-    ShowFilenameSearchResults(Vec<ObjectInfo>),
-
-    /// Show rich content search results with line numbers and context.
-    ShowRichSearchResults(Vec<String>),
-
-    /// Simulate a loading state (for demo/testing).
-    SimulateLoading,
-
-    /// An internal tick event for periodic updates.
-    Tick,
-
-    /// A result from a background task.
-    TaskResult(TaskResult),
-
-    /// Move selection up.
-    MoveSelectionUp,
-
-    /// Move selection down.
-    MoveSelectionDown,
-
-    /// Page up (move selection up by viewport height).
-    PageUp,
-
-    /// Page down (move selection down by viewport height).
-    PageDown,
-
-    /// Jump to first entry.
-    SelectFirst,
-
-    /// Jump to last entry.
-    SelectLast,
-
-    /// Select entry by index (0-based)
-    SelectIndex(usize),
-
-    /// Enter selected directory or open file.
-    EnterSelected,
-
-    /// Go to parent directory.
-    GoToParent,
-
-    /// Delete selected item
-    Delete,
-
-    /// Show file creation prompt
-    CreateFile,
-
-    /// Show directory creation prompt
-    CreateDirectory,
-
-    /// Create file with specified name
-    CreateFileWithName(String),
-
-    /// Create directory with specified name
-    CreateDirectoryWithName(String),
-
-    /// Sort by specified criteria
-    Sort(String),
-
-    /// Filter using specified pattern
-    Filter(String),
-
-    /// Updates an ObjectInfo in the state
-    UpdateObjectInfo {
-        parent_dir: PathBuf,
-        info: ObjectInfo,
-    },
-
-    /// Handle streaming directory scan updates
-    DirectoryScanUpdate {
-        path: PathBuf,
-        update: ScanUpdate,
-    },
-
-    /// No operation
-    NoOp,
-
-    /// Close the currently active overlay.
-    CloseOverlay,
-
-    /// Reload the current directory.
-    ReloadDirectory,
-
-    /// Open a file with external editor
-    OpenFile(PathBuf, Option<u32>), // Path + optional line number
-
-    /// Show input prompt for various operations
-    ShowInputPrompt(InputPromptType),
-
-    /// Submit input from a prompt
-    SubmitInputPrompt(String),
-
-    /// Update input field text
-    UpdateInput(String),
-
-    /// Rename selected entry
-    RenameEntry(String),
-
-    /// Navigate to specified path
-    GoToPath(String),
-
-    // ===== Enhanced File Operations =====
-    /// Start file copy operation (shows destination prompt)
-    StartCopy {
-        source: PathBuf,
-    },
-
-    /// Start file move operation (shows destination prompt)
-    StartMove {
-        source: PathBuf,
-    },
-
-    /// Execute copy operation
-    ExecuteCopy {
-        operation_id: OperationId,
-        source: PathBuf,
-        destination: PathBuf,
-    },
-
-    /// Execute move operation
-    ExecuteMove {
-        operation_id: OperationId,
-        source: PathBuf,
-        destination: PathBuf,
-    },
-
-    /// Execute rename operation
-    ExecuteRename {
-        operation_id: OperationId,
-        source: PathBuf,
-        new_name: String,
-    },
-
-    /// File operation progress update
-    FileOperationProgress {
-        operation_id: OperationId,
-        bytes_processed: u64,
-        total_bytes: u64,
-    },
-
-    /// File operation completed
-    FileOperationComplete {
-        operation_id: OperationId,
-    },
-
-    /// File operation failed
-    FileOperationError {
-        operation_id: OperationId,
-        error: String,
-    },
-
-    /// Cancel ongoing file operation
-    CancelFileOperation {
-        operation_id: OperationId,
-    },
-
-    /// Update task status
-    UpdateTaskStatus {
-        task_id: u64,
-        completed: bool,
-    },
-
-    // ===== Clipboard Operations =====
-    /// Copy selected item(s) to clipboard
-    Copy(PathBuf),
-
-    /// Cut selected item(s) to clipboard (move operation)
-    Cut(PathBuf),
-
-    /// Copy multiple items to clipboard
-    CopyMultiple(Vec<PathBuf>),
-
-    /// Cut multiple items to clipboard
-    CutMultiple(Vec<PathBuf>),
-
-    /// Paste from clipboard to current directory
-    Paste,
-
-    /// Paste from clipboard to specified directory
-    PasteToDirectory(PathBuf),
-
-    /// Toggle clipboard overlay
-    ToggleClipboard,
-
-    /// Navigate clipboard selection up
-    ClipboardUp,
-
-    /// Navigate clipboard selection down
-    ClipboardDown,
-
-    /// Select clipboard item by index
-    SelectClipboardItem(usize),
-
-    /// Remove item from clipboard
-    RemoveFromClipboard(u64), // clipboard item ID
-
-    /// Clear entire clipboard
-    ClearClipboard,
-
-    /// Paste selected clipboard item
-    PasteClipboardItem {
-        item_id: u64,
-        destination: PathBuf,
-    },
-
-    /// Show clipboard item details
-    ShowClipboardItemDetails(u64),
-
-    /// Execute clipboard paste operation
-    ExecuteClipboardPaste {
-        operation_id: OperationId,
-        item_ids: Vec<u64>,
-        destination: PathBuf,
-    },
-
-    /// Clipboard operation progress
-    ClipboardOperationProgress {
-        operation_id: OperationId,
-        completed_items: u32,
-        total_items: u32,
-        current_item: String,
-    },
-
-    /// Clipboard operation completed
-    ClipboardOperationComplete {
-        operation_id: OperationId,
-        items_processed: u32,
-    },
-
-    /// Clipboard operation failed
-    ClipboardOperationError {
-        operation_id: OperationId,
-        item_id: Option<u64>,
-        error: String,
-    },
-
-    // ===== Enhanced Navigation =====
-    /// Bookmark current directory
-    BookmarkDirectory,
-
-    /// Show bookmarks overlay
-    ShowBookmarks,
-
-    /// Navigate to bookmark
-    GoToBookmark(usize),
-
-    /// Remove bookmark
-    RemoveBookmark(usize),
-
-    /// Show recent directories
-    ShowRecentDirectories,
-
-    /// Navigate to recent directory
-    GoToRecentDirectory(usize),
-
-    /// Add directory to navigation history
-    AddToHistory(PathBuf),
-
-    /// Go back in navigation history
-    NavigateBack,
-
-    /// Go forward in navigation history
-    NavigateForward,
-
-    // ===== Enhanced Search =====
-    /// Navigate to next search result
-    NextSearchResult,
-
-    /// Navigate to previous search result
-    PreviousSearchResult,
-
-    /// Advanced search with options
-    AdvancedSearch {
-        pattern: String,
-        case_sensitive: bool,
-        regex: bool,
-        include_hidden: bool,
-        file_types: Vec<String>,
-    },
-
-    /// Search in specific directory
-    SearchInDirectory {
-        directory: PathBuf,
-        pattern: String,
-    },
-
-    /// Cancel current search operation
-    CancelSearch,
-
-    /// Search result selected
-    SelectSearchResult(usize),
-
-    /// Jump to search result in file
-    JumpToSearchResult {
-        path: PathBuf,
-        line_number: Option<u32>,
-        column: Option<u32>,
-    },
-
-    // ===== Task Management =====
-    /// Show running tasks overlay
-    ShowRunningTasks,
-
-    /// Cancel specific task
-    CancelTask(u64),
-
-    /// Pause/resume task
-    ToggleTaskPause(u64),
-
-    /// Show task details
-    ShowTaskDetails(u64),
-
-    /// Set task priority
-    SetTaskPriority {
-        task_id: u64,
-        priority: i8, // -10 to 10
-    },
-
-    // System events
     TerminalResize(u16, u16),
-
-    // Input handling
     InputCharacter(char),
 
+    // ===== Application Control =====
+    Quit,
+    Tick,
+    NoOp,
+
+    // ===== UI Control =====
+    ToggleHelp,
+    CloseOverlay,
+
+    // ===== Navigation =====
+    MoveSelectionUp,
+    MoveSelectionDown,
+    PageUp,
+    PageDown,
+    SelectFirst,
+    SelectLast,
+    SelectIndex(usize),
+    EnterSelected,
+    GoToParent,
+    GoToPath(String),
+    ReloadDirectory,
+
+    // ===== File Operations =====
+    CreateFile,
+    CreateDirectory,
+    CreateFileWithName(String),
+    CreateDirectoryWithName(String),
+    Delete,
+    RenameEntry(String),
+    ToggleShowHidden,
+
+    // ===== Search =====
+    EnterCommandMode,
+    ToggleFileNameSearch,
+    ToggleContentSearch,
+    FileNameSearch(String),
+    ContentSearch(String),
+    ShowSearchResults(Vec<ObjectInfo>),
+    NextSearchResult,
+    PreviousSearchResult,
+    ExitCommandMode,
+
+    // ===== Clipboard =====
+    ClipboardUp,
+    ClipboardDown,
+    Copy(PathBuf),
+    Cut(PathBuf),
+    SelectClipboardItem(usize),
+    RemoveFromClipboard(usize),
+    Paste,
+    ToggleClipboard,
+    ClearClipboard,
+
     // ===== System Monitoring =====
-    /// Toggle system monitor overlay
     ToggleSystemMonitor,
-
-    /// Update system monitor data
     SystemMonitorUpdate(SystemData),
-
-    /// Toggle process monitor overlay
     ToggleProcessMonitor,
-
-    /// Update process monitor data
     ProcessMonitorUpdate(Vec<ProcessData>),
-
-    /// Kill process by PID
     KillProcess(u32),
 
     // ===== Metadata Updates =====
-    /// Update entry metadata (from background loading task)
     UpdateEntryMetadata {
         directory_path: PathBuf,
         entry_path: PathBuf,
         updated_entry: ObjectInfo,
     },
+
+    // ===== Render System Integration =====
+    TriggerImmediateRender {
+        trigger_source: RenderTrigger,
+        frame_count: u64,
+        timestamp: SystemTime,
+    },
+
+    HandleRenderError {
+        error: String,
+        frame_count: u64,
+        error_source: String,
+        recovery_action: Option<Box<Action>>,
+        timestamp: SystemTime,
+    },
+
+    // ===== Internal Actions =====
+    TaskResult(TaskResult),
+    ShowInputPrompt(InputPromptType),
+    SubmitInputPrompt(String),
+    UpdateInput(String),
+    DirectoryScanUpdate {
+        path: PathBuf,
+        update: ScanUpdate,
+    },
 }
 
 impl Action {
+    /// Get operation priority (lower = higher priority)
+    pub fn priority(&self) -> u8 {
+        match self {
+            Action::Quit => 0,
+            Action::HandleRenderError { .. } => 1,
+            Action::Key(_) | Action::Mouse(_) => 2,
+            Action::TriggerImmediateRender { .. } => 3,
+            Action::MoveSelectionUp | Action::MoveSelectionDown => 4,
+            Action::EnterSelected | Action::GoToParent => 5,
+            Action::UpdateEntryMetadata { .. } => 6,
+            Action::Copy(_) | Action::Cut(_) | Action::Paste => 7,
+            Action::ContentSearch(_) | Action::FileNameSearch(_) => 8,
+            Action::SystemMonitorUpdate(_) | Action::ProcessMonitorUpdate(_) => 9,
+            _ => 10,
+        }
+    }
+
     /// Check if action requires async processing
     pub fn is_async(&self) -> bool {
         matches!(
             self,
             Action::Copy(_)
                 | Action::Cut(_)
-                | Action::CopyMultiple(_)
-                | Action::CutMultiple(_)
                 | Action::Paste
-                | Action::PasteToDirectory(_)
-                | Action::ExecuteClipboardPaste { .. }
-                | Action::ClearClipboard
                 | Action::ContentSearch(_)
-                | Action::DirectContentSearch(_)
-                | Action::AdvancedSearch { .. }
-                | Action::ExecuteCopy { .. }
-                | Action::ExecuteMove { .. }
-                | Action::ExecuteRename { .. }
+                | Action::CreateFileWithName(_)
+                | Action::CreateDirectoryWithName(_)
+                | Action::Delete
+                | Action::RenameEntry(_)
         )
-    }
-
-    /// Get operation priority (lower number = higher priority)
-    pub fn priority(&self) -> u8 {
-        match self {
-            Action::Quit => 0,
-            Action::Key(_) | Action::Mouse(_) => 1,
-            Action::MoveSelectionUp | Action::MoveSelectionDown => 2,
-            Action::ToggleClipboard | Action::ClipboardUp | Action::ClipboardDown => 3,
-            Action::Copy(_) | Action::Cut(_) => 4,
-            Action::Paste | Action::PasteToDirectory(_) => 5,
-            Action::EnterSelected | Action::GoToParent => 6,
-            Action::ContentSearch(_) | Action::FileNameSearch(_) => 7,
-            Action::ExecuteCopy { .. } | Action::ExecuteMove { .. } => 8,
-            Action::FileOperationProgress { .. } => 9,
-            _ => 10,
-        }
     }
 
     /// Check if action modifies filesystem
@@ -521,40 +221,65 @@ impl Action {
             Action::CreateFileWithName(_)
                 | Action::CreateDirectoryWithName(_)
                 | Action::Delete
-                | Action::ExecuteCopy { .. }
-                | Action::ExecuteMove { .. }
-                | Action::ExecuteRename { .. }
+                | Action::RenameEntry(_)
                 | Action::Paste
-                | Action::PasteToDirectory(_)
-                | Action::ExecuteClipboardPaste { .. }
         )
     }
 
-    /// Get human-readable action description
+    /// Get human-readable description for TSV logging
     pub fn description(&self) -> &'static str {
         match self {
+            Action::TriggerImmediateRender { .. } => "Trigger immediate render",
+            Action::HandleRenderError { .. } => "Handle render error",
+            Action::UpdateEntryMetadata { .. } => "Update entry metadata",
             Action::Copy(_) => "Copy to clipboard",
             Action::Cut(_) => "Cut to clipboard",
             Action::Paste => "Paste from clipboard",
-            Action::ToggleClipboard => "Toggle clipboard overlay",
-            Action::ClearClipboard => "Clear clipboard",
-            Action::ExecuteCopy { .. } => "Executing copy operation",
-            Action::ExecuteMove { .. } => "Executing move operation",
-            Action::FileOperationProgress { .. } => "File operation in progress",
-            Action::ClipboardOperationProgress { .. } => "Clipboard operation in progress",
-            Action::Quit => "Quit application",
             Action::EnterSelected => "Enter selected item",
             Action::GoToParent => "Go to parent directory",
             Action::Delete => "Delete selected item",
-            Action::ToggleHelp => "Toggle help overlay",
+            Action::Quit => "Quit application",
             Action::ReloadDirectory => "Reload directory",
-            Action::NextSearchResult => "Next search result",
-            Action::PreviousSearchResult => "Previous search result",
+            Action::ContentSearch(_) => "Content search",
+            Action::FileNameSearch(_) => "Filename search",
             _ => "Unknown action",
         }
     }
 }
 
-unsafe impl Send for Action {}
+impl std::fmt::Display for Action {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Action::TriggerImmediateRender {
+                trigger_source,
+                frame_count,
+                ..
+            } => {
+                write!(
+                    f,
+                    "TriggerImmediateRender(source={:?}, frame={})",
+                    trigger_source, frame_count
+                )
+            }
+            Action::HandleRenderError {
+                error,
+                frame_count,
+                error_source,
+                ..
+            } => {
+                write!(
+                    f,
+                    "HandleRenderError(error={}, frame={}, source={})",
+                    error, frame_count, error_source
+                )
+            }
+            Action::UpdateEntryMetadata { entry_path, .. } => {
+                write!(f, "UpdateEntryMetadata({})", entry_path.display())
+            }
+            _ => write!(f, "{}", self.description()),
+        }
+    }
+}
 
+unsafe impl Send for Action {}
 unsafe impl Sync for Action {}

@@ -596,8 +596,8 @@ impl EventLoop {
                             let pane: &mut PaneState = fs.active_pane_mut();
 
                             if pane.cwd == path {
-                                // Use set_entries which includes proper sorting and filtering
-                                pane.set_entries(entries);
+                                // Use sort_entries which includes proper sorting and filtering
+                                pane.sort_entries(entries);
                                 pane.is_loading.store(false, Ordering::Relaxed);
 
                                 debug!(

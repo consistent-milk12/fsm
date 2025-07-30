@@ -36,7 +36,7 @@ use fsm_core::{
         fs_state::FSState,
         ui_state::{RedrawFlag, UIState},
     },
-    operators::file_system_operator::{FileSystemOperator, ScanMode},
+    operators::file_system_operator::FileSystemOperator,
     trace_fn, trace_operation,
     view::ui::UIRenderer,
 };
@@ -204,10 +204,10 @@ impl App {
         );
 
         // Use FileSystemOperator for initial directory scan
-        let operation_id: String = FileSystemOperator::spawn_directory_scan(
+        let _scan_handle = FileSystemOperator::spawn_two_phase_directory_scan(
+            0, // task_id
             dir.clone(),
-            false,              // Don't show hidden files initially
-            ScanMode::TwoPhase, // Fast display + background metadata
+            false, // Don't show hidden files initially
             task_tx,
             cancel_token,
         );
@@ -215,7 +215,6 @@ impl App {
         coordinator.request_redraw(RedrawFlag::All);
 
         info!(
-            operation_id = %operation_id,
             directory = %dir.display(),
             "Initial directory scan started successfully"
         );

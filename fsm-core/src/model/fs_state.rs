@@ -483,6 +483,35 @@ impl PaneState {
             self.scroll_offset.store(new_scroll, Ordering::Relaxed);
         }
     }
+
+    /// Update metadata for a specific entry
+    #[instrument(skip(self, updated_entry), fields(entry_path = %entry_path.display()))]
+    pub fn update_entry_metadata(
+        &mut self,
+        entry_path: &PathBuf,
+        updated_entry: ObjectInfo,
+    ) -> bool {
+        if let Some(entry) = self.entries.iter_mut().find(|e| &e.path == entry_path) {
+            *entry = updated_entry;
+            trace!(
+                marker = "METADATA_UPDATE_SUCCESS",
+                operation_type = "entry_update",
+                current_path = %self.cwd.display(),
+                target_path = %entry_path.display(),
+                "Entry metadata updated in pane"
+            );
+            true
+        } else {
+            warn!(
+                marker = "METADATA_UPDATE_FAILED",
+                operation_type = "entry_update",
+                current_path = %self.cwd.display(),
+                target_path = %entry_path.display(),
+                "Entry not found for metadata update"
+            );
+            false
+        }
+    }
 }
 
 /// Enhanced filesystem state with action integration
@@ -498,17 +527,6 @@ pub struct FSState {
     // Navigation history
     pub history: VecDeque<PathBuf>,
     pub history_index: usize,
-
-    // Global operation tracking
-    pub active_operations: HashMap<CompactString, OperationStatus>,
-}
-
-#[derive(Debug, Clone)]
-pub struct OperationStatus {
-    pub operation_type: CompactString,
-    pub progress: f32,
-    pub message: Option<CompactString>,
-    pub started_at: Instant,
 }
 
 impl FSState {
@@ -529,7 +547,6 @@ impl FSState {
             batch_op_status: None,
             history,
             history_index: 0,
-            active_operations: HashMap::new(),
         }
     }
 
@@ -576,24 +593,6 @@ impl FSState {
             trace!("Already at root directory - cannot navigate to parent");
             None
         }
-    }
-
-    /// Invalidate directory cache and force fresh sort on next navigation
-    #[instrument(skip(self))]
-    pub fn invalidate_directory_cache(&mut self) {
-        let pane = self.active_pane_mut();
-        let entries_count = pane.entries.len();
-
-        // Mark entries as needing re-sort by clearing metadata timestamps
-        pane.entries.iter_mut().for_each(|entry| {
-            // Reset any cached sort indicators
-            entry.metadata_loaded = false;
-        });
-
-        debug!(
-            "Directory cache invalidated and {} entries re-sorted",
-            entries_count
-        );
     }
 
     #[instrument(skip(self))]
@@ -735,44 +734,6 @@ impl FSState {
         is_fav
     }
 
-    /// Operation tracking
-    #[instrument(skip(self), fields(id = %id, op_type = %op_type))]
-    pub fn start_operation(&mut self, id: CompactString, op_type: CompactString) {
-        info!("Starting operation: id={}, type={}.", id, op_type);
-        self.active_operations.insert(
-            id,
-            OperationStatus {
-                operation_type: op_type,
-                progress: 0.0,
-                message: None,
-                started_at: Instant::now(),
-            },
-        );
-    }
-
-    #[instrument(skip(self), fields(id = %id, progress = %progress, message = ?message))]
-    pub fn update_operation(&mut self, id: &str, progress: f32, message: Option<CompactString>) {
-        if let Some(op) = self.active_operations.get_mut(id) {
-            op.progress = progress.clamp(0.0, 1.0);
-            op.message = message;
-            trace!(
-                "Updated operation '{}': progress={}, message={:?}.",
-                id, op.progress, op.message
-            );
-        } else {
-            warn!("Attempted to update non-existent operation '{}'.", id);
-        }
-    }
-
-    #[instrument(skip(self), fields(id = %id))]
-    pub fn complete_operation(&mut self, id: &str) {
-        if self.active_operations.remove(id).is_some() {
-            info!("Completed operation '{}'.", id);
-        } else {
-            warn!("Attempted to complete non-existent operation '{}'.", id);
-        }
-    }
-
     /// Get current selection path
     #[instrument(skip(self))]
     pub fn get_selected_path(&self) -> Option<PathBuf> {
@@ -802,32 +763,6 @@ impl FSState {
             paths
         };
         paths
-    }
-
-    /// Check if any operations are in progress
-    #[instrument(skip(self))]
-    pub fn has_active_operations(&self) -> bool {
-        let has_ops = !self.active_operations.is_empty();
-        trace!("Checking for active operations: {}.", has_ops);
-        has_ops
-    }
-
-    /// Get operation progress summary
-    #[instrument(skip(self))]
-    pub fn get_operation_summary(&self) -> Option<(f32, usize)> {
-        if self.active_operations.is_empty() {
-            trace!("No active operations, returning None for summary.");
-            None
-        } else {
-            let total_progress: f32 = self.active_operations.values().map(|op| op.progress).sum();
-            let num_ops = self.active_operations.len();
-            let avg_progress = total_progress / num_ops as f32;
-            debug!(
-                "Operation summary: avg_progress={}, num_ops={}.",
-                avg_progress, num_ops
-            );
-            Some((avg_progress, num_ops))
-        }
     }
 }
 

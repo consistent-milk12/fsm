@@ -32,7 +32,7 @@ impl ClipboardHandler {
         bindings.insert(key('c'), Action::Copy(PathBuf::new()));
         bindings.insert(key('x'), Action::Cut(PathBuf::new()));
         bindings.insert(key('v'), Action::Paste);
-        bindings.insert(tab_key(), Action::ToggleClipboardOverlay);
+        bindings.insert(tab_key(), Action::ToggleClipboard);
 
         // Ctrl alternatives
         bindings.insert(ctrl('c'), Action::Copy(PathBuf::new()));
@@ -62,9 +62,10 @@ impl ClipboardHandler {
 
     fn handle_normal_mode(&mut self, key_event: KeyEvent) -> Result<Vec<Action>, AppError> {
         if let Some(action) = self.bindings.get(&key_event).cloned() {
-            if matches!(action, Action::ToggleClipboardOverlay) {
+            if matches!(action, Action::ToggleClipboard) {
                 self.mode = ClipboardMode::OverlayActive;
             }
+
             Ok(vec![action])
         } else {
             Ok(vec![])
@@ -74,23 +75,31 @@ impl ClipboardHandler {
     fn handle_overlay_mode(&mut self, key_event: KeyEvent) -> Result<Vec<Action>, AppError> {
         match key_event.code {
             KeyCode::Up | KeyCode::Char('k') => Ok(vec![Action::ClipboardUp]),
+
             KeyCode::Down | KeyCode::Char('j') => Ok(vec![Action::ClipboardDown]),
+
             KeyCode::Enter => {
                 self.mode = ClipboardMode::Normal;
+
                 Ok(vec![Action::SelectClipboardItem(0)])
             }
+
             KeyCode::Tab => {
                 self.mode = ClipboardMode::Normal;
-                Ok(vec![Action::ToggleClipboardOverlay])
+
+                Ok(vec![Action::ToggleClipboard])
             }
             KeyCode::Esc => {
                 self.mode = ClipboardMode::Normal;
                 Ok(vec![Action::CloseOverlay])
             }
+
             KeyCode::Delete => Ok(vec![Action::RemoveFromClipboard(0)]),
+
             KeyCode::Char('C') if key_event.modifiers.contains(KeyModifiers::SHIFT) => {
                 Ok(vec![Action::ClearClipboard])
             }
+
             _ => Ok(vec![]),
         }
     }
@@ -110,6 +119,7 @@ impl EventHandler for ClipboardHandler {
                     ) || (key_event.modifiers.contains(KeyModifiers::CONTROL)
                         && matches!(key_event.code, KeyCode::Char('c' | 'x' | 'v')))
                 }
+
                 ClipboardMode::OverlayActive => matches!(
                     key_event.code,
                     KeyCode::Up
@@ -140,6 +150,7 @@ impl EventHandler for ClipboardHandler {
     fn priority(&self) -> u8 {
         match self.mode {
             ClipboardMode::Normal => 40,
+
             ClipboardMode::OverlayActive => 1,
         }
     }

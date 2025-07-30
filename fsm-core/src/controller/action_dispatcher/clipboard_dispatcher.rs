@@ -354,7 +354,7 @@ impl ClipboardDispatcher {
             Action::Cut(path) => self.handle_cut(path).await,
             Action::Paste => self.handle_paste().await,
             Action::ClearClipboard => self.handle_clear_clipboard().await,
-            Action::ToggleClipboardOverlay => self.handle_toggle_overlay().await,
+            Action::ToggleClipboard => self.handle_toggle_overlay().await,
             Action::ClipboardUp => self.handle_navigation(true).await,
             Action::ClipboardDown => self.handle_navigation(false).await,
             Action::SelectClipboardItem(index) => {
@@ -484,7 +484,7 @@ impl ActionMatcher for ClipboardDispatcher {
                 | Action::Cut(_)
                 | Action::Paste
                 | Action::ClearClipboard
-                | Action::ToggleClipboardOverlay
+                | Action::ToggleClipboard
                 | Action::ClipboardUp
                 | Action::ClipboardDown
                 | Action::SelectClipboardItem(_)

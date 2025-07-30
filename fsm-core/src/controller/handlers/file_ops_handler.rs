@@ -37,20 +37,6 @@ impl FileOpsHandler {
         bindings.insert(key('r'), Action::ShowInputPrompt(InputPromptType::Rename));
         bindings.insert(key('.'), Action::ToggleShowHidden);
 
-        // Copy/Move
-        bindings.insert(
-            key('C'),
-            Action::StartCopy {
-                source: PathBuf::new(),
-            },
-        );
-        bindings.insert(
-            key('X'),
-            Action::StartMove {
-                source: PathBuf::new(),
-            },
-        );
-
         // Function keys
         bindings.insert(
             function_key(2),

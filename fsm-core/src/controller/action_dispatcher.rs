@@ -772,7 +772,7 @@ impl ActionDispatcher {
             | Action::SelectFirst
             | Action::SelectLast => ActionPriority::High,
 
-            Action::CloseOverlay | Action::ToggleHelp | Action::ToggleClipboardOverlay => {
+            Action::CloseOverlay | Action::ToggleHelp | Action::ToggleClipboard => {
                 ActionPriority::High
             }
 

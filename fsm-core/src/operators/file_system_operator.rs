@@ -276,7 +276,7 @@ impl FileSystemOperator {
         if !matches!(self.operation, FileSystemOperation::ScanDirectory { .. }) {
             // Determine the operation kind and ID
             let operation_type: FileOperationType = self.get_operation_type();
-            let op_id: OperationId = OperationId::from_string(self.operation_id.clone());
+            let op_id: OperationId = OperationId::from_str(&self.operation_id.as_str());
 
             // Reconstruct a new Result<(), Arc<AppError>> by borrowing `result`
             let completion_result: Result<(), Arc<AppError>> = match &result {
@@ -951,34 +951,7 @@ impl FileSystemOperator {
         operation_id
     }
 
-    /// Spawn a directory scan operation
-    #[instrument(
-        name = "spawn_directory_scan",
-        level = "info",
-        fields(
-            path = %path.display(),
-            show_hidden = show_hidden,
-            scan_mode = ?scan_mode,
-            operation_id = tracing::field::Empty
-        )
-    )]
-    pub fn spawn_directory_scan(
-        path: PathBuf,
-        show_hidden: bool,
-        scan_mode: ScanMode,
-        task_tx: UnboundedSender<TaskResult>,
-        cancel_token: CancellationToken,
-    ) -> String {
-        let operation = FileSystemOperation::ScanDirectory {
-            path: path.clone(),
-            show_hidden,
-            scan_mode: scan_mode.clone(),
-        };
-
-        Self::spawn_file_operation(operation, task_tx, cancel_token)
-    }
-
-    /// Spawn a fast directory scan
+    /// Spawn a fast directory scan - optimized version
     #[instrument(
         name = "spawn_directory_scan_fast",
         level = "info",
@@ -999,24 +972,19 @@ impl FileSystemOperator {
 
         tokio::spawn(
             async move {
-                let operation: FileSystemOperation = FileSystemOperation::ScanDirectory {
-                    path: path.clone(),
-                    show_hidden,
-                    scan_mode: ScanMode::Fast,
+                let operator = FileSystemOperator {
+                    operation_id: task_id.to_string(),
+                    operation: FileSystemOperation::ScanDirectory {
+                        path: path.clone(),
+                        show_hidden,
+                        scan_mode: ScanMode::Fast,
+                    },
+                    task_tx,
+                    cancel_token,
                 };
 
-                let operator: FileSystemOperator =
-                    FileSystemOperator::new(operation, task_tx, cancel_token);
-
-                match operator.execute().await {
-                    Ok(_) => {
-                        // The execute method already sends the task result
-                        // For compatibility, we need to return the entries
-                        // This is a bit awkward but maintains the original API
-                        Ok(Vec::new()) // TODO: Return actual entries
-                    }
-                    Err(e) => Err(e),
-                }
+                // Use the optimized scan_directory_fast method directly
+                operator.scan_directory_fast(&path, show_hidden).await
             }
             .instrument(tracing::info_span!(
                 "directory_scan_fast_task",
@@ -1026,7 +994,7 @@ impl FileSystemOperator {
         )
     }
 
-    /// Spawn a streaming directory scan with progress updates
+    /// Spawn a streaming directory scan with progress updates - simplified version
     #[instrument(
         name = "spawn_streaming_directory_scan",
         level = "info",
@@ -1049,176 +1017,60 @@ impl FileSystemOperator {
         JoinHandle<Result<Vec<ObjectInfo>>>,
     ) {
         let path_str: PathBuf = path.clone();
-
         let (update_tx, update_rx) = tokio::sync::mpsc::unbounded_channel();
 
         let handle = tokio::spawn(
             async move {
-                let operation: FileSystemOperation = FileSystemOperation::ScanDirectory {
-                    path: path.clone(),
-                    show_hidden,
-                    scan_mode: ScanMode::Streaming { batch_size },
+                let operator = FileSystemOperator {
+                    operation_id: task_id.to_string(),
+                    operation: FileSystemOperation::ScanDirectory {
+                        path: path.clone(),
+                        show_hidden,
+                        scan_mode: ScanMode::Streaming { batch_size },
+                    },
+                    task_tx,
+                    cancel_token,
                 };
-
-                let operator: FileSystemOperator =
-                    FileSystemOperator::new(operation, task_tx, cancel_token);
-
-                // Custom streaming implementation with update channel
-                let start_time = Instant::now();
-                let mut entries = Vec::new();
-                let mut processed = 0;
 
                 info!(
                     task_id = task_id,
                     path = %path.display(),
                     batch_size = batch_size,
-                    "Starting streaming directory scan with updates"
+                    "Starting optimized streaming directory scan"
                 );
 
-                let mut read_dir: TokioFs::ReadDir = match TokioFs::read_dir(&path).await {
-                    Ok(rd) => rd,
-                    Err(e) => {
-                        let error_msg = format!("Failed to read directory: {e}");
-                        let _ = update_tx.send(ScanUpdate::ScanError(error_msg.clone()));
+                // Send initial scan start update
+                let _ = update_tx.send(ScanUpdate::BatchComplete {
+                    processed: 0,
+                    total: None,
+                });
 
-                        error!(
+                // Use the optimized scan_directory_streaming method
+                match operator
+                    .scan_directory_streaming(&path, show_hidden, batch_size)
+                    .await
+                {
+                    Ok(entries) => {
+                        // Send completion update
+                        let _ = update_tx.send(ScanUpdate::ScanComplete {
+                            total_entries: entries.len(),
+                            exec: Duration::from_millis(0), // Duration is handled by the internal method
+                        });
+
+                        info!(
                             task_id = task_id,
                             path = %path.display(),
-                            error = %e,
-                            "Failed to open directory for streaming scan"
+                            entries_found = entries.len(),
+                            "Optimized streaming directory scan completed"
                         );
 
-                        let app_error: AppError = AppError::Io(e);
-                        let task_result: TaskResult = TaskResult::DirectoryLoad {
-                            task_id,
-                            path: path.clone(),
-                            result: Err(Arc::new(app_error)),
-                            exec: start_time.elapsed(),
-                        };
-
-                        let _ = operator.task_tx.send(task_result);
-                        return Err(anyhow::anyhow!("Directory read failed"));
+                        Ok(entries)
                     }
-                };
-
-                while let Some(entry_result) = read_dir.next_entry().await.transpose() {
-                    // Check cancellation
-                    if operator.cancel_token.is_cancelled() {
-                        warn!(task_id = task_id, "Streaming directory scan cancelled");
-                        let _ = update_tx.send(ScanUpdate::ScanError("Scan cancelled".to_string()));
-                        return Err(anyhow::anyhow!("Scan cancelled"));
-                    }
-
-                    let entry: TokioFs::DirEntry = match entry_result {
-                        Ok(e) => e,
-                        Err(e) => {
-                            let error_msg = format!("Failed to read entry: {e}");
-                            let _ = update_tx.send(ScanUpdate::ScanError(error_msg));
-
-                            debug!(
-                                task_id = task_id,
-                                error = %e,
-                                "Failed to read directory entry during streaming scan"
-                            );
-                            continue;
-                        }
-                    };
-
-                    let entry_path: PathBuf = entry.path();
-
-                    // Filter hidden files
-                    if !show_hidden {
-                        if let Some(name) = entry_path.file_name().and_then(|n: &OsStr| n.to_str())
-                        {
-                            if name.starts_with('.') {
-                                continue;
-                            }
-                        }
-                    }
-
-                    match ObjectInfo::from_path_light(&entry_path).await {
-                        Ok(light_info) => {
-                            let object_info = ObjectInfo::with_placeholder_metadata(light_info);
-
-                            // Send immediate update for UI
-                            let _ = update_tx.send(ScanUpdate::EntryAdded(object_info.clone()));
-                            entries.push(object_info);
-                            processed += 1;
-
-                            // Send batch progress
-                            if processed % batch_size == 0 {
-                                let _ = update_tx.send(ScanUpdate::BatchComplete {
-                                    processed,
-                                    total: None,
-                                });
-
-                                // Report progress to task system
-                                let progress_result = TaskResult::Progress {
-                                    task_id,
-                                    pct: processed as f32, // TODO: Calculate proper percentage
-                                    msg: Some(format!("Scanned {processed} entries")),
-                                };
-
-                                let _ = operator.task_tx.send(progress_result);
-
-                                debug!(
-                                    task_id = task_id,
-                                    processed = processed,
-                                    "Sent batch progress update"
-                                );
-
-                                // Yield for responsiveness
-                                tokio::task::yield_now().await;
-                            }
-                        }
-                        Err(e) => {
-                            let error_msg =
-                                format!("Failed to read {}: {}", entry_path.display(), e);
-                            let _ = update_tx.send(ScanUpdate::ScanError(error_msg));
-
-                            debug!(
-                                task_id = task_id,
-                                path = %entry_path.display(),
-                                error = %e,
-                                "Failed to read entry metadata during streaming scan"
-                            );
-                        }
+                    Err(e) => {
+                        let _ = update_tx.send(ScanUpdate::ScanError(e.to_string()));
+                        Err(e)
                     }
                 }
-
-                // Sort entries
-                entries.sort_by(|a, b| match (a.is_dir, b.is_dir) {
-                    (true, false) => Ordering::Less,
-                    (false, true) => Ordering::Greater,
-                    _ => a.name.cmp(&b.name),
-                });
-
-                let exec = start_time.elapsed();
-
-                // Send completion update
-                let _ = update_tx.send(ScanUpdate::ScanComplete {
-                    total_entries: entries.len(),
-                    exec,
-                });
-
-                // Send task completion
-                let task_result = TaskResult::DirectoryLoad {
-                    task_id,
-                    path: path.clone(),
-                    result: Ok(entries.clone()),
-                    exec,
-                };
-                let _ = operator.task_tx.send(task_result);
-
-                info!(
-                    task_id = task_id,
-                    path = %path.display(),
-                    entries_found = entries.len(),
-                    duration_ms = exec.as_millis(),
-                    "Streaming directory scan with updates completed"
-                );
-
-                Ok(entries)
             }
             .instrument(tracing::info_span!(
                 "streaming_directory_scan_task",
@@ -1230,7 +1082,7 @@ impl FileSystemOperator {
         (update_rx, handle)
     }
 
-    /// Spawn a two-phase directory scan
+    /// Spawn a two-phase directory scan - optimized version
     #[instrument(
         name = "spawn_two_phase_directory_scan",
         level = "info",
@@ -1250,71 +1102,54 @@ impl FileSystemOperator {
         let path_str: PathBuf = path.clone();
 
         tokio::spawn(
-        async move {
-            let operation = FileSystemOperation::ScanDirectory {
-                path: path.clone(),
-                show_hidden,
-                scan_mode: ScanMode::TwoPhase,
-            };
+            async move {
+                let operator = FileSystemOperator {
+                    operation_id: task_id.to_string(),
+                    operation: FileSystemOperation::ScanDirectory {
+                        path: path.clone(),
+                        show_hidden,
+                        scan_mode: ScanMode::TwoPhase,
+                    },
+                    task_tx,
+                    cancel_token,
+                };
 
-            let operator = FileSystemOperator::new(operation, task_tx, cancel_token);
-
-            info!(
-                task_id = task_id,
-                path = %path.display(),
-                "Starting two-phase directory scan"
-            );
-
-            match operator.execute().await {
-                Ok(_) => {
-                    info!(
-                        task_id = task_id,
-                        path = %path.display(),
-                        "Two-phase directory scan completed successfully"
-                    );
-                    // TODO: Return actual entries instead of empty vec
-                    Ok(Vec::new())
-                }
-                Err(e) => {
-                    error!(marker = "TWO_PHASE_SCAN_WITH_UPDATES_FAILED", operation_type = "file_system",
+                info!(
                     task_id = task_id,
                     path = %path.display(),
-                    error = %e,
-                    "Two-phase directory scan failed"
+                    "Starting optimized two-phase directory scan"
                 );
-                    Err(e)
+
+                // Use the optimized scan_directory_two_phase method directly
+                match operator.scan_directory_two_phase(&path, show_hidden).await {
+                    Ok(entries) => {
+                        info!(
+                            task_id = task_id,
+                            path = %path.display(),
+                            entries_count = entries.len(),
+                            "Two-phase directory scan completed successfully"
+                        );
+                        Ok(entries)
+                    }
+                    Err(e) => {
+                        error!(
+                            marker = "TWO_PHASE_SCAN_FAILED",
+                            operation_type = "file_system",
+                            task_id = task_id,
+                            path = %path.display(),
+                            error = %e,
+                            "Two-phase directory scan failed"
+                        );
+                        Err(e)
+                    }
                 }
             }
-        }
-        .instrument(tracing::info_span!(
-            "two_phase_directory_scan_task",
-            task_id = task_id,
-            path = %path_str.display()
-        )),
-    )
-    }
-
-    // Legacy compatibility functions to maintain the original API
-    // These provide backward compatibility with existing code
-
-    /// Legacy function: spawn directory scan (maintains original API)
-    #[instrument(
-        name = "spawn_directory_scan_legacy",
-        level = "info",
-        fields(
-            task_id = task_id,
-            path = %path.display(),
-            show_hidden = show_hidden
+            .instrument(tracing::info_span!(
+                "two_phase_directory_scan_task",
+                task_id = task_id,
+                path = %path_str.display()
+            )),
         )
-    )]
-    pub fn spawn_directory_scan_legacy(
-        task_id: u64,
-        path: PathBuf,
-        show_hidden: bool,
-        task_tx: UnboundedSender<TaskResult>,
-    ) -> JoinHandle<Result<Vec<ObjectInfo>>> {
-        let cancel_token = CancellationToken::new();
-        Self::spawn_directory_scan_fast(task_id, path, show_hidden, task_tx, cancel_token)
     }
 
     /// Spawn batch metadata loading task with yield points
