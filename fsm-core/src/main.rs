@@ -6,7 +6,7 @@ use std::{
     path::PathBuf,
     result::Result as StdResult,
     sync::{Arc, Mutex, RwLock},
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 
 use anyhow::{Context, Result};
@@ -25,6 +25,8 @@ use fsm_core::{
     cache::cache_manager::ObjectInfoCache,
     config::Config,
     controller::{
+        action_dispatcher::ActionSource,
+        actions::{Action, RenderTrigger},
         event_loop::{EventLoop, TaskResult},
         state_coordinator::StateCoordinator,
     },
@@ -77,6 +79,7 @@ struct App {
     state_coordinator: Arc<StateCoordinator>,
     ui_renderer: UIRenderer,
     cancel_token: CancellationToken,
+    action_tx: mpsc::UnboundedSender<Action>,
 }
 
 impl App {
@@ -158,9 +161,12 @@ impl App {
             Arc::new(StateCoordinator::new(app_state, ui_state, fs_state))
         };
 
+        // Create a channel for injecting actions into the event loop
+        let (action_tx, action_rx) = mpsc::unbounded_channel::<Action>();
+
         let (event_loop, task_tx) = {
             let _span: EnteredSpan = trace_operation!("event_loop_creation");
-            EventLoop::new(state_coordinator.clone())
+            EventLoop::new(state_coordinator.clone(), action_rx)
         };
 
         // Initial directory loading using FileSystemOperator
@@ -183,6 +189,7 @@ impl App {
             state_coordinator,
             ui_renderer,
             cancel_token,
+            action_tx,
         })
     }
 
@@ -327,45 +334,44 @@ impl App {
                     }
                 }
 
-                // 2. Immediate render on redraw request
+                // 2. Immediate render on redraw request (CLEAN ARCHITECTURE COMPLIANT)
                 _ = render_notify_rx.recv() => {
-                    // Immediate redraw triggered by metadata updates
-                    self.state_coordinator.update_ui_state(Box::new(|ui: &mut UIState| {
-                        ui.poll_notification();
-                    }));
-
-                    if let Err(e) = self.render_frame(frame_count).trace_err("IMMEDIATE_FRAME_RENDER") {
-                        warn!(
-                            frame = frame_count,
-                            error = %e,
-                            "Immediate frame render failed"
-                        );
+                    let action = Action::TriggerImmediateRender {
+                        trigger_source: RenderTrigger::MetadataUpdate,
+                        frame_count,
+                        timestamp: SystemTime::now(),
+                    };
+                    if let Err(e) = self.action_tx.send(action) {
+                        warn!(error = %e, "Failed to send TriggerImmediateRender action");
                     }
-
-                    frame_count += 1;
                 }
 
                 // 3. Maximum 60_FPS interval render (fallback)
                 _ = render_interval.tick() => {
                     // Only render if there's a pending redraw request
                     if self.state_coordinator.needs_redraw() {
-                        self.state_coordinator.update_ui_state(Box::new(|ui: &mut UIState| {
-                            ui.poll_notification();
-                        }));
-
                         if let Err(e) = self.render_frame(frame_count).trace_err("INTERVAL_FRAME_RENDER") {
                             warn!(
                                 frame = frame_count,
                                 error = %e,
-                                "Interval frame render failed"
+                                "Interval frame render failed, dispatching error action"
                             );
+                            let error_action = Action::HandleRenderError {
+                                error: e.to_string(),
+                                frame_count,
+                                error_source: "IntervalRender".to_string(),
+                                recovery_action: None,
+                                timestamp: SystemTime::now(),
+                            };
+                            if let Err(e) = self.action_tx.send(error_action) {
+                                error!(error = %e, "Failed to send HandleRenderError action");
+                            }
                         }
-
                         frame_count += 1;
                     };
                 }
 
-                // 3. Handle system signals
+                // 4. Handle system signals
                 _ = &mut ctrl_c => {
                     info!("Received Ctrl+C signal");
 
@@ -381,7 +387,7 @@ impl App {
                     break;
                 }
 
-                // 4. Handle cancellation token
+                // 5. Handle cancellation token
                 _ = self.cancel_token.cancelled() => {
                     info!("Received cancellation signal, shutting down gracefully");
 
