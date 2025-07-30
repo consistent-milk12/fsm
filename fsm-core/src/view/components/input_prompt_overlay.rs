@@ -11,6 +11,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
 };
 use smallvec::SmallVec;
+use tracing::{debug, info, instrument, trace, warn};
 
 use crate::controller::actions::InputPromptType;
 use crate::view::snapshots::PromptSnapshot;
@@ -20,25 +21,104 @@ pub struct OptimizedPromptOverlay;
 
 impl OptimizedPromptOverlay {
     pub fn new() -> Self {
+        debug!(
+            target: "fsm_core::view::components::input_prompt_overlay",
+            marker = "UI_COMPONENT_INIT",
+            component = "OptimizedPromptOverlay",
+            message = "Creating new OptimizedPromptOverlay component"
+        );
         Self
     }
 
     // ---------------------------------------------------------
     // Public entry
     // ---------------------------------------------------------
+    #[instrument(
+        level = "trace",
+        skip_all,
+        fields(
+            marker = "INPUT_PROMPT_RENDER_START",
+            operation_type = "input_prompt_render",
+            prompt_type = ?snap.prompt_type,
+            buffer_len = snap.buffer.len(),
+            cursor_pos = snap.cursor,
+            area_width = rect.width,
+            area_height = rect.height,
+            message = "Input prompt overlay render initiated"
+        )
+    )]
     pub fn render_input(&self, frame: &mut Frame<'_>, snap: &PromptSnapshot, rect: Rect) {
+        let render_start = std::time::Instant::now();
+        info!(
+            target: "fsm_core::view::components::input_prompt_overlay",
+            marker = "INPUT_PROMPT_RENDER_START",
+            operation_type = "input_prompt_render",
+            prompt_type = ?snap.prompt_type,
+            buffer_len = snap.buffer.len(),
+            cursor_pos = snap.cursor,
+            area_width = rect.width,
+            area_height = rect.height,
+            message = "Input prompt overlay render initiated"
+        );
+
+        trace!(
+            target: "fsm_core::view::components::input_prompt_overlay",
+            area_width = rect.width,
+            area_height = rect.height,
+            "Clearing background for input prompt overlay"
+        );
         frame.render_widget(Clear, rect); // wipe bg
 
         // choose title by prompt-type -------------------------
         let title = Self::title_for(&snap.prompt_type);
+        trace!(
+            target: "fsm_core::view::components::input_prompt_overlay",
+            prompt_type = ?snap.prompt_type,
+            title = title,
+            "Determined title for input prompt"
+        );
 
         // command mode gets its own two-row layout ------------
         if matches!(&snap.prompt_type, InputPromptType::Custom(s)
                     if s == "command")
         {
+            debug!(
+                target: "fsm_core::view::components::input_prompt_overlay",
+                marker = "COMMAND_MODE_ENTER",
+                message = "Drawing command mode prompt"
+            );
             self.draw_command_mode(frame, snap, rect, title);
         } else {
+            debug!(
+                target: "fsm_core::view::components::input_prompt_overlay",
+                marker = "INPUT_PROMPT_SHOW",
+                message = "Drawing standard input prompt"
+            );
             self.draw_standard(frame, snap, rect, title);
+        }
+
+        let render_time_us = render_start.elapsed().as_micros();
+        info!(
+            target: "fsm_core::view::components::input_prompt_overlay",
+            marker = "UI_RENDER_COMPLETE",
+            operation_type = "input_prompt_render",
+            render_time_us = render_time_us,
+            prompt_type = ?snap.prompt_type,
+            buffer_len = snap.buffer.len(),
+            area_width = rect.width,
+            area_height = rect.height,
+            message = "Input prompt overlay render completed"
+        );
+
+        if render_time_us > 5000 {
+            warn!(
+                target: "fsm_core::view::components::input_prompt_overlay",
+                marker = "UI_RENDER_SLOW",
+                render_time_us = render_time_us,
+                area_size = format!("{}x{}", rect.width, rect.height),
+                prompt_type = ?snap.prompt_type,
+                message = "Slow input prompt overlay render detected"
+            );
         }
     }
 
@@ -46,6 +126,14 @@ impl OptimizedPromptOverlay {
     // Standard (one-box) prompt
     // ---------------------------------------------------------
     fn draw_standard(&self, frame: &mut Frame<'_>, snap: &PromptSnapshot, rect: Rect, title: &str) {
+        trace!(
+            target: "fsm_core::view::components::input_prompt_overlay",
+            marker = "UI_DRAW_STANDARD_PROMPT",
+            area_width = rect.width,
+            area_height = rect.height,
+            title = title,
+            message = "Drawing standard input prompt UI"
+        );
         let block = Block::default()
             .borders(Borders::ALL)
             .title(title)
@@ -62,6 +150,13 @@ impl OptimizedPromptOverlay {
                 buf.insert(snap.cursor, '│');
             }
         }
+        trace!(
+            target: "fsm_core::view::components::input_prompt_overlay",
+            marker = "PROMPT_BUFFER_UPDATE",
+            buffer = %buf,
+            cursor = snap.cursor,
+            message = "Prompt buffer updated with cursor"
+        );
 
         let para = Paragraph::new(buf)
             .block(block)
@@ -98,6 +193,14 @@ impl OptimizedPromptOverlay {
         rect: Rect,
         title: &str,
     ) {
+        trace!(
+            target: "fsm_core::view::components::input_prompt_overlay",
+            marker = "UI_DRAW_COMMAND_MODE",
+            area_width = rect.width,
+            area_height = rect.height,
+            title = title,
+            message = "Drawing command mode UI"
+        );
         // split: input row + suggestions/history -------------
         let [inp_row, bottom] =
             Layout::vertical([Constraint::Length(3), Constraint::Min(0)]).areas(rect);
@@ -105,12 +208,28 @@ impl OptimizedPromptOverlay {
         self.draw_input_field(frame, snap, inp_row, title);
 
         if bottom.height <= 2 {
+            trace!(
+                target: "fsm_core::view::components::input_prompt_overlay",
+                marker = "COMMAND_MODE_NO_SPACE",
+                bottom_height = bottom.height,
+                message = "Not enough space for command mode suggestions/history"
+            );
             return;
         }
 
         if snap.buffer.is_empty() {
+            debug!(
+                target: "fsm_core::view::components::input_prompt_overlay",
+                marker = "COMMAND_MODE_HISTORY",
+                message = "Drawing command history"
+            );
             self.draw_history(frame, snap, bottom);
         } else {
+            debug!(
+                target: "fsm_core::view::components::input_prompt_overlay",
+                marker = "COMMAND_MODE_AUTOCOMPLETE",
+                message = "Drawing command autocomplete suggestions"
+            );
             self.draw_autocomplete(frame, snap, bottom);
         }
     }
@@ -125,6 +244,14 @@ impl OptimizedPromptOverlay {
         rect: Rect,
         title: &str,
     ) {
+        trace!(
+            target: "fsm_core::view::components::input_prompt_overlay",
+            marker = "UI_DRAW_INPUT_FIELD",
+            area_width = rect.width,
+            area_height = rect.height,
+            title = title,
+            message = "Drawing input field"
+        );
         let block = Block::default()
             .borders(Borders::ALL)
             .title(title)
@@ -142,6 +269,13 @@ impl OptimizedPromptOverlay {
                 txt.insert(cur, '│');
             }
         }
+        trace!(
+            target: "fsm_core::view::components::input_prompt_overlay",
+            marker = "PROMPT_BUFFER_UPDATE",
+            buffer = %txt,
+            cursor = snap.cursor,
+            message = "Input field buffer updated with cursor"
+        );
 
         frame.render_widget(
             Paragraph::new(txt)
@@ -155,10 +289,26 @@ impl OptimizedPromptOverlay {
     // Autocomplete suggestions (command begins typing)
     // ---------------------------------------------------------
     fn draw_autocomplete(&self, frame: &mut Frame<'_>, snap: &PromptSnapshot, rect: Rect) {
+        trace!(
+            target: "fsm_core::view::components::input_prompt_overlay",
+            marker = "COMMAND_PALETTE_APPLY_COMPLETION_START",
+            area_width = rect.width,
+            area_height = rect.height,
+            query = %snap.buffer,
+            message = "Drawing autocomplete suggestions"
+        );
         let matches = Self::match_cmds(&snap.buffer);
         if matches.is_empty() {
+            trace!(
+                target: "fsm_core::view::components::input_prompt_overlay",
+                marker = "COMMAND_PALETTE_NO_COMPLETION",
+                query = %snap.buffer,
+                message = "No autocomplete matches found"
+            );
             return;
         }
+
+        let match_len = matches.len();
 
         let items: SmallVec<[ListItem; 8]> = matches
             .into_iter()
@@ -191,13 +341,33 @@ impl OptimizedPromptOverlay {
             .style(Style::default().fg(theme::FOREGROUND));
 
         frame.render_widget(list, rect);
+
+        trace!(
+            target: "fsm_core::view::components::input_prompt_overlay",
+            marker = "COMMAND_PALETTE_APPLY_COMPLETION_AFTER",
+            matches_count = match_len,
+            message = "Autocomplete suggestions drawing completed"
+        );
     }
 
     // ---------------------------------------------------------
     // Command history (buffer empty)
     // ---------------------------------------------------------
     fn draw_history(&self, frame: &mut Frame<'_>, snap: &PromptSnapshot, rect: Rect) {
+        trace!(
+            target: "fsm_core::view::components::input_prompt_overlay",
+            marker = "UI_DRAW_HISTORY",
+            area_width = rect.width,
+            area_height = rect.height,
+            history_len = snap.history.len(),
+            message = "Drawing command history"
+        );
         if snap.history.is_empty() {
+            debug!(
+                target: "fsm_core::view::components::input_prompt_overlay",
+                marker = "COMMAND_HISTORY_EMPTY",
+                message = "Command history is empty, drawing available commands"
+            );
             self.draw_available_cmds(frame, rect);
             return;
         }
@@ -244,12 +414,25 @@ impl OptimizedPromptOverlay {
                 help_rect,
             );
         }
+        trace!(
+            target: "fsm_core::view::components::input_prompt_overlay",
+            marker = "COMMAND_HISTORY_DRAWN",
+            history_len = snap.history.len(),
+            message = "Command history drawing completed"
+        );
     }
 
     // ---------------------------------------------------------
     // Default command list (no history & empty buffer)
     // ---------------------------------------------------------
     fn draw_available_cmds(&self, frame: &mut Frame<'_>, rect: Rect) {
+        trace!(
+            target: "fsm_core::view::components::input_prompt_overlay",
+            marker = "UI_DRAW_AVAILABLE_COMMANDS",
+            area_width = rect.width,
+            area_height = rect.height,
+            message = "Drawing available commands list"
+        );
         let cmds = Self::all_cmds();
         let items: SmallVec<[ListItem; 8]> = cmds
             .into_iter()
@@ -279,6 +462,11 @@ impl OptimizedPromptOverlay {
             .style(Style::default().fg(theme::FOREGROUND));
 
         frame.render_widget(list, rect);
+        trace!(
+            target: "fsm_core::view::components::input_prompt_overlay",
+            marker = "AVAILABLE_COMMANDS_DRAWN",
+            message = "Available commands list drawing completed"
+        );
     }
 
     // ---------------------------------------------------------

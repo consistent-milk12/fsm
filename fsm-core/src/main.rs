@@ -38,7 +38,7 @@ use fsm_core::{
         ui_state::{RedrawFlag, UIState},
     },
     operators::file_system_operator::FileSystemOperator,
-    trace_fn, trace_operation,
+    trace_operation,
     view::ui::UIRenderer,
 };
 
@@ -453,7 +453,7 @@ impl App {
                                 error = %e,
                                 message = "Interval frame render failed, dispatching error action"
                             );
-                            
+
                             let error_action = Action::HandleRenderError {
                                 error: e.to_string(),
                                 frame_count,
@@ -517,52 +517,47 @@ impl App {
         Ok(())
     }
 
+    fn render_frame(&mut self, frame_count: u64) -> AppResult<()> {
+        if !self.state_coordinator.needs_redraw() {
+            trace!(
+                marker = "UI_FRAME_SKIPPED",
+                operation_type = "ui_render",
+                frame = frame_count,
+                message = "UI frame skipped, no redraw needed"
+            );
+            return Ok(());
+        }
+        self._render_frame_instrumented(frame_count)
+    }
+
     #[instrument(
         level = "info",
-        name = "render_frame",
+        name = "render_frame_instrumented",
         skip(self),
+        err,
         fields(
             marker = "UI_RENDER_START",
             operation_type = "ui_render",
             frame = frame_count,
-            message = "UI frame render initiated"
+            duration_us = tracing::field::Empty
         )
     )]
-    fn render_frame(&mut self, frame_count: u64) -> AppResult<()> {
-        if !self.state_coordinator.needs_redraw() {
-            return Ok(());
-        }
-
+    fn _render_frame_instrumented(&mut self, frame_count: u64) -> AppResult<()> {
         let render_start: Instant = Instant::now();
+        let span = tracing::Span::current();
 
         let render_result = self.terminal.draw(|frame: &mut Frame| {
-            let _span: EnteredSpan =
-                tracing::info_span!(
-                    "ui_render_span",
-                    marker = "UI_RENDER_START",
-                    operation_type = "ui_render",
-                    frame = frame_count,
-                    area_width = frame.size().width,
-                    area_height = frame.size().height,
-                    message = "UI frame render initiated within span"
-                ).entered();
             self.ui_renderer.render(frame, &self.state_coordinator);
         });
 
         let render_duration: Duration = render_start.elapsed();
+        span.record("duration_us", render_duration.as_micros());
 
         match render_result {
             Ok(_) => {
                 self.state_coordinator.clear_redraw();
-
-                info!(
-                    marker = "UI_RENDER_COMPLETE",
-                    operation_type = "ui_render",
-                    frame = frame_count,
-                    duration_us = render_duration.as_micros(),
-                    message = "UI frame render completed"
-                );
-
+                span.record("marker", "UI_RENDER_COMPLETE");
+                info!("UI frame render completed");
                 Ok(())
             }
 
@@ -571,16 +566,8 @@ impl App {
                     component: "main_ui".to_string(),
                     reason: e.to_string(),
                 };
-
-                error!(
-                    marker = "ERROR_RENDER",
-                    operation_type = "ui_render",
-                    frame = frame_count,
-                    duration_us = render_duration.as_micros(),
-                    error = %error,
-                    message = "Frame render failed"
-                );
-
+                span.record("marker", "ERROR_RENDER");
+                error!("Frame render failed: {e}");
                 Err(error)
             }
         }
@@ -594,7 +581,8 @@ impl Drop for App {
             marker = "APP_EXIT_CLEAN",
             operation_type = "application_lifecycle",
             message = "Application cleanup initiated"
-        ).entered();
+        )
+        .entered();
 
         // Cancel all ongoing operations
         self.cancel_token.cancel();
@@ -634,7 +622,8 @@ fn setup_terminal() -> AppResult<AppTerminal> {
         marker = "TERMINAL_SETUP_START",
         operation_type = "terminal",
         message = "Terminal initialization within span"
-    ).entered();
+    )
+    .entered();
 
     enable_raw_mode().map_err(|e| AppError::Terminal(format!("Failed to enable raw mode: {e}")))?;
 

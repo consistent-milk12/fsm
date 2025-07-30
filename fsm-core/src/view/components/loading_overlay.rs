@@ -10,7 +10,7 @@ use ratatui::{
     prelude::*,
     widgets::{Block, Borders, Clear, Gauge, Paragraph},
 };
-use tracing::{debug, trace, warn};
+use tracing::{debug, info, instrument, trace, warn};
 
 /// Simple progress overlay
 pub struct OptimizedLoadingOverlay;
@@ -19,8 +19,10 @@ impl OptimizedLoadingOverlay {
     /// ctor
     pub fn new() -> Self {
         debug!(
-            target: "fsm_core::view::loading_overlay",
-            "Creating new OptimizedLoadingOverlay component"
+            target: "fsm_core::view::components::loading_overlay",
+            marker = "UI_COMPONENT_INIT",
+            component = "OptimizedLoadingOverlay",
+            message = "Creating new OptimizedLoadingOverlay component"
         );
         Self
     }
@@ -31,8 +33,33 @@ impl OptimizedLoadingOverlay {
     /// * `loading` – immutable `LoadingState` snapshot from the
     ///   renderer (no atomics inside).  
     /// * `rect`    – screen rectangle where the overlay is drawn.
+    #[instrument(
+        level = "trace",
+        skip_all,
+        fields(
+            marker = "UI_LOADING_OVERLAY_RENDERED",
+            operation_type = "loading_overlay_render",
+            progress = loading.progress(),
+            determinate = loading.progress() > 0.0,
+            elapsed_ms = loading.start_time.elapsed().as_millis(),
+            area_width = rect.width,
+            area_height = rect.height,
+            message = "Loading overlay render initiated"
+        )
+    )]
     pub fn render_progress(&self, frame: &mut Frame<'_>, loading: &LoadingState, rect: Rect) {
         let render_start = std::time::Instant::now();
+        info!(
+            target: "fsm_core::view::components::loading_overlay",
+            marker = "UI_LOADING_OVERLAY_RENDERED",
+            operation_type = "loading_overlay_render",
+            progress = loading.progress(),
+            determinate = loading.progress() > 0.0,
+            elapsed_ms = loading.start_time.elapsed().as_millis(),
+            area_width = rect.width,
+            area_height = rect.height,
+            message = "Loading overlay render initiated"
+        );
 
         // -----------------------------------------------------
         // Derive percentage from the compact fixed-point field
@@ -44,7 +71,7 @@ impl OptimizedLoadingOverlay {
         let elapsed = loading.start_time.elapsed();
 
         trace!(
-            target: "fsm_core::view::loading_overlay",
+            target: "fsm_core::view::components::loading_overlay",
             progress = pct,
             determinate = determinate,
             elapsed_ms = elapsed.as_millis(),
@@ -70,7 +97,7 @@ impl OptimizedLoadingOverlay {
         // -----------------------------------------------------
         if determinate {
             debug!(
-                target: "fsm_core::view::loading_overlay",
+                target: "fsm_core::view::components::loading_overlay",
                 progress = pct,
                 message = %loading.message,
                 elapsed_ms = elapsed.as_millis(),
@@ -110,7 +137,7 @@ impl OptimizedLoadingOverlay {
         // -----------------------------------------------------
         else {
             debug!(
-                target: "fsm_core::view::loading_overlay",
+                target: "fsm_core::view::components::loading_overlay",
                 message = %loading.message,
                 elapsed_ms = elapsed.as_millis(),
                 "Rendering indeterminate loading display"
@@ -136,7 +163,7 @@ impl OptimizedLoadingOverlay {
 
         let render_time_us = render_start.elapsed().as_micros();
         trace!(
-            target: "fsm_core::view::loading_overlay",
+            target: "fsm_core::view::components::loading_overlay",
             render_time_us = render_time_us,
             progress = pct,
             determinate = determinate,
@@ -147,7 +174,8 @@ impl OptimizedLoadingOverlay {
 
         if render_time_us > 5000 {
             warn!(
-                target: "fsm_core::view::loading_overlay",
+                target: "fsm_core::view::components::loading_overlay",
+                marker = "UI_RENDER_SLOW",
                 render_time_us = render_time_us,
                 progress = pct,
                 area_size = format!("{}x{}", rect.width, rect.height),

@@ -7,6 +7,7 @@ use ratatui::{
     text::{Line, Span, Text},
     widgets::{Block, Borders, Clear, Paragraph, Tabs, Wrap},
 };
+use tracing::{debug, info, instrument, trace};
 
 pub struct OptimizedHelpOverlay {
     selected_tab: usize,
@@ -14,11 +15,45 @@ pub struct OptimizedHelpOverlay {
 
 impl OptimizedHelpOverlay {
     pub fn new() -> Self {
+        debug!(
+            target: "fsm_core::view::components::help_overlay",
+            marker = "UI_COMPONENT_INIT",
+            component = "OptimizedHelpOverlay",
+            message = "Creating new OptimizedHelpOverlay component"
+        );
         Self { selected_tab: 0 }
     }
 
+    #[instrument(
+        level = "trace",
+        skip_all,
+        fields(
+            marker = "UI_RENDER_START",
+            operation_type = "help_overlay_render",
+            area_width = area.width,
+            area_height = area.height,
+            selected_tab = self.selected_tab,
+            message = "Help overlay render initiated"
+        )
+    )]
     pub fn render_fast(&self, frame: &mut Frame<'_>, area: Rect) {
+        let render_start = std::time::Instant::now();
+        info!(
+            target: "fsm_core::view::components::help_overlay",
+            marker = "UI_RENDER_START",
+            operation_type = "help_overlay_render",
+            area_width = area.width,
+            area_height = area.height,
+            selected_tab = self.selected_tab,
+            message = "Help overlay render initiated"
+        );
+
         let overlay_area = self.centered_rect(85, 90, area);
+        trace!(
+            target: "fsm_core::view::components::help_overlay",
+            overlay_area = ?overlay_area,
+            "Calculated centered overlay area"
+        );
         frame.render_widget(Clear, overlay_area);
 
         // Create layout with tabs
@@ -30,13 +65,43 @@ impl OptimizedHelpOverlay {
             ])
             .split(overlay_area);
 
+        trace!(
+            target: "fsm_core::view::components::help_overlay",
+            tab_bar_area = ?chunks[0],
+            content_area = ?chunks[1],
+            "Split layout for tabs and content"
+        );
+
         // Render tab bar
         self.render_tabs(frame, chunks[0]);
 
         // Render content based on selected tab
         self.render_tab_content(frame, chunks[1]);
+
+        let render_time_us = render_start.elapsed().as_micros();
+        info!(
+            target: "fsm_core::view::components::help_overlay",
+            marker = "UI_RENDER_COMPLETE",
+            operation_type = "help_overlay_render",
+            render_time_us = render_time_us,
+            area_width = area.width,
+            area_height = area.height,
+            selected_tab = self.selected_tab,
+            message = "Help overlay render completed"
+        );
     }
 
+    #[instrument(
+        level = "trace",
+        skip_all,
+        fields(
+            marker = "UI_DRAW_TABS",
+            area_width = area.width,
+            area_height = area.height,
+            selected_tab = self.selected_tab,
+            message = "Drawing help overlay tabs"
+        )
+    )]
     fn render_tabs(&self, frame: &mut Frame<'_>, area: Rect) {
         let titles = vec!["Navigation", "Commands", "Search", "Advanced"];
 
@@ -59,6 +124,17 @@ impl OptimizedHelpOverlay {
         frame.render_widget(tabs, area);
     }
 
+    #[instrument(
+        level = "trace",
+        skip_all,
+        fields(
+            marker = "UI_DRAW_TAB_CONTENT",
+            area_width = area.width,
+            area_height = area.height,
+            selected_tab = self.selected_tab,
+            message = "Drawing help overlay tab content"
+        )
+    )]
     fn render_tab_content(&self, frame: &mut Frame<'_>, area: Rect) {
         let content = match self.selected_tab {
             0 => self.get_navigation_help(),
@@ -85,6 +161,14 @@ impl OptimizedHelpOverlay {
         self.render_footer(frame, area);
     }
 
+    #[instrument(
+        level = "trace",
+        skip_all,
+        fields(
+            marker = "HELP_CONTENT_NAVIGATION",
+            message = "Getting navigation help content"
+        )
+    )]
     fn get_navigation_help(&'_ self) -> Vec<Line<'_>> {
         vec![
             Line::from(Span::styled(
@@ -129,6 +213,14 @@ impl OptimizedHelpOverlay {
         ]
     }
 
+    #[instrument(
+        level = "trace",
+        skip_all,
+        fields(
+            marker = "HELP_CONTENT_COMMANDS",
+            message = "Getting commands help content"
+        )
+    )]
     fn get_commands_help(&'_ self) -> Vec<Line<'_>> {
         vec![
             Line::from(Span::styled(
@@ -173,6 +265,14 @@ impl OptimizedHelpOverlay {
         ]
     }
 
+    #[instrument(
+        level = "trace",
+        skip_all,
+        fields(
+            marker = "HELP_CONTENT_SEARCH",
+            message = "Getting search help content"
+        )
+    )]
     fn get_search_help(&'_ self) -> Vec<Line<'_>> {
         vec![
             Line::from(Span::styled(
@@ -219,6 +319,14 @@ impl OptimizedHelpOverlay {
         ]
     }
 
+    #[instrument(
+        level = "trace",
+        skip_all,
+        fields(
+            marker = "HELP_CONTENT_ADVANCED",
+            message = "Getting advanced help content"
+        )
+    )]
     fn get_advanced_help(&'_ self) -> Vec<Line<'_>> {
         vec![
             Line::from(Span::styled(
@@ -273,6 +381,16 @@ impl OptimizedHelpOverlay {
         ]
     }
 
+    #[instrument(
+        level = "trace",
+        skip_all,
+        fields(
+            marker = "UI_DRAW_FOOTER",
+            area_width = area.width,
+            area_height = area.height,
+            message = "Drawing help overlay footer"
+        )
+    )]
     fn render_footer(&self, frame: &mut Frame<'_>, area: Rect) {
         let footer_area = Rect {
             x: area.x + 2,

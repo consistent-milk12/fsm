@@ -26,6 +26,7 @@ pub struct OptimizedFileTable;
 impl OptimizedFileTable {
     pub fn new() -> Self {
         info!(
+            target: "fsm_core::view::components::object_table",
             marker = "UI_COMPONENT_INIT",
             operation_type = "ui_render",
             component = "OptimizedFileTable",
@@ -65,6 +66,7 @@ impl OptimizedFileTable {
         let selected_index = pane_state.selected.load(Ordering::Relaxed);
 
         info!(
+            target: "fsm_core::view::components::object_table",
             marker = "UI_RENDER_START",
             operation_type = "file_table_render",
             entries_count = entries.len(),
@@ -76,6 +78,7 @@ impl OptimizedFileTable {
         );
 
         trace!(
+            target: "fsm_core::view::components::object_table",
             marker = "UI_TABLE_AREA_INFO",
             operation_type = "ui_render",
             area_width = area.width,
@@ -147,15 +150,17 @@ impl OptimizedFileTable {
         let pending_metadata_count = entries.len() - metadata_loaded_count;
 
         trace!(
-            target: "fsm_core::view::object_table",
-            row_build_time_us = row_build_time_us,
+            target: "fsm_core::view::components::object_table",
+            marker = "UI_TABLE_ROW_BUILD_COMPLETE",
+            operation_type = "ui_render",
+            duration_us = row_build_time_us,
             dirs_count = dirs_count,
             files_count = files_count,
             symlinks_count = symlinks_count,
             total_rows = rows.len(),
             metadata_loaded_count = metadata_loaded_count,
             pending_metadata_count = pending_metadata_count,
-            "Row construction completed with live update tracking"
+            message = "Row construction completed with live update tracking"
         );
 
         // Column widths
@@ -170,18 +175,20 @@ impl OptimizedFileTable {
         let mut table_state = TableState::default().with_selected(Some(selected_index));
 
         debug!(
-            target: "fsm_core::view::object_table",
+            target: "fsm_core::view::components::object_table",
+            marker = "UI_TABLE_SELECTION_CONFIGURED",
+            operation_type = "ui_render",
             selected_index = selected_index,
             entries_count = entries.len(),
             selection_valid = selected_index < entries.len(),
-            "Table selection state configured"
+            message = "Table selection state configured"
         );
 
         // Table title shows the current path
         let title = format!(" {} ", path.display());
 
         trace!(
-            target: "fsm_core::view::object_table",
+            target: "fsm_core::view::components::object_table",
             title = %title,
             path = %path.display(),
             "Table title generated from current path"
@@ -189,7 +196,7 @@ impl OptimizedFileTable {
 
         // Clear the area with explicit fill to prevent UI corruption during navigation
         info!(
-            target: "fsm_core::view::object_table",
+            target: "fsm_core::view::components::object_table",
             area_width = area.width,
             area_height = area.height,
             "=== UI CLEAR: Clearing area before rendering table ==="
@@ -221,7 +228,8 @@ impl OptimizedFileTable {
         frame.render_stateful_widget(table, area, &mut table_state);
 
         info!(
-            target: "fsm_core::view::object_table",
+            target: "fsm_core::view::components::object_table",
+            marker = "UI_FILE_TABLE_RENDERED",
             entries_count = entries.len(),
             selected_index = selected_index,
             "=== UI COMPLETE: Table rendering finished ==="
@@ -229,7 +237,7 @@ impl OptimizedFileTable {
 
         let render_time_us = render_start.elapsed().as_micros();
         trace!(
-            target: "fsm_core::view::object_table",
+            target: "fsm_core::view::components::object_table",
             render_time_us = render_time_us,
             entries_count = entries.len(),
             selected_index = selected_index,
@@ -251,7 +259,8 @@ impl OptimizedFileTable {
         // performance monitoring and alerting
         if render_time_us > 10000 {
             warn!(
-                target: "fsm_core::view::object_table",
+                target: "fsm_core::view::components::object_table",
+                marker = "UI_RENDER_SLOW",
                 render_time_us = render_time_us,
                 entries_count = entries.len(),
                 table_area = format!("{}x{}", area.width, area.height),
@@ -263,7 +272,8 @@ impl OptimizedFileTable {
         // large directory handling monitoring
         if entries.len() > 1000 {
             debug!(
-                target: "fsm_core::view::object_table",
+                target: "fsm_core::view::components::object_table",
+                marker = "LARGE_DIRECTORY_RENDERED",
                 entries_count = entries.len(),
                 render_time_us = render_time_us,
                 dirs_count = dirs_count,
@@ -277,7 +287,8 @@ impl OptimizedFileTable {
         // selection boundary validation
         if selected_index >= entries.len() && !entries.is_empty() {
             warn!(
-                target: "fsm_core::view::object_table",
+                target: "fsm_core::view::components::object_table",
+                marker = "SELECTION_OUT_OF_BOUNDS",
                 selected_index = selected_index,
                 entries_count = entries.len(),
                 cwd = %path.display(),

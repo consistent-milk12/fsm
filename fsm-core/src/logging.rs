@@ -271,10 +271,26 @@ impl Logger {
 
     /// Test logging functionality
     pub fn test_logging() {
-        info!("Testing INFO level logging");
-        debug!("Testing DEBUG level logging");
-        warn!("Testing WARN level logging");
-        error!("Testing ERROR level logging");
+        info!(
+            marker = "TEST_LOG",
+            operation_type = "logging_test",
+            message = "Testing INFO level logging"
+        );
+        debug!(
+            marker = "TEST_LOG",
+            operation_type = "logging_test",
+            message = "Testing DEBUG level logging"
+        );
+        warn!(
+            marker = "TEST_LOG",
+            operation_type = "logging_test",
+            message = "Testing WARN level logging"
+        );
+        error!(
+            marker = "TEST_LOG",
+            operation_type = "logging_test",
+            message = "Testing ERROR level logging"
+        );
         trace!("Testing TRACE level logging");
 
         info!(

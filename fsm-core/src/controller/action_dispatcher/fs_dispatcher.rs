@@ -53,7 +53,9 @@ impl FileOpsDispatcher {
     /// Navigate into a directory using FileSystemOperator for all loading.
     #[instrument(
         level = "info",
+        name = "navigate_to",
         skip(self, target),
+        err,
         fields(
             marker = "ENTER_START",
             operation_type = "directory_entry",
@@ -62,8 +64,7 @@ impl FileOpsDispatcher {
             entries_count = tracing::field::Empty,
             selected_index = tracing::field::Empty,
             duration_us = tracing::field::Empty,
-            cache_hit = false,
-            message = "Starting navigate_to via FileSystemOperator"
+            cache_hit = false
         )
     )]
     async fn navigate_to(&self, target: PathBuf) -> Result<DispatchResult> {
@@ -72,14 +73,11 @@ impl FileOpsDispatcher {
 
         // Validate directory existence
         if !target.exists() || !target.is_dir() {
-            error!(
-                marker = "ENTER_ERROR",
-                operation_type = "directory_entry",
-                target_path = %target.display(),
-                message = format!("navigate_to: invalid directory {}", target.display())
-            );
+            let message = format!("navigate_to: invalid directory {}", target.display());
+            span.record("marker", "ENTER_ERROR");
             self.error("Invalid directory");
-            return Ok(DispatchResult::Continue);
+            // The error message for the log is taken from the Err variant
+            return Err(anyhow::anyhow!(message));
         }
 
         // Update navigation state first
@@ -120,13 +118,10 @@ impl FileOpsDispatcher {
             CancellationToken::new(),
         );
 
-        info!(
-            marker = "ENTER_COMPLETE",
-            operation_type = "directory_entry",
-            target_path = %target.display(),
-            duration_us = start.elapsed().as_micros(),
-            message = "Two-phase directory scan initiated via FileSystemOperator"
-        );
+        span.record("marker", "ENTER_COMPLETE");
+        span.record("duration_us", start.elapsed().as_micros());
+
+        info!("Two-phase directory scan initiated via FileSystemOperator");
 
         self.state_provider.request_redraw(RedrawFlag::All);
 

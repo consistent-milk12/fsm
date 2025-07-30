@@ -7,19 +7,35 @@ use ratatui::{
     style::{Modifier, Style, Stylize},
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, info, instrument, trace, warn};
 
 pub struct OptimizedNotificationOverlay;
 
 impl OptimizedNotificationOverlay {
     pub fn new() -> Self {
         debug!(
-            target: "fsm_core::view::notification_overlay",
-            "Creating new OptimizedNotificationOverlay component"
+            target: "fsm_core::view::components::notification_overlay",
+            marker = "UI_COMPONENT_INIT",
+            component = "OptimizedNotificationOverlay",
+            message = "Creating new OptimizedNotificationOverlay component"
         );
         Self
     }
 
+    #[instrument(
+        level = "info",
+        skip_all,
+        fields(
+            marker = "NOTIFICATION_DISPLAYED",
+            operation_type = "notification_render",
+            level = ?notification.level,
+            message_len = notification.message.len(),
+            auto_dismiss_ms = ?notification.auto_dismiss_ms,
+            area_width = area.width,
+            area_height = area.height,
+            message = "Notification overlay render initiated"
+        )
+    )]
     pub fn render_notification(
         &self,
         frame: &mut Frame<'_>,
@@ -29,7 +45,7 @@ impl OptimizedNotificationOverlay {
         let render_start = std::time::Instant::now();
 
         info!(
-            target: "fsm_core::view::notification_overlay",
+            target: "fsm_core::view::components::notification_overlay",
             level = ?notification.level,
             message_len = notification.message.len(),
             auto_dismiss_ms = ?notification.auto_dismiss_ms,
@@ -48,7 +64,7 @@ impl OptimizedNotificationOverlay {
         };
 
         trace!(
-            target: "fsm_core::view::notification_overlay",
+            target: "fsm_core::view::components::notification_overlay",
             level = ?notification.level,
             title = title,
             icon = icon,
@@ -71,7 +87,7 @@ impl OptimizedNotificationOverlay {
             .split(inner_area);
 
         debug!(
-            target: "fsm_core::view::notification_overlay",
+            target: "fsm_core::view::components::notification_overlay",
             message_area_width = layout[0].width,
             message_area_height = layout[0].height,
             dismiss_area_width = layout[1].width,
@@ -92,7 +108,7 @@ impl OptimizedNotificationOverlay {
         };
 
         trace!(
-            target: "fsm_core::view::notification_overlay",
+            target: "fsm_core::view::components::notification_overlay",
             dismiss_text = dismiss_text,
             has_auto_dismiss = notification.auto_dismiss_ms.is_some(),
             "Generated dismiss text for notification"
@@ -108,8 +124,10 @@ impl OptimizedNotificationOverlay {
         frame.render_widget(dismiss, layout[1]);
 
         let render_time_us = render_start.elapsed().as_micros();
-        trace!(
-            target: "fsm_core::view::notification_overlay",
+        info!(
+            target: "fsm_core::view::components::notification_overlay",
+            marker = "UI_RENDER_COMPLETE",
+            operation_type = "notification_render",
             render_time_us = render_time_us,
             level = ?notification.level,
             message_len = notification.message.len(),
@@ -119,7 +137,8 @@ impl OptimizedNotificationOverlay {
 
         if render_time_us > 3000 {
             warn!(
-                target: "fsm_core::view::notification_overlay",
+                target: "fsm_core::view::components::notification_overlay",
+                marker = "UI_RENDER_SLOW",
                 render_time_us = render_time_us,
                 level = ?notification.level,
                 message_len = notification.message.len(),
@@ -132,7 +151,8 @@ impl OptimizedNotificationOverlay {
         match notification.level {
             NotificationLevel::Error => {
                 debug!(
-                    target: "fsm_core::view::notification_overlay",
+                    target: "fsm_core::view::components::notification_overlay",
+                    marker = "NOTIFICATION_ERROR",
                     message = %notification.message,
                     render_time_us = render_time_us,
                     "Error notification displayed to user"
@@ -140,7 +160,8 @@ impl OptimizedNotificationOverlay {
             }
             NotificationLevel::Warning => {
                 debug!(
-                    target: "fsm_core::view::notification_overlay",
+                    target: "fsm_core::view::components::notification_overlay",
+                    marker = "NOTIFICATION_WARNING",
                     message = %notification.message,
                     render_time_us = render_time_us,
                     "Warning notification displayed to user"
