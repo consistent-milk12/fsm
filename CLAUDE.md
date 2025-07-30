@@ -5,9 +5,9 @@
 
 ## CONTEXT LOADING REQUIREMENT
 **MANDATORY CONTEXT**: When CLAUDE.md is first file loaded, AI MUST also load these files fully into context:
-- @.docs/ARCHITECTURE.md - Clean architecture implementation details
-- @.docs/TRACING.md - TSV tracing protocol and markers 
-- @.docs/TODO.md - Current project status and tasks
+- @docs/ARCHITECTURE.md - Clean architecture implementation details
+- @docs/TRACING.md - TSV tracing protocol and markers 
+- @docs/TODO.md - Current project status and tasks
 - @CLAUDE.md - This rules file (already loaded)
 
 ## ABSOLUTE MANDATORY RULES - NO EXCEPTIONS EVER

@@ -1,6 +1,7 @@
 // fsm-core/src/model/app_state.rs
 // Streamlined AppState focused on business logic and task management
 
+use clipr::{ClipBoard, ClipBoardConfig};
 // Import tracing macros for spans and events
 use tracing::{debug, info, instrument, warn};
 
@@ -13,13 +14,70 @@ use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
+use std::sync::{Mutex, RwLock};
 use std::time::{Duration, Instant};
 
+use crate::controller::actions::ClipboardStats as CliprStats;
 use crate::{
     cache::cache_manager::ObjectInfoCache,
     config::Config,
     controller::actions::{OperationId, ProcessData, SystemData},
 };
+
+/// clipr operation state tracking for enhanced performance monitoring
+#[derive(Debug, Clone)]
+pub struct ClipboardOperationState {
+    pub operation_id: OperationId,
+    pub operation_type: CompactString, // "batch_add", "batch_paste", "search", etc.
+    pub started_at: Instant,
+    pub items_count: usize,
+    pub progress: f32, // 0.0 to 1.0
+    pub completed: bool,
+    pub cancelled: bool,
+    pub error: Option<CompactString>,
+}
+
+impl ClipboardOperationState {
+    pub fn new(
+        operation_id: OperationId,
+        operation_type: impl Into<CompactString>,
+        items_count: usize,
+    ) -> Self {
+        Self {
+            operation_id,
+            operation_type: operation_type.into(),
+            started_at: Instant::now(),
+            items_count,
+            progress: 0.0,
+            completed: false,
+            cancelled: false,
+            error: None,
+        }
+    }
+
+    pub fn set_progress(&mut self, progress: f32) {
+        self.progress = progress.clamp(0.0, 1.0);
+    }
+
+    pub fn complete(&mut self) {
+        self.progress = 1.0;
+        self.completed = true;
+    }
+
+    pub fn fail(&mut self, error: impl Into<CompactString>) {
+        self.error = Some(error.into());
+        self.completed = true;
+    }
+
+    pub fn cancel(&mut self) {
+        self.cancelled = true;
+        self.completed = true;
+    }
+
+    pub fn elapsed(&self) -> Duration {
+        self.started_at.elapsed()
+    }
+}
 
 /// Task execution information
 #[derive(Debug)]
@@ -36,10 +94,10 @@ pub struct TaskInfo {
 impl TaskInfo {
     // Instrument creation; record task_id, skip description param
     #[instrument(
-        level = "info",
-        fields(task_id = id),
-        skip(description)
-    )]
+          level = "info",
+          fields(task_id = id),
+          skip(description)
+      )]
     pub fn new(id: u64, description: impl Into<CompactString>) -> Self {
         // Convert description into CompactString
         let desc = description.into();
@@ -56,7 +114,8 @@ impl TaskInfo {
     }
 
     // Instrument operation attach; skip self for logging
-    #[instrument(level = "debug", skip(self), fields(operation_id = ?operation_id))]
+    #[instrument(level = "debug", skip(self), fields(operation_id = 
+  ?operation_id))]
     pub fn with_operation(mut self, operation_id: OperationId) -> Self {
         self.operation_id = Some(operation_id);
         self
@@ -133,6 +192,14 @@ pub enum HistoryEvent {
     ClipboardOp {
         operation: CompactString,
         count: u32,
+    },
+    // clipr-specific operations for enhanced tracking
+    ClipboardBatchOp {
+        operation_type: CompactString, // "batch_add", "batch_paste", "search"
+        operation_id: OperationId,
+        items_count: u32,
+        duration_ms: u64,
+        success: bool,
     },
 }
 
@@ -213,11 +280,15 @@ impl SearchState {
             self.recent_queries.pop_back();
         }
         *self.query_counts.entry(query.clone()).or_insert(0) += 1;
-        info!(count = self.query_counts[&query], "Search query recorded");
+        info!(
+            count = self.query_counts[&query],
+            "Search query 
+  recorded"
+        );
     }
 }
 
-/// Main application state - business logic and task management
+/// Main application state with clipr integration
 pub struct AppState {
     pub config: Arc<Config>,         // Application configuration
     pub cache: Arc<ObjectInfoCache>, // Metadata cache
@@ -239,6 +310,19 @@ pub struct AppState {
 
     pub system_data: Option<SystemData>,
     pub process_data: Vec<ProcessData>,
+
+    // ===== clipr Integration =====
+    /// High-performance clipr clipboard with lock-free operations
+    pub clipboard: Arc<ClipBoard>,
+
+    /// Active clipboard operations for progress tracking and cancellation
+    pub clipboard_operations: DashMap<OperationId, ClipboardOperationState>,
+
+    /// Real-time clipboard performance metrics with atomic updates
+    pub clipboard_metrics: Arc<RwLock<CliprStats>>,
+
+    /// Clipboard operation statistics for performance monitoring
+    pub clipboard_stats: Arc<RwLock<CliprStats>>,
 }
 
 impl AppState {
@@ -252,6 +336,11 @@ impl AppState {
                 .unwrap_or_default()
                 .as_secs(),
         );
+
+        // Initialize clipr with optimized configuration for FSM workloads
+        let clipboard_config = ClipBoardConfig::default();
+
+        let clipboard = Arc::new(ClipBoard::new(clipboard_config));
 
         let state = Self {
             config,
@@ -269,10 +358,162 @@ impl AppState {
             started_at: Instant::now(),
             system_data: None,
             process_data: Vec::new(),
+
+            // clipr integration
+            clipboard,
+            clipboard_operations: DashMap::with_capacity(128),
+            clipboard_metrics: Arc::new(RwLock::new(CliprStats::default())),
+            clipboard_stats: Arc::new(RwLock::new(CliprStats::default())),
         };
 
-        info!(session = %session_id, "AppState initialized");
+        info!(session = %session_id, "AppState with clipr integration 
+  initialized");
         state
+    }
+
+    // ===== clipr Operation Management =====
+
+    /// Track a new clipboard operation with performance monitoring
+    pub fn start_clipboard_operation(
+        &self,
+        operation_id: OperationId,
+        operation_type: impl Into<CompactString>,
+        items_count: usize,
+    ) {
+        let op_state =
+            ClipboardOperationState::new(operation_id.clone(), operation_type, items_count);
+
+        self.clipboard_operations
+            .insert(operation_id.clone(), op_state);
+
+        info!(
+            marker = "CLIPBOARD_OPERATION_START",
+            operation_type = "clipboard_operation_tracking",
+            operation_id = %operation_id,
+            items_count = items_count,
+            "Clipboard operation started"
+        );
+    }
+
+    /// Update clipboard operation progress with atomic safety
+    #[instrument(level = "debug", skip(self))]
+    pub fn update_clipboard_operation_progress(&self, operation_id: &OperationId, progress: f32) {
+        if let Some(mut op) = self.clipboard_operations.get_mut(operation_id) {
+            op.set_progress(progress);
+
+            debug!(
+                marker = "CLIPBOARD_OPERATION_PROGRESS",
+                operation_type = "clipboard_operation_tracking",
+                operation_id = %operation_id,
+                progress = progress,
+                "Clipboard operation progress updated"
+            );
+        }
+    }
+
+    /// Complete clipboard operation with statistics recording
+    #[instrument(level = "info", skip(self))]
+    pub fn complete_clipboard_operation(&mut self, operation_id: &OperationId) {
+        if let Some(mut op) = self.clipboard_operations.get_mut(operation_id) {
+            op.complete();
+
+            // Record in operation history for advanced analytics
+            let history_event = HistoryEvent::ClipboardBatchOp {
+                operation_type: op.operation_type.clone(),
+                operation_id: operation_id.clone(),
+                items_count: op.items_count as u32,
+                duration_ms: op.elapsed().as_millis() as u64,
+                success: true,
+            };
+
+            // Safe history update with bounds checking
+            if let Ok(mut history) = Mutex::new(&mut self.operation_history).lock() {
+                if history.len() >= 64 {
+                    history.remove(0);
+                }
+                history.push(history_event);
+            }
+
+            info!(
+                marker = "CLIPBOARD_OPERATION_COMPLETE",
+                operation_type = "clipboard_operation_tracking",
+                operation_id = %operation_id,
+                duration_ms = op.elapsed().as_millis(),
+                items_count = op.items_count,
+                "Clipboard operation completed successfully"
+            );
+        }
+    }
+
+    /// Handle clipboard operation failure with comprehensive error tracking
+    #[instrument(level = "warn", skip(self, error))]
+    pub fn fail_clipboard_operation(
+        &self,
+        operation_id: &OperationId,
+        error: impl Into<CompactString>,
+    ) {
+        let error_msg = error.into();
+
+        if let Some(mut op) = self.clipboard_operations.get_mut(operation_id) {
+            op.fail(error_msg.clone());
+
+            // Record failed operation in history
+            let history_event = HistoryEvent::ClipboardBatchOp {
+                operation_type: op.operation_type.clone(),
+                operation_id: operation_id.clone(),
+                items_count: op.items_count as u32,
+                duration_ms: op.elapsed().as_millis() as u64,
+                success: false,
+            };
+
+            if let Ok(mut history) = std::sync::Mutex::new(self.operation_history.clone()).lock() {
+                if history.len() >= 64 {
+                    history.remove(0);
+                }
+                history.push(history_event);
+            }
+
+            warn!(
+                marker = "CLIPBOARD_OPERATION_FAILED",
+                operation_type = "clipboard_operation_tracking",
+                operation_id = %operation_id,
+                error = %error_msg,
+                duration_ms = op.elapsed().as_millis(),
+                "Clipboard operation failed"
+            );
+        }
+    }
+
+    /// Get real-time clipboard statistics for UI display
+    #[instrument(level = "debug", skip(self))]
+    pub fn get_clipboard_stats(&self) -> Option<CliprStats> {
+        self.clipboard_stats.read().ok().map(|stats| stats.clone())
+    }
+
+    /// Update clipboard metrics from clipr for performance monitoring
+    #[instrument(level = "debug", skip(self, metrics))]
+    pub fn update_clipboard_metrics(&self, metrics: CliprStats) {
+        if let Ok(mut current_metrics) = self.clipboard_metrics.write() {
+            *current_metrics = metrics;
+
+            // Update aggregate statistics
+            if let Ok(mut stats) = self.clipboard_stats.write() {
+                stats.total_items = current_metrics.total_items;
+                stats.copy_items = current_metrics.copy_items;
+                stats.move_items = current_metrics.move_items;
+                stats.total_size_bytes = current_metrics.total_size_bytes;
+                stats.cache_hit_ratio = current_metrics.cache_hit_ratio;
+                stats.last_updated = std::time::SystemTime::now();
+            }
+
+            debug!(
+                marker = "CLIPBOARD_METRICS_UPDATED",
+                operation_type = "clipboard_metrics",
+                total_items = current_metrics.total_items,
+                cache_hit_ratio = current_metrics.cache_hit_ratio,
+                "Clipboard metrics updated from clipr"
+            );
+        }
     }
 
     // Instrument task addition; skip description param
@@ -292,9 +533,9 @@ impl AppState {
 
     // Instrument task+operation addition; skip description param
     #[instrument(
-        level = "info", skip(self, description),
-        fields(operation_id = ?operation_id)
-    )]
+          level = "info", skip(self, description),
+          fields(operation_id = ?operation_id)
+      )]
     pub fn add_task_with_operation(
         &self,
         description: impl Into<CompactString>,
@@ -355,7 +596,8 @@ impl AppState {
             .entry(name_str.clone())
             .or_insert_with(|| Arc::new(ActionStats::new(name_str.clone())));
         stats.record_execution(duration);
-        debug!(action = %name_str, ns = duration.as_nanos(), "Action recorded");
+        debug!(action = %name_str, ns = duration.as_nanos(), "Action 
+  recorded");
     }
 
     // File marking methods with tracing
@@ -420,12 +662,18 @@ impl AppState {
         for id in &completed {
             self.remove_task(*id);
         }
-        info!(removed = completed.len(), "Completed tasks cleaned up");
+        info!(
+            removed = completed.len(),
+            "Completed tasks cleaned 
+  up"
+        );
     }
 
     // Metrics retrieval with tracing
     #[instrument(level = "debug", skip(self))]
     pub fn get_metrics(&self) -> AppMetrics {
+        let clipboard_stats = self.get_clipboard_stats().unwrap_or_default();
+
         let metrics = AppMetrics {
             session_id: self.session_id.clone(),
             uptime: self.started_at.elapsed(),
@@ -434,6 +682,8 @@ impl AppState {
             active_tasks: self.tasks.len(),
             marked_files: self.marked_files.len(),
             history_size: self.operation_history.len(),
+            clipboard_items: clipboard_stats.total_items,
+            clipboard_cache_hit_ratio: clipboard_stats.cache_hit_ratio,
         };
         debug!(
             marker = "METRICS_RETRIEVED",
@@ -460,7 +710,7 @@ impl Default for AppState {
     }
 }
 
-/// Application metrics snapshot
+/// Application metrics snapshot with clipr integration
 #[derive(Debug, Clone)]
 pub struct AppMetrics {
     pub session_id: CompactString,
@@ -470,4 +720,7 @@ pub struct AppMetrics {
     pub active_tasks: usize,
     pub marked_files: usize,
     pub history_size: usize,
+    // clipr metrics
+    pub clipboard_items: u64,
+    pub clipboard_cache_hit_ratio: f32,
 }

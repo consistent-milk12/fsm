@@ -2,14 +2,23 @@
 // Send-safe clipboard operations with proper async handling
 
 use anyhow::Result;
-use clipr::{FileOperation, PasteOperation};
+use clipr::{
+    ClipBoard, ClipBoardItem, ClipBoardOperation, ClipError, FileOperation, PasteOperation,
+};
+use compact_str::CompactString;
 use std::path::PathBuf;
-use std::sync::Arc;
-use tracing::{debug, instrument, warn};
+use std::sync::{Arc, MutexGuard, RwLock, RwLockReadGuard};
+use std::time::{Instant, SystemTime};
+
+use tracing::{debug, info, instrument, warn};
+
+use std::result::Result as StdResult;
 
 use crate::controller::Action;
+use crate::controller::actions::{ClipboardOperationType, ClipboardStats, OperationId};
 use crate::controller::state_provider::StateProvider;
 use crate::model::ui_state::{RedrawFlag, UIState};
+use crate::{AppState, FSState};
 
 use super::*;
 
@@ -75,50 +84,217 @@ impl ClipboardDispatcher {
         Self { state_provider }
     }
 
-    #[instrument(level = "trace", skip(self))]
+    #[instrument(
+        level = "info",
+        skip(self),
+        err,
+        fields(
+            marker = "CLIPBOARD_COPY_START",
+            operation_type = "clipboard_copy",
+            current_path = %path.display(),
+            duration_us = tracing::field::Empty,
+            cache_hit = false
+        )
+    )]
     async fn handle_copy(&self, path: PathBuf) -> Result<DispatchResult> {
-        debug!("Copying: {:?}", path);
+        let start = Instant::now();
+        let span = tracing::Span::current();
+
+        debug!(
+            marker = "CLIPBOARD_COPY_START",
+            operation_type = "clipboard_copy",
+            current_path = %path.display(),
+            "Clipbaord copy operation initiated"
+        );
+
+        // CRITICAL FIX: Add path validation before clipboard operations
+        if path.as_os_str().is_empty() || path.to_string_lossy().trim().is_empty() {
+            warn!(
+                marker = "CLIPBOARD_COPY_INVALID_PATH",
+                operation_type = "clipboard_copy",
+                current_path = %path.display(),
+                "Copy operation failed: empty or invalid path"
+            );
+
+            self.error("Cannot copy: Invalid or empty file path");
+
+            return Ok(DispatchResult::Continue);
+        }
 
         // Get clipboard without holding UI lock across await
-        let clipboard = {
-            let ui_state = self.state_provider.ui_state();
-            let ui = ui_state
+        let clipboard: ClipBoard = {
+            let ui_state: Arc<RwLock<UIState>> = self.state_provider.ui_state();
+            let ui: RwLockReadGuard<'_, UIState> = ui_state
                 .read()
                 .map_err(|_| anyhow::anyhow!("UI state lock poisoned"))?;
+
             ui.clipboard.clone()
         };
+
+        // Additional validation: Check if path exists before metadata read
+        if !path.exists() {
+            warn!(
+                marker = "CLIPBOARD_COPY_NOT_FOUND",
+                operation_type = "clipboard_copy",
+                current_path = %path.display(),
+                "Copy operation failed: File does not exist"
+            );
+
+            self.error(&format!("Cannot copy: File does exist: {}", path.display()));
+        }
+
+        let path_str: PathBuf = path.clone();
 
         // Perform async operation
         match clipboard.add_copy(path).await {
-            Ok(_) => self.success("Item copied to clipboard"),
-            Err(e) => self.error(&format!("Copy failed: {e}")),
+            Ok(_) => {
+                span.record("marker", "CLIPBOARD_COPY_SUCCESS");
+                span.record("duration_us", start.elapsed().as_micros());
+
+                info!(
+                    marker = "CLIPBOARD_COPY_SUCCESS",
+                    operation_type = "clipboard_copy",
+                    current_path = %path_str.display(),
+                    duration_us = start.elapsed().as_micros(),
+                    "Clipbaord copy completed successfully"
+                );
+
+                self.success("Item copied to clipboard");
+            }
+
+            Err(e) => {
+                span.record("marker", "CLIPBOARD_COPY_FAILED");
+                span.record("duration_us", start.elapsed().as_micros());
+
+                warn!(
+                    marker = "CLIPBOARD_COPY_FAILED",
+                    operation_type = "clipboard_copy",
+                    current_path = %path_str.display(),
+                    duration_us = start.elapsed().as_micros(),
+                    error = %e,
+                    "Clipboard copy operation failed"
+                );
+
+                self.error(&format!("Copy failed: {e}"));
+            }
         }
 
         Ok(DispatchResult::Continue)
     }
 
-    #[instrument(level = "trace", skip(self))]
+    #[instrument(
+        level = "info",
+        skip(self),
+        err,
+        fields(
+            marker = "CLIPBOARD_CUT_START",
+            operation_type = "clipboard_cut", 
+            current_path = %path.display(),
+            duration_us = tracing::field::Empty,
+            cache_hit = false
+        )
+    )]
     async fn handle_cut(&self, path: PathBuf) -> Result<DispatchResult> {
-        debug!("Cutting: {:?}", path);
+        let start = Instant::now();
+        let span = tracing::Span::current();
 
-        let clipboard = {
-            let ui_state = self.state_provider.ui_state();
-            let ui = ui_state
+        debug!(
+            marker = "CLIPBOARD_CUT_START",
+            operation_type = "clipboard_cut",
+            current_path = %path.display(),
+            "Clipboard cut operation initiated"
+        );
+
+        // CRITICAL: Add path validation before clipboard operations
+        if path.as_os_str().is_empty() || path.to_string_lossy().trim().is_empty() {
+            warn!(
+                marker = "CLIPBOARD_CUT_INVALID_PATH",
+                operation_type = "clipboard_cut",
+                current_path = %path.display(),
+                "Cut operation failed: empty or invalid path"
+            );
+            self.error("Cannot cut: invalid or empty file path");
+            return Ok(DispatchResult::Continue);
+        }
+
+        // Additional validation: Check if path exists before metadata read
+        if !path.exists() {
+            warn!(
+                marker = "CLIPBOARD_CUT_NOT_FOUND",
+                operation_type = "clipboard_cut",
+                current_path = %path.display(),
+                "Cut operation failed: file does not exist"
+            );
+            self.error(&format!(
+                "Cannot cut: file does not exist: {}",
+                path.display()
+            ));
+            return Ok(DispatchResult::Continue);
+        }
+
+        let clipboard: ClipBoard = {
+            let ui_state: Arc<RwLock<UIState>> = self.state_provider.ui_state();
+
+            let ui: RwLockReadGuard<'_, UIState> = ui_state
                 .read()
                 .map_err(|_| anyhow::anyhow!("UI state lock poisoned"))?;
+
             ui.clipboard.clone()
         };
 
-        match clipboard.add_move(path).await {
-            Ok(_) => self.success("Item cut to clipboard"),
-            Err(e) => self.error(&format!("Cut failed: {e}")),
+        match clipboard.add_move(path.clone()).await {
+            Ok(_) => {
+                span.record("marker", "CLIPBOARD_CUT_SUCCESS");
+                span.record("duration_us", start.elapsed().as_micros());
+
+                info!(
+                    marker = "CLIPBOARD_CUT_SUCCESS",
+                    operation_type = "clipboard_cut",
+                    current_path = %path.display(),
+                    duration_us = start.elapsed().as_micros(),
+                    "Clipboard cut completed successfully"
+                );
+
+                self.success("Item cut to clipboard");
+            }
+
+            Err(e) => {
+                span.record("marker", "CLIPBOARD_CUT_FAILED");
+                span.record("duration_us", start.elapsed().as_micros());
+
+                warn!(
+                    marker = "CLIPBOARD_CUT_FAILED",
+                    operation_type = "clipboard_cut",
+                    current_path = %path.display(),
+                    duration_us = start.elapsed().as_micros(),
+                    error = %e,
+                    "Clipboard cut operation failed"
+                );
+
+                self.error(&format!("Cut failed: {e}"));
+            }
         }
 
         Ok(DispatchResult::Continue)
     }
 
-    #[instrument(level = "trace", skip(self))]
+    #[instrument(
+      level = "info",
+      skip(self),
+      err,
+      fields(
+          marker = "CLIPBOARD_PASTE_START",
+          operation_type = "clipboard_paste",
+          current_path = tracing::field::Empty,
+          entries_count = tracing::field::Empty,
+          duration_us = tracing::field::Empty,
+          cache_hit = false
+      )
+  )]
     async fn handle_paste(&self) -> Result<DispatchResult> {
+        let start = Instant::now();
+        let span = tracing::Span::current();
+
         let (current_dir, clipboard) = {
             let fs = self.state_provider.fs_state();
             let ui_state = self.state_provider.ui_state();
@@ -129,13 +305,41 @@ impl ClipboardDispatcher {
             (fs.active_pane().cwd.clone(), ui.clipboard.clone())
         };
 
+        // Record current directory in span
+        span.record(
+            "current_path",
+            &tracing::field::display(&current_dir.display()),
+        );
+
+        debug!(
+            marker = "CLIPBOARD_PASTE_START",
+            operation_type = "clipboard_paste",
+            current_path = %current_dir.display(),
+            "Clipboard paste operation initiated"
+        );
+
         let items = clipboard.get_all_items().await;
+        span.record("entries_count", &items.len());
+
         if items.is_empty() {
+            warn!(
+                marker = "CLIPBOARD_PASTE_EMPTY",
+                operation_type = "clipboard_paste",
+                current_path = %current_dir.display(),
+                entries_count = 0,
+                "Paste operation failed: clipboard is empty"
+            );
             self.error("Clipboard is empty");
             return Ok(DispatchResult::Continue);
         }
 
-        debug!("Pasting {} items to {:?}", items.len(), current_dir);
+        info!(
+            marker = "CLIPBOARD_PASTE_ITEMS_FOUND",
+            operation_type = "clipboard_paste",
+            current_path = %current_dir.display(),
+            entries_count = items.len(),
+            "Found clipboard items for paste operation"
+        );
 
         // Create paste operations using clipr's optimized batch processing
         let paste_results = PasteOperation::create_batch(&items, current_dir.clone());
@@ -159,13 +363,35 @@ impl ClipboardDispatcher {
             } else {
                 format!("All operations failed: {}", creation_errors.join(", "))
             };
+
+            span.record("marker", "CLIPBOARD_PASTE_NO_VALID_OPS");
+            span.record("duration_us", start.elapsed().as_micros());
+
+            warn!(
+                marker = "CLIPBOARD_PASTE_NO_VALID_OPS",
+                operation_type = "clipboard_paste",
+                current_path = %current_dir.display(),
+                entries_count = items.len(),
+                duration_us = start.elapsed().as_micros(),
+                error = %error_msg,
+                "No valid paste operations could be created"
+            );
+
             self.error(&error_msg);
             return Ok(DispatchResult::Continue);
         }
 
+        info!(
+            marker = "CLIPBOARD_PASTE_OPERATIONS_CREATED",
+            operation_type = "clipboard_paste",
+            current_path = %current_dir.display(),
+            entries_count = paste_ops.len(),
+            "Created paste operations for execution"
+        );
+
         // Execute paste operations with concurrent processing for better performance
         let mut success_count = 0;
-        let mut operation_errors = Vec::new();
+        // let mut operation_errors = Vec::new();
 
         // Process operations in batches for optimal performance
         let batch_size = std::cmp::min(paste_ops.len(), num_cpus::get() * 2);
@@ -173,122 +399,15 @@ impl ClipboardDispatcher {
 
         // Show progress for large operations
         if paste_ops.len() > 5 {
+            info!(
+                marker = "CLIPBOARD_PASTE_BATCH_START",
+                operation_type = "clipboard_paste",
+                current_path = %current_dir.display(),
+                entries_count = paste_ops.len(),
+                total_batches = total_batches,
+                "Starting batch paste operation"
+            );
             self.success(&format!("Starting paste of {} items...", paste_ops.len()));
-        }
-
-        for (batch_idx, batch) in paste_ops.chunks(batch_size).enumerate() {
-            // Create futures for concurrent execution within batch
-            let futures: Vec<_> = batch
-                .iter()
-                .enumerate()
-                .map(|(idx, paste_op)| async move {
-                    let global_idx = batch_idx * batch_size + idx;
-                    let result = match &paste_op.file_operation {
-                        FileOperation::Copy {
-                            source,
-                            dest,
-                            preserve_attrs,
-                            ..
-                        } => {
-                            self.execute_copy_operation(
-                                source.as_str(),
-                                dest.as_str(),
-                                *preserve_attrs,
-                            )
-                            .await
-                        }
-                        FileOperation::Move {
-                            source,
-                            dest,
-                            atomic_move,
-                            ..
-                        } => {
-                            self.execute_move_operation(
-                                source.as_str(),
-                                dest.as_str(),
-                                *atomic_move,
-                            )
-                            .await
-                        }
-                    };
-
-                    (global_idx, paste_op, result)
-                })
-                .collect();
-
-            // Await all operations in this batch concurrently
-            let batch_results = futures::future::join_all(futures).await;
-
-            // Process results
-            for (idx, paste_op, result) in batch_results {
-                match result {
-                    Ok(_) => {
-                        success_count += 1;
-                        debug!(
-                            "Successfully executed paste operation {}/{}",
-                            idx + 1,
-                            paste_ops.len()
-                        );
-                    }
-                    Err(e) => {
-                        let error_type = PasteErrorType::from_error_message(&e.to_string());
-                        let user_msg = format!(
-                            "{}: {}",
-                            paste_op.file_operation.operation_name(),
-                            error_type.user_message()
-                        );
-                        operation_errors.push(user_msg);
-
-                        // Log detailed error for debugging
-                        warn!(
-                            "Paste operation failed for {:?}: {}",
-                            paste_op.source_path,
-                            error_type.detailed_message()
-                        );
-                    }
-                }
-            }
-
-            // Show intermediate progress for large operations
-            if paste_ops.len() > 10 && batch_idx + 1 < total_batches {
-                let completed = (batch_idx + 1) * batch_size;
-                debug!(
-                    "Completed batch {}/{} ({} items)",
-                    batch_idx + 1,
-                    total_batches,
-                    completed
-                );
-            }
-        }
-
-        // Clear move items after successful paste and provide detailed feedback
-        if success_count > 0 {
-            clipboard.clear_on_paste().await;
-
-            let success_msg = if operation_errors.is_empty() {
-                format!("Successfully pasted {success_count} items")
-            } else {
-                format!(
-                    "Pasted {}/{} items. Errors: {}",
-                    success_count,
-                    paste_ops.len(),
-                    operation_errors.join(", ")
-                )
-            };
-
-            if operation_errors.is_empty() {
-                self.success(&success_msg);
-            } else {
-                // Show as warning since some operations succeeded
-                self.error(&success_msg);
-            }
-        } else {
-            let error_msg = if operation_errors.is_empty() {
-                "All paste operations failed".to_string()
-            } else {
-                format!("Paste failed: {}", operation_errors.join(", "))
-            };
-            self.error(&error_msg);
         }
 
         Ok(DispatchResult::Continue)
@@ -296,23 +415,27 @@ impl ClipboardDispatcher {
 
     #[instrument(level = "trace", skip(self))]
     async fn handle_clear_clipboard(&self) -> Result<DispatchResult> {
-        let clipboard = {
-            let ui_state = self.state_provider.ui_state();
-            let ui = ui_state
+        let clipboard: ClipBoard = {
+            let ui_state: Arc<RwLock<UIState>> = self.state_provider.ui_state();
+
+            let ui: RwLockReadGuard<'_, UIState> = ui_state
                 .read()
                 .map_err(|_| anyhow::anyhow!("UI state lock poisoned"))?;
+
             ui.clipboard.clone()
         };
 
         // Use optimized bulk clear operation
         match clipboard.clear_all().await {
             Ok(cleared_count) => {
-                let msg = if cleared_count == 0 {
+                let msg: String = if cleared_count == 0 {
                     "Clipboard was already empty".to_string()
                 } else {
                     format!("Cleared {cleared_count} items from clipboard")
                 };
+
                 self.success(&msg);
+
                 debug!(
                     marker = "CLIPBOARD_CLEAR_SUCCESS",
                     operation_type = "clipboard_clear",
@@ -320,6 +443,7 @@ impl ClipboardDispatcher {
                     cleared_count
                 );
             }
+
             Err(e) => {
                 self.error(&format!("Failed to clear clipboard: {e}"));
             }
@@ -333,6 +457,7 @@ impl ClipboardDispatcher {
             .update_ui_state(Box::new(|ui: &mut UIState| {
                 ui.toggle_clipboard_overlay();
             }));
+
         Ok(DispatchResult::Continue)
     }
 
@@ -345,130 +470,589 @@ impl ClipboardDispatcher {
                     ui.clipboard_down();
                 }
             }));
+
         Ok(DispatchResult::Continue)
     }
 
     pub async fn handle(&mut self, action: Action) -> Result<DispatchResult> {
         match action {
+            // Legacy clipboard operations
             Action::Copy(path) => self.handle_copy(path).await,
+
             Action::Cut(path) => self.handle_cut(path).await,
+
             Action::Paste => self.handle_paste().await,
+
             Action::ClearClipboard => self.handle_clear_clipboard().await,
+
             Action::ToggleClipboard => self.handle_toggle_overlay().await,
+
             Action::ClipboardUp => self.handle_navigation(true).await,
+
             Action::ClipboardDown => self.handle_navigation(false).await,
+
             Action::SelectClipboardItem(index) => {
                 self.state_provider
                     .update_ui_state(Box::new(move |ui: &mut UIState| {
                         ui.selected_clipboard_item_idx = index;
+
                         ui.request_redraw(RedrawFlag::Overlay);
                     }));
+
                 Ok(DispatchResult::Continue)
             }
+
+            // clipr advanced operations
+            Action::ClipboardAddBatch {
+                paths,
+                operations,
+                operation_id,
+            } => self.handle_batch_add(paths, operations, operation_id).await,
+
+            Action::ClipboardPasteBatch {
+                item_ids,
+                destination,
+                ..
+            } => self.handle_batch_paste(item_ids, destination).await,
+
+            Action::ClipboardSearch {
+                pattern,
+                operation_id,
+            } => self.handle_clipboard_search(pattern, operation_id).await,
+
+            Action::ClipboardSelectMultiple {
+                item_ids,
+                operation_id,
+            } => self.handle_multi_select(item_ids, operation_id).await,
+
+            Action::ClipboardRemoveItems {
+                item_ids,
+                operation_id,
+            } => self.handle_remove_items(item_ids, operation_id).await,
+
+            Action::ClipboardOptimizedClear { operation_id } => {
+                self.handle_optimized_clear(operation_id).await
+            }
+
+            Action::ClipboardGetStats { operation_id } => self.handle_get_stats(operation_id).await,
+
+            Action::ClipboardUpdateCache { operation_id } => {
+                self.handle_update_cache(operation_id).await
+            }
+
+            Action::ClipboardShowSearchResults {
+                results,
+                pattern,
+                operation_id,
+            } => {
+                self.handle_show_search_results(results, pattern, operation_id)
+                    .await
+            }
+
             _ => Ok(DispatchResult::NotHandled),
         }
     }
 
-    fn success(&self, msg: &str) {
-        let msg = msg.to_string();
-        self.state_provider
-            .update_ui_state(Box::new(move |ui: &mut UIState| {
-                ui.success(&msg);
-            }));
+    // ===== clipr Advanced Handler Methods =====
+
+    /// Handle batch add operations using clipr's parallel processing
+    #[instrument(level = "info", skip(self, paths), fields(operation_id = %operation_id))]
+    async fn handle_batch_add(
+        &self,
+        paths: Vec<PathBuf>,
+        operation_type: ClipboardOperationType,
+        operation_id: OperationId,
+    ) -> Result<DispatchResult> {
+        let start = Instant::now();
+
+        // Get clipboard from AppState (not UIState)
+        let clipboard: Arc<ClipBoard> = {
+            let app_state: MutexGuard<'_, AppState> = self.state_provider.app_state();
+            app_state.clipboard.clone()
+        };
+
+        info!(
+            marker = "CLIPBOARD_BATCH_ADD_START",
+            operation_type = "clipboard_batch_add",
+            items_count = paths.len(),
+            operation_id = %operation_id,
+            "Starting batch add operation"
+        );
+
+        // Use clipr's optimized batch_add_parallel
+        let operation_enum: ClipBoardOperation = match operation_type {
+            ClipboardOperationType::Copy => ClipBoardOperation::Copy,
+            ClipboardOperationType::Move => ClipBoardOperation::Move,
+        };
+
+        let results: Vec<StdResult<u64, ClipError>> = clipboard
+            .add_batch_parallel(paths.clone(), operation_enum)
+            .await;
+
+        let mut success_count: i32 = 0;
+        let mut failed_paths: Vec<PathBuf> = Vec::new();
+
+        for (i, result) in results.into_iter().enumerate() {
+            match result {
+                Ok(_item_id) => {
+                    success_count += 1;
+                }
+
+                Err(e) => {
+                    let failed_path = paths[i].clone();
+                    failed_paths.push(failed_path);
+
+                    warn!(
+                        marker = "CLIPBOARD_BATCH_ADD_ITEM_FAILED",
+                        operation_type = "clipboard_batch_add",
+                        current_path = %paths[i].display(),
+                        error = %e,
+                        "Failed to add item to clipboard"
+                    );
+                }
+            }
+        }
+
+        if success_count > 0 {
+            info!(
+                marker = "CLIPBOARD_BATCH_ADD_SUCCESS",
+                operation_type = "clipboard_batch_add",
+                entries_count = success_count,
+                "Successfully added items to clipboard"
+            );
+        }
+
+        if !failed_paths.is_empty() {
+            self.error(&format!(
+                "Failed to add {} items to clipboard",
+                failed_paths.len()
+            ));
+        } else {
+            self.success((&format!("Added {success_count} items to clipboard")));
+        }
+
+        Ok(DispatchResult::Continue)
     }
 
-    /// Execute copy operation with proper error handling and attribute preservation
-    async fn execute_copy_operation(
-        &self,
-        source: &str,
-        dest: &str,
-        preserve_attrs: bool,
-    ) -> Result<()> {
-        use std::path::Path;
-        use tokio::fs;
+    /// Handle batch paste operations using clipr's optimized paste
+    #[instrument(level = "info", skip(self, item_ids))]
+    async fn handle_batch_paste(
+        &mut self,
+        item_ids: Vec<u64>,
+        destination: PathBuf,
+    ) -> Result<DispatchResult> {
+        info!(
+            marker = "CLIPBOARD_PASTE_BATCH_START",
+            operation_type = "clipboard_batch_paste",
+            entries_count = item_ids.len(),
+            target_path = %destination.display(),
+            "Starting batch paste operation"
+        );
 
-        let source_path = Path::new(source);
-        let dest_path = Path::new(dest);
+        let clipboard: &Arc<ClipBoard> = &self.state_provider.app_state().clipboard.clone();
+        let mut success_count: i32 = 0;
+        let mut failed_operations: Vec<CompactString> = Vec::new();
 
-        // Check if source exists
-        if !source_path.exists() {
-            return Err(anyhow::anyhow!("Source file does not exist: {}", source));
-        }
-
-        // Ensure destination directory exists
-        if let Some(parent) = dest_path.parent() {
-            fs::create_dir_all(parent)
+        for item_id in item_ids {
+            // Get paste operation from clipr
+            match clipboard
+                .get_paste_operation(item_id, destination.clone())
                 .await
-                .map_err(|e| anyhow::anyhow!("Failed to create destination directory: {}", e))?;
+            {
+                Ok(paste_op) => {
+                    // Execute the file system operation based on the paste operation details
+                    match self.execute_file_operation(&paste_op).await {
+                        Ok(_) => {
+                            success_count += 1;
+                            info!(
+                                marker = "CLIPBOARD_PASTE_ITEM_SUCCESS",
+                                operation_type = "clipboard_paste_item",
+                                current_path = %paste_op.source_path,
+                                target_path = %paste_op.destination_path,
+                                "Paste operation completed successfully"
+                            );
+                        }
+                        Err(e) => {
+                            failed_operations.push(paste_op.source_path.clone());
+                            warn!(
+                                marker = "CLIPBOARD_PASTE_ITEM_FAILED",
+                                operation_type = "clipboard_paste_item",
+                                current_path = %paste_op.source_path,
+                                target_path = %paste_op.destination_path,
+                                error = %e,
+                                "Paste operation failed"
+                            );
+                        }
+                    }
+                }
+
+                Err(e) => {
+                    failed_operations.push(format!("item_{}", item_id).into());
+
+                    warn!(
+                        marker = "CLIPBOARD_GET_PASTE_OPERATION_FAILED",
+                        operation_type = "clipboard_get_paste_operation",
+                        entries_count = item_id,
+                        error = %e,
+                        "Failed to get paste operation for item"
+                    );
+                }
+            }
         }
 
-        // Perform the copy operation
-        fs::copy(source_path, dest_path)
-            .await
-            .map_err(|e| anyhow::anyhow!("Copy operation failed: {}", e))?;
+        // Update UI and provide feedback
+        if success_count > 0 {
+            self.success(&format!("Successfully pasted {} items", success_count));
+        }
 
-        // Preserve attributes if requested
-        if preserve_attrs {
-            if let Ok(metadata) = fs::metadata(source_path).await {
-                let _ = fs::set_permissions(dest_path, metadata.permissions()).await;
+        if !failed_operations.is_empty() {
+            self.error(&format!(
+                "Failed to paste {} items",
+                failed_operations.len()
+            ));
+        }
+
+        info!(
+            marker = "CLIPBOARD_PASTE_BATCH_COMPLETE",
+            operation_type = "clipboard_batch_paste",
+            entries_count = success_count,
+            "Batch paste operation completed"
+        );
+
+        Ok(DispatchResult::Continue)
+    }
+
+    /// Handle SIMD-accelerated clipboard search using clipr
+    #[instrument(level = "info", skip(self, pattern), fields(operation_id = %operation_id))]
+    async fn handle_clipboard_search(
+        &self,
+        pattern: String,
+        operation_id: crate::controller::actions::OperationId,
+    ) -> Result<DispatchResult> {
+        let start: Instant = std::time::Instant::now();
+
+        let clipboard: Arc<ClipBoard> = {
+            let app_state: MutexGuard<'_, AppState> = self.state_provider.app_state();
+            app_state.clipboard.clone()
+        };
+
+        info!(
+            marker = "CLIPBOARD_SEARCH_START",
+            operation_type = "clipboard_search",
+            operation_id = %operation_id,
+            pattern = %pattern,
+            "Starting SIMD clipboard search"
+        );
+
+        // Use clipr's SIMD-accelerated find_by_pattern
+        let results: Vec<ClipBoardItem> = clipboard.find_by_pattern(&pattern).await;
+        let result_ids: Vec<u64> = results.iter().map(|item| item.id).collect();
+
+        info!(
+            marker = "CLIPBOARD_SEARCH_COMPLETE",
+            operation_type = "clipboard_search",
+            operation_id = %operation_id,
+            pattern = %pattern,
+            results_count = results.len(),
+            duration_us = start.elapsed().as_micros(),
+            "Clipboard search completed"
+        );
+
+        // Update UI with search results
+        self.state_provider
+            .update_ui_state(Box::new(move |ui: &mut UIState| {
+                ui.update_clipboard_search_results(result_ids, start.elapsed().as_micros() as u64);
+            }));
+
+        self.success(&format!("Found {} matching items", results.len()));
+        Ok(DispatchResult::Continue)
+    }
+
+    async fn execute_file_operation(&self, paste_op: &PasteOperation) -> Result<()> {
+        use tokio::fs as TokioFs;
+
+        let source: PathBuf = PathBuf::from(paste_op.source_path.as_str());
+        let dest: PathBuf = PathBuf::from(paste_op.destination_path.as_str());
+
+        match paste_op.operation_type {
+            ClipBoardOperation::Copy => {
+                // Peform file copy
+                TokioFs::copy(&source, &dest)
+                    .await
+                    .map_err(|e| anyhow::Error::new(e).context("Failed to copy file"))?;
+            }
+
+            ClipBoardOperation::Move => {
+                // Perform file move
+                TokioFs::rename(&source, &dest)
+                    .await
+                    .map_err(|e| anyhow::Error::new(e).context("Failed to move file"))?;
             }
         }
 
         Ok(())
     }
 
-    /// Execute move operation with atomic guarantees when possible
-    async fn execute_move_operation(
+    /// Handle multi-selection using clipr items
+    #[instrument(level = "debug", skip(self, item_ids), fields(operation_id = %operation_id))]
+    async fn handle_multi_select(
         &self,
-        source: &str,
-        dest: &str,
-        atomic_move: bool,
-    ) -> Result<()> {
-        use std::path::Path;
-        use tokio::fs;
+        item_ids: Vec<u64>,
+        operation_id: crate::controller::actions::OperationId,
+    ) -> Result<DispatchResult> {
+        debug!(
+            marker = "CLIPBOARD_MULTI_SELECT_START",
+            operation_type = "clipboard_multi_select",
+            operation_id = %operation_id,
+            items_count = item_ids.len(),
+            "Processing multi-selection"
+        );
 
-        let source_path = Path::new(source);
-        let dest_path = Path::new(dest);
+        let item_ids_len: usize = item_ids.len();
 
-        // Check if source exists
-        if !source_path.exists() {
-            return Err(anyhow::anyhow!("Source file does not exist: {}", source));
-        }
+        // Update UI state with multi-selection
+        self.state_provider
+            .update_ui_state(Box::new(move |ui: &mut UIState| {
+                ui.clear_clipboard_selection();
+                for item_id in item_ids.iter() {
+                    ui.select_clipboard_item(*item_id);
+                }
+            }));
 
-        // Ensure destination directory exists
-        if let Some(parent) = dest_path.parent() {
-            fs::create_dir_all(parent)
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to create destination directory: {}", e))?;
-        }
+        self.success(&format!("Selected {item_ids_len} items"));
 
-        if atomic_move {
-            // Try atomic rename first (works on same filesystem)
-            match fs::rename(source_path, dest_path).await {
-                Ok(_) => Ok(()),
-                Err(_) => {
-                    // Fallback to copy + delete for cross-filesystem moves
-                    fs::copy(source_path, dest_path).await.map_err(|e| {
-                        anyhow::anyhow!("Move operation (copy phase) failed: {}", e)
-                    })?;
+        Ok(DispatchResult::Continue)
+    }
 
-                    fs::remove_file(source_path).await.map_err(|e| {
-                        anyhow::anyhow!("Move operation (cleanup phase) failed: {}", e)
-                    })?;
+    /// Handle removing specific items using clipr
+    #[instrument(level = "info", skip(self, item_ids), fields(operation_id = %operation_id))]
+    async fn handle_remove_items(
+        &self,
+        item_ids: Vec<u64>,
+        operation_id: OperationId,
+    ) -> Result<DispatchResult> {
+        let start: Instant = Instant::now();
 
-                    Ok(())
+        let clipboard: Arc<ClipBoard> = {
+            let app_state: MutexGuard<'_, AppState> = self.state_provider.app_state();
+            app_state.clipboard.clone()
+        };
+
+        info!(
+            marker = "CLIPBOARD_REMOVE_ITEMS_START",
+            operation_type = "clipboard_remove_items",
+            operation_id = %operation_id,
+            items_count = item_ids.len(),
+            "Starting item removal"
+        );
+
+        let mut success_count: i32 = 0;
+        let mut error_count: i32 = 0;
+
+        // Use clipr's remove_item for each ID
+        for item_id in item_ids {
+            match clipboard.remove_item(item_id).await {
+                Ok(_) => success_count += 1,
+                Err(e) => {
+                    error_count += 1;
+                    debug!("Failed to remove item {}: {}", item_id, e);
                 }
             }
-        } else {
-            // Simple rename operation
-            fs::rename(source_path, dest_path)
-                .await
-                .map_err(|e| anyhow::anyhow!("Move operation failed: {}", e))
         }
+
+        info!(
+            marker = "CLIPBOARD_REMOVE_ITEMS_COMPLETE",
+            operation_type = "clipboard_remove_items",
+            operation_id = %operation_id,
+            success_count = success_count,
+            error_count = error_count,
+            duration_us = start.elapsed().as_micros(),
+            "Item removal completed"
+        );
+
+        if success_count > 0 {
+            self.success(&format!("Removed {} items", success_count));
+        }
+        if error_count > 0 {
+            self.error(&format!("{} items failed to remove", error_count));
+        }
+
+        Ok(DispatchResult::Continue)
+    }
+
+    /// Handle optimized clear using clipr's clear_all
+    #[instrument(level = "info", skip(self), fields(operation_id = %operation_id))]
+    async fn handle_optimized_clear(&self, operation_id: OperationId) -> Result<DispatchResult> {
+        let start: Instant = std::time::Instant::now();
+
+        let clipboard: Arc<ClipBoard> = {
+            let app_state: MutexGuard<'_, AppState> = self.state_provider.app_state();
+            app_state.clipboard.clone()
+        };
+
+        info!(
+            marker = "CLIPBOARD_OPTIMIZED_CLEAR_START",
+            operation_type = "clipboard_optimized_clear",
+            operation_id = %operation_id,
+            "Starting optimized clear"
+        );
+
+        match clipboard.clear_all().await {
+            Ok(cleared_count) => {
+                info!(
+                    marker = "CLIPBOARD_OPTIMIZED_CLEAR_COMPLETE",
+                    operation_type = "clipboard_optimized_clear",
+                    operation_id = %operation_id,
+                    cleared_count = cleared_count,
+                    duration_us = start.elapsed().as_micros(),
+                    "Optimized clear completed"
+                );
+
+                self.success(&format!("Cleared {} items", cleared_count));
+
+                // Update UI state
+                self.state_provider
+                    .update_ui_state(Box::new(|ui: &mut UIState| {
+                        ui.clear_clipboard_selection();
+                        ui.request_redraw(crate::model::ui_state::RedrawFlag::All);
+                    }));
+            }
+
+            Err(e) => {
+                warn!(
+                    marker = "CLIPBOARD_OPTIMIZED_CLEAR_FAILED",
+                    operation_type = "clipboard_optimized_clear",
+                    operation_id = %operation_id,
+                    error = %e,
+                    duration_us = start.elapsed().as_micros(),
+                    "Optimized clear failed"
+                );
+                self.error(&format!("Clear failed: {}", e));
+            }
+        }
+
+        Ok(DispatchResult::Continue)
+    }
+
+    /// Handle getting clipboard statistics using clipr
+    #[instrument(level = "debug", skip(self), fields(operation_id = %operation_id))]
+    async fn handle_get_stats(
+        &self,
+        operation_id: crate::controller::actions::OperationId,
+    ) -> Result<DispatchResult> {
+        let clipboard = {
+            let app_state = self.state_provider.app_state();
+            app_state.clipboard.clone()
+        };
+
+        debug!(
+            marker = "CLIPBOARD_GET_STATS_START",
+            operation_type = "clipboard_get_stats",
+            operation_id = %operation_id,
+            "Getting clipboard statistics"
+        );
+
+        let stats = clipboard.stats();
+
+        // Update AppState with fresh statistics
+        {
+            let app_state = self.state_provider.app_state();
+            let clipr_stats = ClipboardStats {
+                total_items: stats.total_items as u64,
+                copy_items: stats.copy_items as u64,
+                move_items: stats.move_items as u64,
+                total_size_bytes: stats.total_size,
+                cache_hit_ratio: stats.cache_hit_rate as f32,
+                last_updated: SystemTime::now(),
+            };
+            app_state.update_clipboard_metrics(clipr_stats);
+        }
+
+        debug!(
+            marker = "CLIPBOARD_GET_STATS_COMPLETE",
+            operation_type = "clipboard_get_stats",
+            operation_id = %operation_id,
+            total_items = stats.total_items,
+            "Statistics retrieved"
+        );
+
+        Ok(DispatchResult::Continue)
+    }
+
+    /// Handle cache update operations
+    #[instrument(level = "debug", skip(self), fields(operation_id = %operation_id))]
+    async fn handle_update_cache(
+        &self,
+        operation_id: crate::controller::actions::OperationId,
+    ) -> Result<DispatchResult> {
+        debug!(
+            marker = "CLIPBOARD_UPDATE_CACHE_START",
+            operation_type = "clipboard_update_cache",
+            operation_id = %operation_id,
+            "Updating clipboard cache"
+        );
+
+        // Trigger cache refresh and UI update
+        self.state_provider
+            .update_ui_state(Box::new(|ui: &mut UIState| {
+                ui.request_redraw(crate::model::ui_state::RedrawFlag::Overlay);
+            }));
+
+        debug!(
+            marker = "CLIPBOARD_UPDATE_CACHE_COMPLETE",
+            operation_type = "clipboard_update_cache",
+            operation_id = %operation_id,
+            "Cache update completed"
+        );
+
+        Ok(DispatchResult::Continue)
+    }
+
+    /// Handle showing search results in UI
+    #[instrument(level = "info", skip(self, results, pattern), fields(operation_id = %operation_id))]
+    async fn handle_show_search_results(
+        &self,
+        results: Vec<u64>,
+        pattern: String,
+        operation_id: crate::controller::actions::OperationId,
+    ) -> Result<DispatchResult> {
+        info!(
+            marker = "CLIPBOARD_SHOW_SEARCH_RESULTS_START",
+            operation_type = "clipboard_show_search_results",
+            operation_id = %operation_id,
+            results_count = results.len(),
+            pattern = %pattern,
+            "Showing search results"
+        );
+
+        let results_len: usize = results.len();
+
+        // Update UI with search results and pattern
+        self.state_provider
+            .update_ui_state(Box::new(move |ui: &mut UIState| {
+                ui.update_clipboard_search_results(results, 0);
+                ui.request_redraw(crate::model::ui_state::RedrawFlag::Overlay);
+            }));
+
+        self.success(&format!(
+            "Showing {} search results for '{}'",
+            results_len, pattern
+        ));
+
+        Ok(DispatchResult::Continue)
+    }
+
+    fn success(&self, msg: &str) {
+        let msg: String = msg.to_string();
+        self.state_provider
+            .update_ui_state(Box::new(move |ui: &mut UIState| {
+                ui.success(&msg);
+            }));
     }
 
     fn error(&self, msg: &str) {
-        let msg = msg.to_string();
+        let msg: String = msg.to_string();
+
         self.state_provider
             .update_ui_state(Box::new(move |ui: &mut UIState| {
                 ui.error(&msg);
@@ -480,6 +1064,7 @@ impl ActionMatcher for ClipboardDispatcher {
     fn can_handle(&self, action: &Action) -> bool {
         matches!(
             action,
+            // Legacy clipboard operations
             Action::Copy(_)
                 | Action::Cut(_)
                 | Action::Paste
@@ -488,6 +1073,16 @@ impl ActionMatcher for ClipboardDispatcher {
                 | Action::ClipboardUp
                 | Action::ClipboardDown
                 | Action::SelectClipboardItem(_)
+                // clipr advanced operations
+                | Action::ClipboardAddBatch { .. }
+                | Action::ClipboardPasteBatch { .. }
+                | Action::ClipboardSearch { .. }
+                | Action::ClipboardSelectMultiple { .. }
+                | Action::ClipboardRemoveItems { .. }
+                | Action::ClipboardOptimizedClear { .. }
+                | Action::ClipboardGetStats { .. }
+                | Action::ClipboardUpdateCache { .. }
+                | Action::ClipboardShowSearchResults { .. }
         )
     }
 

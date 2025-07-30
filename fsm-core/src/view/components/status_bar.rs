@@ -69,6 +69,8 @@ impl OptimizedStatusBar {
                         UIMode::Search => "Search",
                         UIMode::Command => "Command",
                         UIMode::Visual => "Visual",
+                        UIMode::ClipboardMultiSelect => todo!(),
+                        UIMode::ClipboardSearch => todo!(),
                     },
                 },
             },
