@@ -406,7 +406,7 @@ impl LoggingConfig {
             enable_metrics: true,
             enable_error_tracking: true,
             enable_colors: false,
-            clean_on_startup: false,
+            clean_on_startup: true,
             console_level: Level::DEBUG,
             file_level: Level::TRACE,
             log_format: LogFormat::Tsv,

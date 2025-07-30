@@ -112,18 +112,17 @@ impl OptimizedFileTable {
                 };
 
                 let (size_str, count_str) = if obj.is_dir {
-                    let size_display = if obj.metadata_loaded && obj.items_count > 0 {
-                        if obj.items_count == 1 {
-                            "1 item".to_string()
-                        } else {
-                            format!("{} items", obj.items_count)
-                        }
-                    } else if obj.metadata_loaded {
-                        "empty".to_string()
+                    let size_display = if obj.metadata_loaded {
+                        crate::util::humanize::human_readable_size(obj.size)
                     } else {
                         "-".to_string()
                     };
-                    (size_display, "-".to_string()) // Directories show '-' in Count column
+                    let count_display = if obj.metadata_loaded {
+                        obj.items_count.to_string()
+                    } else {
+                        "-".to_string()
+                    };
+                    (size_display, count_display)
                 } else {
                     let size_display = if obj.metadata_loaded {
                         crate::util::humanize::human_readable_size(obj.size)

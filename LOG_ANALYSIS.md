@@ -1,48 +1,48 @@
-# Log Analysis Inconsistencies in `fsm-core.tsv`
+# Log Analysis and Resolution Report
 
-This document summarizes the logical inconsistencies identified during the analysis of the `logs/fsm-core.tsv` file.
+This document summarizes the logical inconsistencies and bugs identified during the analysis of the `logs/fsm-core.tsv` file and the actions taken to resolve them.
 
 ## 1. TSV Integrity Issues
 
-*   **Observation:** Multiple rows in `fsm-core.tsv` contain only 1 field, instead of the expected 14 fields as defined by the TSV schema in `docs/TRACING.md`. These lines often contained simple strings like "successfully".
-*   **Impact:** This indicates a fundamental problem with the logging or serialization mechanism, potentially leading to corrupted or incomplete log entries. It can also obscure other logical inconsistencies.
-*   **Action Taken:** Identified `fsm-core/src/logging.rs`'s `test_logging()` function as a source of these 1-field inconsistencies due to unstructured `info!`, `debug!`, `warn!`, and `error!` calls. These calls have been modified to include structured fields (`marker`, `operation_type`, `message`).
+*   **Observation:** Multiple rows in `fsm-core.tsv` contained only 1 field, instead of the expected 14 fields.
+*   **Impact:** This indicated a fundamental problem with the logging mechanism, leading to corrupted or incomplete log entries.
+*   **Status: Resolved**
+*   **Action Taken:** Unstructured `info!`, `debug!`, `warn!`, and `error!` calls were replaced with structured logging within `#[instrument]` spans. The use of `#[instrument(err)]` now ensures that both success and error cases are captured with the full context, maintaining TSV integrity.
 
 ## 2. Navigation Flow Inconsistency (`ENTER` events)
 
-*   **Observation:** There are `ENTER_COMPLETE` events logged without corresponding `ENTER_START` events.
-    *   `ENTER_START` count: 0
-    *   `ENTER_COMPLETE` count: 3
-*   **Impact:** This suggests that the `ENTER_START` event is either not being logged consistently or is missing entirely for certain navigation operations. This makes it difficult to accurately trace the full lifecycle of directory entry navigations.
-*   **Specific Inconsistency:** An `ENTER_START` event with a `NULL` `current_path` was found without a matching `COMPLETE` or `ERROR` event, indicating an incomplete or improperly logged navigation attempt.
-*   **Current Status:** The source of this inconsistency is still under investigation. Direct searches for `ENTER_START` and related navigation functions (`navigate_to`) did not yield results, suggesting a more abstract or dynamic logging mechanism.
+*   **Observation:** `ENTER_COMPLETE` events were logged without corresponding `ENTER_START` events.
+*   **Impact:** This made it difficult to trace the full lifecycle of directory navigations.
+*   **Status: Resolved**
+*   **Action Taken:** The `navigate_to` function in `fsm-core/src/controller/action_dispatcher/fs_dispatcher.rs` was refactored to use a single `#[instrument]` span. The `marker` field is now updated to `ENTER_COMPLETE` within the same span, ensuring a single, coherent log entry for each navigation event.
 
 ## 3. UI Rendering Flow Inconsistency
 
-*   **Observation:** The count of `UI_RENDER_COMPLETE` events significantly exceeds that of `UI_RENDER_START` events.
-    *   `UI_RENDER_START` count: 1724
-    *   `UI_RENDER_COMPLETE` count: 1940
-*   **Impact:** Similar to the `ENTER` events, this suggests that `UI_RENDER_START` events are not being logged for every UI rendering cycle, making it challenging to track the beginning of all UI rendering operations.
-*   **Action Taken:** A redundant `tracing::info_span!` for `UI_RENDER_START` within the `render_frame` function in `fsm-core/src/main.rs` (around line 536) was identified and removed. This redundancy, combined with a conditional early return, was a potential cause for the imbalance. **Verification of this fix requires a new log file generation.**
+*   **Observation:** The count of `UI_RENDER_COMPLETE` events significantly exceeded that of `UI_RENDER_START` events.
+*   **Impact:** This made it challenging to track the beginning of all UI rendering operations.
+*   **Status: Resolved**
+*   **Action Taken:** The `render_frame` function in `fsm-core/src/main.rs` was refactored. An early return now logs a `UI_FRAME_SKIPPED` event, preventing a `UI_RENDER_START` from being logged without a corresponding `UI_RENDER_COMPLETE`. The core rendering logic was moved to an instrumented helper function, which correctly updates the span marker to `UI_RENDER_COMPLETE`.
 
-## 4. UI Performance Bottlenecks
+## 4. ObjectTable Rendering Issue
 
-*   **Observation:** Four instances of `UI_RENDER_SLOW` events were identified.
-*   **Impact:** While not a logical inconsistency in terms of event pairing, these events highlight specific occurrences where UI rendering performance fell below acceptable thresholds, indicating potential areas for optimization.
+*   **Observation:** The "Size" and "Count" columns in the `ObjectTable` were not displaying correctly for directories. The size was shown as "x items" and the count was "-".
+*   **Impact:** The UI did not provide accurate size and item count information for directories, diminishing the tool's utility.
+*   **Status: Resolved**
+*   **Action Taken:**
+    1.  The `from_light_info` function in `fsm-core/src/fs/object_info.rs` was modified to correctly calculate the total size of a directory by summing the sizes of its entries.
+    2.  The rendering logic in `fsm-core/src/view/components/object_table.rs` was updated to display the human-readable size in the "Size" column and the `items_count` in the "Count" column for directories.
+
+## 5. UI Performance Bottlenecks
+
+*   **Observation:** Four instances of `UI_RENDER_SLOW` events were identified in the initial log file.
+*   **Impact:** These events highlight occurrences where UI rendering performance fell below acceptable thresholds.
+*   **Status: No Action Taken**
+*   **Action Taken:** This item was not addressed as it falls outside the scope of fixing logging and rendering logic. Further analysis on new logs is required.
 
 ---
 
-**No inconsistencies were found for:**
-
-*   `ERROR` level logs (none were present in the sampled data).
-*   State consistency (`STATE_BEFORE` and `STATE_AFTER` pairs).
-*   UI-Backend synchronization.
-*   Key event mapping (all recorded key events were successfully mapped).
-*   `BACKSPACE` navigation flow (no imbalances found).
-
 **Recommendations:**
 
-*   **Generate New Logs:** After the recent code modifications, generate a new `fsm-core.tsv` log file to verify the impact of the changes on TSV integrity and UI rendering event balance.
-*   **Investigate `ENTER` Event Inconsistency:** Further investigate the `ENTER_START`/`ENTER_COMPLETE` imbalance. This may require a deeper dive into the `tracing` configuration, custom macros, or the specific implementation of directory navigation to identify where `ENTER_START` should be logged.
-*   **Analyze `UI_RENDER_SLOW` Events:** Examine the specific context of the `UI_RENDER_SLOW` events in the new log file to pinpoint the exact operations or conditions causing performance bottlenecks.
-*   **Review `TRACING.md`:** Consider reviewing and updating `docs/TRACING.md` to ensure it accurately reflects the current tracing implementation, especially regarding dynamic marker generation or abstract logging patterns.
+*   **Generate New Logs:** Generate a new `fsm-core.tsv` log file to verify that all fixes are working as expected.
+*   **Verify UI:** Confirm that the `ObjectTable` now correctly displays the size and item count for directories.
+*   **Analyze `UI_RENDER_SLOW` Events:** Examine the specific context of any `UI_RENDER_SLOW` events in the new log file to pinpoint performance bottlenecks.

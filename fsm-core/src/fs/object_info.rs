@@ -131,22 +131,23 @@ impl ObjectInfo {
     pub async fn from_light_info(light: LightObjectInfo) -> std::io::Result<Self> {
         let metadata = tokio::fs::symlink_metadata(&light.path).await?;
 
-        let size = if light.is_dir { 0 } else { metadata.len() };
-
-        // Get directory item count (expensive operation)
-        let items_count = if light.is_dir {
+        let (size, items_count) = if light.is_dir {
+            let mut total_size = 0;
+            let mut count = 0;
             match tokio::fs::read_dir(&light.path).await {
                 Ok(mut entries) => {
-                    let mut count = 0;
-                    while let Ok(Some(_)) = entries.next_entry().await {
+                    while let Ok(Some(entry)) = entries.next_entry().await {
+                        if let Ok(meta) = entry.metadata().await {
+                            total_size += meta.len();
+                        }
                         count += 1;
                     }
-                    count
                 }
-                Err(_) => 0,
+                Err(_) => {} // Ignore errors for item counting
             }
+            (total_size, count)
         } else {
-            0
+            (metadata.len(), 0)
         };
 
         let modified = metadata.modified().unwrap_or(UNIX_EPOCH);
