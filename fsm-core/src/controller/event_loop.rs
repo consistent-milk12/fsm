@@ -221,7 +221,8 @@ impl EventLoop {
         let now = Instant::now();
 
         // Initialize key handler orchestrator
-        let key_orchestrator: KeyHandlerOrchestrator = KeyHandlerOrchestrator::new();
+        let key_orchestrator: KeyHandlerOrchestrator =
+            KeyHandlerOrchestrator::new(state_coordinator.clone());
         debug!(
             handlers_count = key_orchestrator.get_handler_names().len(),
             handlers = ?key_orchestrator.get_handler_names(),
@@ -356,9 +357,10 @@ impl EventLoop {
             }
 
             // Poll notifications for auto-dismissal
-            self.state_coordinator.update_ui_state(Box::new(|ui: &mut UIState| {
-                ui.poll_notification();
-            }));
+            self.state_coordinator
+                .update_ui_state(Box::new(|ui: &mut UIState| {
+                    ui.poll_notification();
+                }));
         }
 
         // Shutdown complete
@@ -859,8 +861,10 @@ impl EventLoop {
                         self.state_coordinator.update_ui_state(Box::new(
                             move |ui: &mut UIState| {
                                 ui.success(format!("{op_kind} ok ({count})"));
+                                ui.clipboard_overlay_active = true;
                             },
                         ));
+                        self.state_coordinator.request_redraw(RedrawFlag::Overlay);
                     }
                     Err(e) => {
                         tracing::Span::current().record("result_status", "error");

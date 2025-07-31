@@ -105,7 +105,7 @@ impl FileOpsDispatcher {
             (current_path, entries_count, selected_index)
         };
 
-        span.record("current_path", &current_path_before.display().to_string());
+        span.record("current_path", current_path_before.display().to_string());
         span.record("entries_count", entries_count_before);
         span.record("selected_index", selected_index_before);
 

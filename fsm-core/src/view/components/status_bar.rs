@@ -57,8 +57,8 @@ impl OptimizedStatusBar {
         // -----------------------------------------------------
         // 2) Compose left / right strings
         // -----------------------------------------------------
-        let mode_str = match ui.overlay {
-            _ if ui.clipboard_active => "Clipboard",
+        let mode_str = match ui.mode {
+            UIMode::ClipboardMultiSelect | UIMode::ClipboardSearch => "Clipboard",
             _ if ui.overlay.is_search_mode() => "Search",
             _ => match ui.search_mode {
                 _ if ui.search_mode != crate::model::fs_state::SearchMode::None => "Search",
@@ -69,8 +69,8 @@ impl OptimizedStatusBar {
                         UIMode::Search => "Search",
                         UIMode::Command => "Command",
                         UIMode::Visual => "Visual",
-                        UIMode::ClipboardMultiSelect => todo!(),
-                        UIMode::ClipboardSearch => todo!(),
+                        UIMode::ClipboardMultiSelect => "Clipboard",
+                        UIMode::ClipboardSearch => "Clipboard",
                     },
                 },
             },

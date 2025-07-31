@@ -21,7 +21,7 @@ use arc_swap::ArcSwap;
 use compact_str::CompactString;
 use smallvec::SmallVec;
 
-use clipr::{ClipBoardConfig, ClipBoardItem, ClipBoardStats, clipboard::ClipBoard};
+use clipr::{ClipBoardConfig, ClipBoardItem, clipboard::ClipBoard};
 
 use crate::AppError;
 use crate::controller::actions::{ClipboardStats, InputPromptType, OperationId};
@@ -437,8 +437,10 @@ impl UIState {
     pub fn select_clipboard_item(&self, item_id: u64) -> bool {
         if let Ok(mut selected) = self.selected_clipboard_items.write() {
             let was_new = selected.insert(item_id);
+
             if was_new {
                 self.request_redraw(RedrawFlag::Overlay);
+
                 info!(
                     marker = "CLIPBOARD_ITEM_SELECTED",
                     operation_type = "clipboard_selection",
@@ -449,6 +451,7 @@ impl UIState {
             }
             return was_new;
         }
+
         false
     }
 
@@ -456,9 +459,11 @@ impl UIState {
     #[instrument(level = "debug", skip(self))]
     pub fn deselect_clipboard_item(&self, item_id: u64) -> bool {
         if let Ok(mut selected) = self.selected_clipboard_items.write() {
-            let was_removed = selected.remove(&item_id);
+            let was_removed: bool = selected.remove(&item_id);
+
             if was_removed {
                 self.request_redraw(RedrawFlag::Overlay);
+
                 info!(
                     marker = "CLIPBOARD_ITEM_DESELECTED",
                     operation_type = "clipboard_selection",
@@ -467,8 +472,10 @@ impl UIState {
                     "Clipboard item removed from selection"
                 );
             }
+
             return was_removed;
         }
+
         false
     }
 
@@ -638,7 +645,7 @@ impl UIState {
         if let Some(pos) = self
             .clipboard_search_history
             .iter()
-            .position(|p| p == &pattern)
+            .position(|p| p == pattern)
         {
             self.clipboard_search_history.remove(pos);
         }

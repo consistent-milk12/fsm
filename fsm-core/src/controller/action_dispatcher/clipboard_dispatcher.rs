@@ -2,9 +2,7 @@
 // Send-safe clipboard operations with proper async handling
 
 use anyhow::Result;
-use clipr::{
-    ClipBoard, ClipBoardItem, ClipBoardOperation, ClipError, FileOperation, PasteOperation,
-};
+use clipr::{ClipBoard, ClipBoardItem, ClipBoardOperation, ClipError, PasteOperation};
 use compact_str::CompactString;
 use std::path::PathBuf;
 use std::sync::{Arc, MutexGuard, RwLock, RwLockReadGuard};
@@ -14,17 +12,17 @@ use tracing::{debug, info, instrument, warn};
 
 use std::result::Result as StdResult;
 
+use crate::AppState;
 use crate::controller::Action;
 use crate::controller::actions::{ClipboardOperationType, ClipboardStats, OperationId};
 use crate::controller::state_provider::StateProvider;
 use crate::model::ui_state::{RedrawFlag, UIState};
-use crate::{AppState, FSState};
 
 use super::*;
 
 /// Categorized error types for better user feedback
 #[derive(Debug)]
-enum PasteErrorType {
+pub enum PasteErrorType {
     SourceNotFound,
     PermissionDenied,
     InsufficientSpace,
@@ -35,7 +33,7 @@ enum PasteErrorType {
 
 impl PasteErrorType {
     /// Categorize error from string message for better user experience
-    fn from_error_message(msg: &str) -> Self {
+    pub fn from_error_message(msg: &str) -> Self {
         let msg_lower = msg.to_lowercase();
 
         if msg_lower.contains("not found") || msg_lower.contains("no such file") {
@@ -54,7 +52,7 @@ impl PasteErrorType {
     }
 
     /// Get user-friendly error description
-    fn user_message(&self) -> &str {
+    pub fn user_message(&self) -> &str {
         match self {
             Self::SourceNotFound => "Source file no longer exists",
             Self::PermissionDenied => "Permission denied - check file access rights",
@@ -66,7 +64,7 @@ impl PasteErrorType {
     }
 
     /// Get detailed error message for logging
-    fn detailed_message(&self) -> String {
+    pub fn detailed_message(&self) -> String {
         match self {
             Self::Other(msg) => msg.clone(),
             _ => self.user_message().to_string(),
@@ -82,6 +80,85 @@ pub struct ClipboardDispatcher {
 impl ClipboardDispatcher {
     pub fn new(state_provider: Arc<dyn StateProvider>) -> Self {
         Self { state_provider }
+    }
+
+    pub async fn handle(&mut self, action: Action) -> Result<DispatchResult> {
+        match action {
+            // Legacy clipboard operations
+            Action::Copy(path) => self.handle_copy(path).await,
+
+            Action::Cut(path) => self.handle_cut(path).await,
+
+            Action::Paste => self.handle_paste().await,
+
+            Action::ClearClipboard => self.handle_clear_clipboard().await,
+
+            Action::ToggleClipboard => self.handle_toggle_overlay().await,
+
+            Action::ClipboardUp => self.handle_navigation(true).await,
+
+            Action::ClipboardDown => self.handle_navigation(false).await,
+
+            Action::SelectClipboardItem(index) => {
+                self.state_provider
+                    .update_ui_state(Box::new(move |ui: &mut UIState| {
+                        ui.selected_clipboard_item_idx = index;
+
+                        ui.request_redraw(RedrawFlag::Overlay);
+                    }));
+
+                Ok(DispatchResult::Continue)
+            }
+
+            // clipr advanced operations
+            Action::ClipboardAddBatch {
+                paths,
+                operations,
+                operation_id,
+            } => self.handle_batch_add(paths, operations, operation_id).await,
+
+            Action::ClipboardPasteBatch {
+                item_ids,
+                destination,
+                ..
+            } => self.handle_batch_paste(item_ids, destination).await,
+
+            Action::ClipboardSearch {
+                pattern,
+                operation_id,
+            } => self.handle_clipboard_search(pattern, operation_id).await,
+
+            Action::ClipboardSelectMultiple {
+                item_ids,
+                operation_id,
+            } => self.handle_multi_select(item_ids, operation_id).await,
+
+            Action::ClipboardRemoveItems {
+                item_ids,
+                operation_id,
+            } => self.handle_remove_items(item_ids, operation_id).await,
+
+            Action::ClipboardOptimizedClear { operation_id } => {
+                self.handle_optimized_clear(operation_id).await
+            }
+
+            Action::ClipboardGetStats { operation_id } => self.handle_get_stats(operation_id).await,
+
+            Action::ClipboardUpdateCache { operation_id } => {
+                self.handle_update_cache(operation_id).await
+            }
+
+            Action::ClipboardShowSearchResults {
+                results,
+                pattern,
+                operation_id,
+            } => {
+                self.handle_show_search_results(results, pattern, operation_id)
+                    .await
+            }
+
+            _ => Ok(DispatchResult::NotHandled),
+        }
     }
 
     #[instrument(
@@ -160,6 +237,12 @@ impl ClipboardDispatcher {
                 );
 
                 self.success("Item copied to clipboard");
+                self.state_provider.update_ui_state(Box::new(|ui| {
+                    ui.request_redraw(RedrawFlag::Overlay);
+                }));
+                self.state_provider.update_ui_state(Box::new(|ui| {
+                    ui.request_redraw(RedrawFlag::Overlay);
+                }));
             }
 
             Err(e) => {
@@ -308,7 +391,7 @@ impl ClipboardDispatcher {
         // Record current directory in span
         span.record(
             "current_path",
-            &tracing::field::display(&current_dir.display()),
+            tracing::field::display(&current_dir.display()),
         );
 
         debug!(
@@ -319,7 +402,7 @@ impl ClipboardDispatcher {
         );
 
         let items = clipboard.get_all_items().await;
-        span.record("entries_count", &items.len());
+        span.record("entries_count", items.len());
 
         if items.is_empty() {
             warn!(
@@ -388,10 +471,6 @@ impl ClipboardDispatcher {
             entries_count = paste_ops.len(),
             "Created paste operations for execution"
         );
-
-        // Execute paste operations with concurrent processing for better performance
-        let mut success_count = 0;
-        // let mut operation_errors = Vec::new();
 
         // Process operations in batches for optimal performance
         let batch_size = std::cmp::min(paste_ops.len(), num_cpus::get() * 2);
@@ -474,85 +553,6 @@ impl ClipboardDispatcher {
         Ok(DispatchResult::Continue)
     }
 
-    pub async fn handle(&mut self, action: Action) -> Result<DispatchResult> {
-        match action {
-            // Legacy clipboard operations
-            Action::Copy(path) => self.handle_copy(path).await,
-
-            Action::Cut(path) => self.handle_cut(path).await,
-
-            Action::Paste => self.handle_paste().await,
-
-            Action::ClearClipboard => self.handle_clear_clipboard().await,
-
-            Action::ToggleClipboard => self.handle_toggle_overlay().await,
-
-            Action::ClipboardUp => self.handle_navigation(true).await,
-
-            Action::ClipboardDown => self.handle_navigation(false).await,
-
-            Action::SelectClipboardItem(index) => {
-                self.state_provider
-                    .update_ui_state(Box::new(move |ui: &mut UIState| {
-                        ui.selected_clipboard_item_idx = index;
-
-                        ui.request_redraw(RedrawFlag::Overlay);
-                    }));
-
-                Ok(DispatchResult::Continue)
-            }
-
-            // clipr advanced operations
-            Action::ClipboardAddBatch {
-                paths,
-                operations,
-                operation_id,
-            } => self.handle_batch_add(paths, operations, operation_id).await,
-
-            Action::ClipboardPasteBatch {
-                item_ids,
-                destination,
-                ..
-            } => self.handle_batch_paste(item_ids, destination).await,
-
-            Action::ClipboardSearch {
-                pattern,
-                operation_id,
-            } => self.handle_clipboard_search(pattern, operation_id).await,
-
-            Action::ClipboardSelectMultiple {
-                item_ids,
-                operation_id,
-            } => self.handle_multi_select(item_ids, operation_id).await,
-
-            Action::ClipboardRemoveItems {
-                item_ids,
-                operation_id,
-            } => self.handle_remove_items(item_ids, operation_id).await,
-
-            Action::ClipboardOptimizedClear { operation_id } => {
-                self.handle_optimized_clear(operation_id).await
-            }
-
-            Action::ClipboardGetStats { operation_id } => self.handle_get_stats(operation_id).await,
-
-            Action::ClipboardUpdateCache { operation_id } => {
-                self.handle_update_cache(operation_id).await
-            }
-
-            Action::ClipboardShowSearchResults {
-                results,
-                pattern,
-                operation_id,
-            } => {
-                self.handle_show_search_results(results, pattern, operation_id)
-                    .await
-            }
-
-            _ => Ok(DispatchResult::NotHandled),
-        }
-    }
-
     // ===== clipr Advanced Handler Methods =====
 
     /// Handle batch add operations using clipr's parallel processing
@@ -563,13 +563,8 @@ impl ClipboardDispatcher {
         operation_type: ClipboardOperationType,
         operation_id: OperationId,
     ) -> Result<DispatchResult> {
-        let start = Instant::now();
-
         // Get clipboard from AppState (not UIState)
-        let clipboard: Arc<ClipBoard> = {
-            let app_state: MutexGuard<'_, AppState> = self.state_provider.app_state();
-            app_state.clipboard.clone()
-        };
+        let clipboard: Arc<ClipBoard> = self.state_provider.app_state().clipboard.clone();
 
         info!(
             marker = "CLIPBOARD_BATCH_ADD_START",
@@ -628,7 +623,7 @@ impl ClipboardDispatcher {
                 failed_paths.len()
             ));
         } else {
-            self.success((&format!("Added {success_count} items to clipboard")));
+            self.success(&format!("Added {success_count} items to clipboard"));
         }
 
         Ok(DispatchResult::Continue)
@@ -687,7 +682,7 @@ impl ClipboardDispatcher {
                 }
 
                 Err(e) => {
-                    failed_operations.push(format!("item_{}", item_id).into());
+                    failed_operations.push(format!("item_{item_id}").into());
 
                     warn!(
                         marker = "CLIPBOARD_GET_PASTE_OPERATION_FAILED",
@@ -702,7 +697,7 @@ impl ClipboardDispatcher {
 
         // Update UI and provide feedback
         if success_count > 0 {
-            self.success(&format!("Successfully pasted {} items", success_count));
+            self.success(&format!("Successfully pasted {success_count} items"));
         }
 
         if !failed_operations.is_empty() {
@@ -727,15 +722,8 @@ impl ClipboardDispatcher {
     async fn handle_clipboard_search(
         &self,
         pattern: String,
-        operation_id: crate::controller::actions::OperationId,
+        operation_id: OperationId,
     ) -> Result<DispatchResult> {
-        let start: Instant = std::time::Instant::now();
-
-        let clipboard: Arc<ClipBoard> = {
-            let app_state: MutexGuard<'_, AppState> = self.state_provider.app_state();
-            app_state.clipboard.clone()
-        };
-
         info!(
             marker = "CLIPBOARD_SEARCH_START",
             operation_type = "clipboard_search",
@@ -744,9 +732,15 @@ impl ClipboardDispatcher {
             "Starting SIMD clipboard search"
         );
 
+        let start: Instant = Instant::now();
+
+        let clipboard: Arc<ClipBoard> = self.state_provider.app_state().clipboard.clone();
+
         // Use clipr's SIMD-accelerated find_by_pattern
         let results: Vec<ClipBoardItem> = clipboard.find_by_pattern(&pattern).await;
-        let result_ids: Vec<u64> = results.iter().map(|item| item.id).collect();
+        let result_count: usize = results.len();
+
+        let result_ids: Vec<u64> = results.iter().map(|item: &ClipBoardItem| item.id).collect();
 
         info!(
             marker = "CLIPBOARD_SEARCH_COMPLETE",
@@ -758,13 +752,20 @@ impl ClipboardDispatcher {
             "Clipboard search completed"
         );
 
-        // Update UI with search results
         self.state_provider
             .update_ui_state(Box::new(move |ui: &mut UIState| {
-                ui.update_clipboard_search_results(result_ids, start.elapsed().as_micros() as u64);
+                ui.update_clipboard_search_results(result_ids, 0);
             }));
 
+        info!(
+            marker = "CLIPBOARD_SEARCH_COMPLETE",
+            operation_type = "clipboard_search",
+            entries_count = result_count,
+            "Clipboard search completed successfully"
+        );
+
         self.success(&format!("Found {} matching items", results.len()));
+
         Ok(DispatchResult::Continue)
     }
 
@@ -831,12 +832,16 @@ impl ClipboardDispatcher {
         item_ids: Vec<u64>,
         operation_id: OperationId,
     ) -> Result<DispatchResult> {
+        info!(
+            marker = "CLIPBOARD_REMOVE_ITEM_START",
+            operation_type = "clipboard_remove_items",
+            entries_count = item_ids.len(),
+            "Starting remove items operation"
+        );
+
         let start: Instant = Instant::now();
 
-        let clipboard: Arc<ClipBoard> = {
-            let app_state: MutexGuard<'_, AppState> = self.state_provider.app_state();
-            app_state.clipboard.clone()
-        };
+        let clipboard: Arc<ClipBoard> = self.state_provider.app_state().clipboard.clone();
 
         info!(
             marker = "CLIPBOARD_REMOVE_ITEMS_START",
@@ -846,17 +851,65 @@ impl ClipboardDispatcher {
             "Starting item removal"
         );
 
-        let mut success_count: i32 = 0;
-        let mut error_count: i32 = 0;
+        let mut removed_count: i32 = 0;
+        let mut failed_removals = Vec::new();
 
         // Use clipr's remove_item for each ID
-        for item_id in item_ids {
-            match clipboard.remove_item(item_id).await {
-                Ok(_) => success_count += 1,
-                Err(e) => {
-                    error_count += 1;
-                    debug!("Failed to remove item {}: {}", item_id, e);
+        for item_id in &item_ids {
+            match clipboard.remove_item(*item_id).await {
+                Ok(removed_item) => {
+                    removed_count += 1;
+
+                    info!(
+                        marker = "CLIPBOARD_ITEM_REMOVED",
+                        operation_type = "clipboard_remove_item",
+                        entries_count = *item_id,
+                        current_path = %removed_item.source_path,
+                        "Item removed successfully"
+                    );
                 }
+
+                Err(ClipError::ItemNotFound(_)) => {
+                    failed_removals.push(*item_id);
+
+                    warn!(
+                        marker = "CLIPBOARD_ITEM_NOT_FOUND",
+                        operation_type = "clipboard_remove_item",
+                        entries_count = *item_id,
+                        "Item not found for removal"
+                    );
+                }
+
+                Err(e) => {
+                    failed_removals.push(*item_id);
+
+                    warn!(
+                        marker = "CLIPBOARD_ITEM_REMOVE_FAILED",
+                        operation_type = "clipboard_remove_item",
+                        entries_count = *item_id,
+                        error = %e,
+                        "Failed to remove item"
+                    );
+                }
+            }
+        }
+
+        let removed_ids = item_ids.clone();
+
+        // Update UI to remove items from selection
+        self.state_provider
+            .update_ui_state(Box::new(move |ui: &mut UIState| {
+                for item_id in removed_ids {
+                    ui.deselect_clipboard_item(item_id);
+                }
+            }));
+
+        {
+            let app_state = self.state_provider.app_state();
+            let current_stats = clipboard.stats();
+
+            if let Ok(mut stats) = app_state.clipboard_metrics.write() {
+                *stats = current_stats.into();
             }
         }
 
@@ -864,17 +917,23 @@ impl ClipboardDispatcher {
             marker = "CLIPBOARD_REMOVE_ITEMS_COMPLETE",
             operation_type = "clipboard_remove_items",
             operation_id = %operation_id,
-            success_count = success_count,
-            error_count = error_count,
             duration_us = start.elapsed().as_micros(),
             "Item removal completed"
         );
 
-        if success_count > 0 {
-            self.success(&format!("Removed {} items", success_count));
+        if removed_count > 0 {
+            self.success(&format!("Removed {removed_count} items"));
         }
-        if error_count > 0 {
-            self.error(&format!("{} items failed to remove", error_count));
+
+        if !failed_removals.is_empty() {
+            self.error(&format!(
+                "Failed to remove {} items from clipboard",
+                failed_removals.len()
+            ));
+        }
+
+        if removed_count == 0 && !failed_removals.is_empty() {
+            self.error("No items were removed from clipboard");
         }
 
         Ok(DispatchResult::Continue)
@@ -908,7 +967,7 @@ impl ClipboardDispatcher {
                     "Optimized clear completed"
                 );
 
-                self.success(&format!("Cleared {} items", cleared_count));
+                self.success(&format!("Cleared {cleared_count} items"));
 
                 // Update UI state
                 self.state_provider
@@ -927,7 +986,7 @@ impl ClipboardDispatcher {
                     duration_us = start.elapsed().as_micros(),
                     "Optimized clear failed"
                 );
-                self.error(&format!("Clear failed: {}", e));
+                self.error(&format!("Clear failed: {e}"));
             }
         }
 
@@ -1035,8 +1094,7 @@ impl ClipboardDispatcher {
             }));
 
         self.success(&format!(
-            "Showing {} search results for '{}'",
-            results_len, pattern
+            "Showing {results_len} search results for '{pattern}'"
         ));
 
         Ok(DispatchResult::Continue)

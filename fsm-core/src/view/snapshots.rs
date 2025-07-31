@@ -34,7 +34,6 @@ pub struct UiSnapshot {
     pub overlay: UIOverlay,
 
     /// Whether the clipboard overlay is showing
-    pub clipboard_active: bool,
 
     /// Optional toast / banner
     pub notification: Option<Notification>,
@@ -76,7 +75,7 @@ impl From<&UIState> for UiSnapshot {
         trace!("Creating UI snapshot from UIState");
         Self {
             overlay: src.overlay,
-            clipboard_active: src.clipboard_overlay_active,
+
             notification: src.notification.clone(),
             redraw_flags: src.redraw_flags.load(Ordering::Relaxed),
             loading: src.loading.clone(),

@@ -6,7 +6,7 @@
 //! Colors are from the official Catppuccin theme specification:
 //! https://github.com/catppuccin/catppuccin
 
-use ratatui::style::Color;
+use ratatui::style::{Color, Style};
 use tracing::{debug, instrument};
 
 /// Initialize theme colors - logs color palette information
@@ -29,3 +29,55 @@ pub const PINK: Color = Color::Rgb(245, 194, 231); // Pink
 pub const PURPLE: Color = Color::Rgb(203, 166, 247); // Mauve
 pub const RED: Color = Color::Rgb(243, 139, 168); // Red
 pub const YELLOW: Color = Color::Rgb(249, 226, 175); // Yellow
+
+pub fn clipboard_overlay_style() -> Style {
+    Style::default().bg(BACKGROUND).fg(FOREGROUND)
+}
+
+pub fn clipboard_overlay_border_style() -> Style {
+    Style::default().fg(PURPLE)
+}
+
+pub fn clipboard_empty_message_style() -> Style {
+    Style::default().bg(CURRENT_LINE).fg(COMMENT)
+}
+
+pub fn clipboard_empty_message_border_style() -> Style {
+    Style::default().fg(PURPLE)
+}
+
+pub fn clipboard_copy_style() -> Style {
+    Style::default().fg(GREEN)
+}
+
+pub fn clipboard_move_style() -> Style {
+    Style::default().fg(ORANGE)
+}
+
+pub fn clipboard_list_style() -> Style {
+    Style::default().bg(BACKGROUND).fg(FOREGROUND)
+}
+
+pub fn clipboard_list_border_style() -> Style {
+    Style::default().fg(PURPLE)
+}
+
+pub fn clipboard_highlight_style() -> Style {
+    Style::default().bg(CURRENT_LINE).fg(FOREGROUND)
+}
+
+pub fn clipboard_details_style() -> Style {
+    Style::default().bg(BACKGROUND).fg(FOREGROUND)
+}
+
+pub fn clipboard_details_border_style() -> Style {
+    Style::default().fg(PURPLE)
+}
+
+pub fn clipboard_help_style() -> Style {
+    Style::default().bg(BACKGROUND).fg(FOREGROUND)
+}
+
+pub fn clipboard_help_border_style() -> Style {
+    Style::default().fg(PURPLE)
+}

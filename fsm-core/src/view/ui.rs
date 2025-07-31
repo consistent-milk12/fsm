@@ -5,7 +5,11 @@ use ratatui::{
     prelude::*,
     widgets::{Block, Borders},
 };
-use std::{collections::HashMap, sync::atomic::Ordering, time::Instant};
+use std::{
+    collections::HashMap,
+    sync::atomic::Ordering,
+    time::{Duration, Instant},
+};
 use tracing::{debug, instrument, warn};
 
 use crate::{
@@ -64,8 +68,8 @@ pub struct RenderStats {
     pub frames_rendered: u64,
     pub frames_skipped: u64,
     pub slow_frames: u64,
-    pub total_time: std::time::Duration,
-    pub last_frame_time: std::time::Duration,
+    pub total_time: Duration,
+    pub last_frame_time: Duration,
 }
 
 impl UIRenderer {
@@ -361,24 +365,6 @@ impl UIRenderer {
             self.render_modal_overlay(frame, ui_snapshot, coord, overlay_area);
         }
 
-        // Clipboard overlay
-        if ui_snapshot.clipboard_active {
-            let clipboard_area = self.centered_rect(screen_size, 85, 80);
-            if self
-                .clipboard_overlay
-                .render_sync_fallback(frame, clipboard_area, ui_snapshot)
-                .is_err()
-            {
-                tracing::error!(
-                    marker = "ERROR_RENDER",
-                    operation_type = "ui_render",
-                    component = "clipboard_overlay",
-                    message = "Clipboard overlay render failed"
-                );
-                self.render_error_overlay(frame, "Clipboard unavailable", clipboard_area);
-            }
-        }
-
         // File operations progress (using enhanced FSState)
         self.render_file_operations_progress(frame, coord, screen_size);
 
@@ -497,6 +483,39 @@ impl UIRenderer {
                 );
             }
 
+            UIOverlay::ClipBoard => {
+                let clipboard = coord.ui_state().read().unwrap().clipboard.clone();
+                // Synchronously update the cache before rendering
+                if let Err(e) = self.clipboard_overlay.update_cache_sync(&clipboard) {
+                    tracing::error!(
+                        marker = "ERROR_RENDER",
+                        operation_type = "ui_render",
+                        component = "clipboard_overlay",
+                        message = format!("Failed to update clipboard cache: {}", e),
+                    );
+                    self.render_error_overlay(frame, "Clipboard cache update failed", area);
+                    return;
+                }
+
+                if self
+                    .clipboard_overlay
+                    .render_sync_fallback(frame, area, ui_snapshot, &clipboard)
+                    .is_err()
+                {
+                    tracing::error!(
+                        marker = "ERROR_RENDER",
+                        operation_type = "ui_render",
+                        component = "clipboard_overlay",
+                        message = "Clipboard overlay render failed"
+                    );
+                    self.render_error_overlay(frame, "Clipboard unavailable", area);
+                }
+                tracing::info!(
+                    marker = "CLIPBOARD_OVERLAY_RENDERED",
+                    operation_type = "ui_render",
+                    message = "Clipboard overlay rendered"
+                );
+            }
             _ => {
                 tracing::error!(
                     marker = "ERROR_RENDER",

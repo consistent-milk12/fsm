@@ -9,3 +9,5 @@ diff.rs
 .docs
 .back_up
 .logs
+ignore.sh
+_start_session.sh

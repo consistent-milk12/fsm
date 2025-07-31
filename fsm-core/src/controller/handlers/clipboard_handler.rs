@@ -7,9 +7,13 @@ use tracing::trace;
 
 use super::*;
 
+use crate::controller::state_provider::StateProvider;
+use std::sync::Arc;
+
 pub struct ClipboardHandler {
     bindings: HashMap<KeyEvent, Action>,
     mode: ClipboardMode,
+    state_provider: Arc<dyn StateProvider>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -18,30 +22,25 @@ pub enum ClipboardMode {
     OverlayActive,
 }
 
-impl Default for ClipboardHandler {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl ClipboardHandler {
-    pub fn new() -> Self {
+    pub fn new(state_provider: Arc<dyn StateProvider>) -> Self {
         let mut bindings = HashMap::with_capacity(8);
 
-        // Core operations
-        bindings.insert(key('c'), Action::Copy(PathBuf::new()));
-        bindings.insert(key('x'), Action::Cut(PathBuf::new()));
+        // Core operations - path will be determined at runtime
+        bindings.insert(key('c'), Action::Copy(PathBuf::from("placeholder")));
+        bindings.insert(key('x'), Action::Cut(PathBuf::from("placeholder")));
         bindings.insert(key('v'), Action::Paste);
         bindings.insert(tab_key(), Action::ToggleClipboard);
 
-        // Ctrl alternatives
-        bindings.insert(ctrl('c'), Action::Copy(PathBuf::new()));
-        bindings.insert(ctrl('x'), Action::Cut(PathBuf::new()));
+        // Ctrl alternatives - path will be determined at runtime
+        bindings.insert(ctrl('c'), Action::Copy(PathBuf::from("placeholder")));
+        bindings.insert(ctrl('x'), Action::Cut(PathBuf::from("placeholder")));
         bindings.insert(ctrl('v'), Action::Paste);
 
         Self {
             bindings,
             mode: ClipboardMode::Normal,
+            state_provider,
         }
     }
 
@@ -62,11 +61,31 @@ impl ClipboardHandler {
 
     fn handle_normal_mode(&mut self, key_event: KeyEvent) -> Result<Vec<Action>, AppError> {
         if let Some(action) = self.bindings.get(&key_event).cloned() {
-            if matches!(action, Action::ToggleClipboard) {
-                self.mode = ClipboardMode::OverlayActive;
-            }
+            match action {
+                Action::Copy(_) | Action::Cut(_) => {
+                    let fs_state = self.state_provider.fs_state();
+                    if let Some(path) = fs_state.get_selected_path() {
+                        let new_action = match action {
+                            Action::Copy(_) => Action::Copy(path),
+                            Action::Cut(_) => Action::Cut(path),
+                            _ => unreachable!(), // Should not happen due to outer match
+                        };
 
-            Ok(vec![action])
+                        Ok(vec![new_action])
+                    } else {
+                        // No selected entry, do not perform copy/cut
+                        Ok(vec![])
+                    }
+                }
+
+                Action::ToggleClipboard => {
+                    self.mode = ClipboardMode::OverlayActive;
+
+                    Ok(vec![action])
+                }
+
+                _ => Ok(vec![action]),
+            }
         } else {
             Ok(vec![])
         }

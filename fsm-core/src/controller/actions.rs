@@ -2,7 +2,7 @@
 use crate::fs::object_info::ObjectInfo;
 use crate::fs::utils::ScanUpdate;
 
-use clipr::ClipBoard;
+use clipr::ClipBoardStats;
 use crossterm::event::{KeyEvent, MouseEvent};
 use std::path::PathBuf;
 use std::time::SystemTime;
@@ -97,6 +97,19 @@ impl Default for ClipboardStats {
             move_items: 0,
             total_size_bytes: 0,
             cache_hit_ratio: 0.0,
+            last_updated: SystemTime::now(),
+        }
+    }
+}
+
+impl From<ClipBoardStats> for ClipboardStats {
+    fn from(clipr_stats: ClipBoardStats) -> Self {
+        Self {
+            total_items: clipr_stats.total_items as u64,
+            copy_items: clipr_stats.copy_items as u64,
+            move_items: clipr_stats.move_items as u64,
+            total_size_bytes: clipr_stats.total_size,
+            cache_hit_ratio: clipr_stats.cache_hit_rate as f32,
             last_updated: SystemTime::now(),
         }
     }
@@ -471,7 +484,7 @@ impl std::fmt::Display for Action {
                 pattern,
                 operation_id,
             } => {
-                write!(f, "ClipboardSearch(pattern={}, {})", pattern, operation_id)
+                write!(f, "ClipboardSearch(pattern={pattern}, {operation_id})")
             }
 
             _ => write!(f, "{}", self.description()),
