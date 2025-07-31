@@ -485,37 +485,35 @@ impl UIRenderer {
 
             UIOverlay::ClipBoard => {
                 let clipboard = coord.ui_state().read().unwrap().clipboard.clone();
-                // Synchronously update the cache before rendering
-                if let Err(e) = self.clipboard_overlay.update_cache_sync(&clipboard) {
-                    tracing::error!(
-                        marker = "ERROR_RENDER",
-                        operation_type = "ui_render",
-                        component = "clipboard_overlay",
-                        message = format!("Failed to update clipboard cache: {}", e),
-                    );
-                    self.render_error_overlay(frame, "Clipboard cache update failed", area);
-                    return;
-                }
 
-                if self
-                    .clipboard_overlay
-                    .render_sync_fallback(frame, area, ui_snapshot, &clipboard)
-                    .is_err()
-                {
+                // FIX: Force cache invalidation to ensure fresh data
+                self.clipboard_overlay.invalidate_cache();
+
+                // Use sync render method
+                if let Err(e) = self.clipboard_overlay.render(
+                    frame,
+                    area,
+                    &clipboard,
+                    ui_snapshot.selected_clipboard_item_idx,
+                    ui_snapshot,
+                ) {
                     tracing::error!(
                         marker = "ERROR_RENDER",
                         operation_type = "ui_render",
                         component = "clipboard_overlay",
-                        message = "Clipboard overlay render failed"
+                        message = format!("Clipboard overlay render failed: {}", e)
                     );
+
                     self.render_error_overlay(frame, "Clipboard unavailable", area);
                 }
+
                 tracing::info!(
                     marker = "CLIPBOARD_OVERLAY_RENDERED",
                     operation_type = "ui_render",
                     message = "Clipboard overlay rendered"
                 );
             }
+
             _ => {
                 tracing::error!(
                     marker = "ERROR_RENDER",

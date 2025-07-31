@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, MutexGuard, RwLock, RwLockReadGuard};
 use std::time::{Instant, SystemTime};
 
-use tracing::{debug, info, instrument, warn};
+use tracing::{Span, debug, info, instrument, warn};
 
 use std::result::Result as StdResult;
 
@@ -100,11 +100,17 @@ impl ClipboardDispatcher {
             Action::ClipboardDown => self.handle_navigation(false).await,
 
             Action::SelectClipboardItem(index) => {
-                self.state_provider
-                    .update_ui_state(Box::new(move |ui: &mut UIState| {
-                        ui.selected_clipboard_item_idx = index;
+                self.handle_clipboard_paste_selected_index(index).await
+            }
 
-                        ui.request_redraw(RedrawFlag::Overlay);
+            Action::RemoveFromClipboard(index) => {
+                self.handle_clipboard_remove_selected_item(index).await
+            }
+
+            Action::CloseOverlay => {
+                self.state_provider
+                    .update_ui_state(Box::new(|ui: &mut UIState| {
+                        ui.toggle_clipboard_overlay();
                     }));
 
                 Ok(DispatchResult::Continue)
@@ -199,14 +205,7 @@ impl ClipboardDispatcher {
         }
 
         // Get clipboard without holding UI lock across await
-        let clipboard: ClipBoard = {
-            let ui_state: Arc<RwLock<UIState>> = self.state_provider.ui_state();
-            let ui: RwLockReadGuard<'_, UIState> = ui_state
-                .read()
-                .map_err(|_| anyhow::anyhow!("UI state lock poisoned"))?;
-
-            ui.clipboard.clone()
-        };
+        let clipboard: Arc<ClipBoard> = self.state_provider.app_state().clipboard.clone();
 
         // Additional validation: Check if path exists before metadata read
         if !path.exists() {
@@ -237,7 +236,12 @@ impl ClipboardDispatcher {
                 );
 
                 self.success("Item copied to clipboard");
+
+                let fresh_clipboard: ClipBoard = clipboard.as_ref().clone();
+
                 self.state_provider.update_ui_state(Box::new(|ui| {
+                    ui.clipboard = fresh_clipboard;
+
                     ui.request_redraw(RedrawFlag::Overlay);
                 }));
                 self.state_provider.update_ui_state(Box::new(|ui| {
@@ -296,7 +300,9 @@ impl ClipboardDispatcher {
                 current_path = %path.display(),
                 "Cut operation failed: empty or invalid path"
             );
+
             self.error("Cannot cut: invalid or empty file path");
+
             return Ok(DispatchResult::Continue);
         }
 
@@ -308,22 +314,16 @@ impl ClipboardDispatcher {
                 current_path = %path.display(),
                 "Cut operation failed: file does not exist"
             );
+
             self.error(&format!(
                 "Cannot cut: file does not exist: {}",
                 path.display()
             ));
+
             return Ok(DispatchResult::Continue);
         }
 
-        let clipboard: ClipBoard = {
-            let ui_state: Arc<RwLock<UIState>> = self.state_provider.ui_state();
-
-            let ui: RwLockReadGuard<'_, UIState> = ui_state
-                .read()
-                .map_err(|_| anyhow::anyhow!("UI state lock poisoned"))?;
-
-            ui.clipboard.clone()
-        };
+        let clipboard = self.state_provider.app_state().clipboard.clone();
 
         match clipboard.add_move(path.clone()).await {
             Ok(_) => {
@@ -337,6 +337,14 @@ impl ClipboardDispatcher {
                     duration_us = start.elapsed().as_micros(),
                     "Clipboard cut completed successfully"
                 );
+
+                let fresh_clipboard = clipboard.as_ref().clone();
+
+                self.state_provider
+                    .update_ui_state(Box::new(move |ui: &mut UIState| {
+                        ui.clipboard = fresh_clipboard;
+                        ui.request_redraw(RedrawFlag::Overlay);
+                    }));
 
                 self.success("Item cut to clipboard");
             }
@@ -362,18 +370,18 @@ impl ClipboardDispatcher {
     }
 
     #[instrument(
-      level = "info",
-      skip(self),
-      err,
-      fields(
-          marker = "CLIPBOARD_PASTE_START",
-          operation_type = "clipboard_paste",
-          current_path = tracing::field::Empty,
-          entries_count = tracing::field::Empty,
-          duration_us = tracing::field::Empty,
-          cache_hit = false
-      )
-  )]
+        level = "info",
+        skip(self),
+        err,
+        fields(
+            marker = "CLIPBOARD_PASTE_START",
+            operation_type = "clipboard_paste",
+            current_path = tracing::field::Empty,
+            entries_count = tracing::field::Empty,
+            duration_us = tracing::field::Empty,
+            cache_hit = false
+        )
+    )]
     async fn handle_paste(&self) -> Result<DispatchResult> {
         let start = Instant::now();
         let span = tracing::Span::current();
@@ -494,15 +502,7 @@ impl ClipboardDispatcher {
 
     #[instrument(level = "trace", skip(self))]
     async fn handle_clear_clipboard(&self) -> Result<DispatchResult> {
-        let clipboard: ClipBoard = {
-            let ui_state: Arc<RwLock<UIState>> = self.state_provider.ui_state();
-
-            let ui: RwLockReadGuard<'_, UIState> = ui_state
-                .read()
-                .map_err(|_| anyhow::anyhow!("UI state lock poisoned"))?;
-
-            ui.clipboard.clone()
-        };
+        let clipboard: Arc<ClipBoard> = self.state_provider.app_state().clipboard.clone();
 
         // Use optimized bulk clear operation
         match clipboard.clear_all().await {
@@ -521,6 +521,13 @@ impl ClipboardDispatcher {
                     "Successfully cleared {} items from clipboard",
                     cleared_count
                 );
+
+                let fresh_clipboard: ClipBoard = clipboard.as_ref().clone();
+
+                self.state_provider.update_ui_state(Box::new(move |ui| {
+                    ui.clipboard = fresh_clipboard;
+                    ui.request_redraw(RedrawFlag::Overlay);
+                }));
             }
 
             Err(e) => {
@@ -554,6 +561,165 @@ impl ClipboardDispatcher {
     }
 
     // ===== clipr Advanced Handler Methods =====
+
+    /// Handle paste operation for selected clipboard item
+    #[instrument(
+        level = "info",
+        skip(self),
+        err,
+        fields(
+            marker = "CLIPBOARD_PASTE_SELECTED_START",
+            operation_type = "clipboard_paste_selected",
+            selected_index = index,
+            duration_ms = tracing::field::Empty,
+            cache_hit = false
+        )
+    )]
+    async fn handle_clipboard_paste_selected_index(&self, index: usize) -> Result<DispatchResult> {
+        let start = Instant::now();
+        let span = Span::current();
+
+        let (current_dir, clipboard) = {
+            let fs_state = self.state_provider.fs_state();
+            let ui_state = self.state_provider.ui_state();
+            let ui = ui_state
+                .read()
+                .map_err(|_| anyhow::anyhow!("UI state lock poisoned"))?;
+
+            (fs_state.active_pane().cwd.clone(), ui.clipboard.clone())
+        };
+
+        info!(
+            marker = "CLIPBOARD_PASTE_SELECTED_START",
+            operation_type = "clipboard_paste_selected",
+            current_pah = %current_dir.display(),
+            selected_index = index,
+            "Starting paste operation for selected clipboard item"
+        );
+
+        let items = clipboard.get_all_items().await;
+
+        if index >= items.len() {
+            warn!(
+                marker = "CLIPBOARD_PASTE_SELECTED_INVALID_INDEX",
+                operation_type = "clipboard_paste_selected",
+                selected_index = index,
+                total_items = items.len(),
+                "Invalid clipboard item index"
+            );
+
+            self.error("invalid clipboard item selected");
+
+            return Ok(DispatchResult::Continue);
+        }
+
+        let selected_item = &items[index];
+
+        // Create paste operation for selected item
+        match PasteOperation::new(selected_item, current_dir.clone()) {
+            Ok(paste_op) => {
+                match self.execute_file_operation(&paste_op).await {
+                    Ok(_) => {
+                        span.record("marker", "CLIPBOARD_PASTE_SELECTED_SUCCESS");
+                        span.record("duration_us", start.elapsed().as_micros());
+
+                        info!(
+                            marker = "CLIPBOARD_PASTE_SELECTED_SUCCESS",
+                            operation_type = "clipboard_paste_selected",
+                            current_path = %paste_op.source_path,
+                            target_path = %paste_op.destination_path,
+                            duration_us = start.elapsed().as_micros(),
+                            "Paste operation completed successfully"
+                        );
+
+                        self.success(&format!("Pasted: {}", paste_op.source_path));
+
+                        // Close clipboard overlay after successful paste
+                        self.state_provider
+                            .update_ui_state(Box::new(|ui: &mut UIState| {
+                                ui.toggle_clipboard_overlay();
+                            }));
+                    }
+
+                    Err(e) => {
+                        span.record("marker", "CLIPBOARD_PASTE_SELECTED_FAILED");
+                        span.record("duration_us", start.elapsed().as_micros());
+
+                        warn!(
+                            marker = "CLIPBOARD_PASTE_SELECTED_FAILED",
+                            operation_type = "clipboard_paste_selected",
+                            current_path = %paste_op.source_path,
+                            error = %e,
+                            duration_us = start.elapsed().as_micros(),
+                            "Paste operation failed"
+                        );
+
+                        self.error(&format!("Paste failed: {e}"));
+                    }
+                }
+            }
+
+            Err(e) => {
+                self.error(&format!("Cannot create paste operation: {e}"));
+            }
+        }
+
+        Ok(DispatchResult::Continue)
+    }
+
+    #[instrument(level = "info", skip(self), fields(selected_index = index))]
+    async fn handle_clipboard_remove_selected_item(&self, index: usize) -> Result<DispatchResult> {
+        let clipboard: ClipBoard = {
+            let ui_state: Arc<RwLock<UIState>> = self.state_provider.ui_state();
+            let ui: RwLockReadGuard<'_, UIState> = ui_state
+                .read()
+                .map_err(|_| anyhow::anyhow!("UI state lock poisoned"))?;
+            ui.clipboard.clone()
+        };
+
+        let items: Vec<ClipBoardItem> = clipboard.get_all_items().await;
+
+        if index >= items.len() {
+            self.error("Invalid clipboard item selected for removal");
+            return Ok(DispatchResult::Continue);
+        }
+
+        let item_id = items[index].id;
+
+        match clipboard.remove_item(item_id).await {
+            Ok(_) => {
+                info!(
+                    marker = "CLIPBOARD_REMOVE_ITEM_SUCCESS",
+                    operation_type = "clipboard_remove_item",
+                    selected_index = index,
+                    entries_count = item_id,
+                    "Item removed successfully"
+                );
+
+                self.success("Item removed from clipboard");
+
+                // Update UI to refresh clipboard display
+                self.state_provider
+                    .update_ui_state(Box::new(|ui: &mut UIState| {
+                        ui.request_redraw(RedrawFlag::Overlay);
+                    }));
+            }
+
+            Err(e) => {
+                warn!(
+                    marker = "CLIPBOARD_REMOVE_ITEM_FAILED",
+                    operation_type = "clipboard_remove_item",
+                    selected_index = index,
+                    error = %e,
+                    "Failed to remove item"
+                );
+
+                self.error(&format!("Failed to remove item: {e}"));
+            }
+        }
+
+        Ok(DispatchResult::Continue)
+    }
 
     /// Handle batch add operations using clipr's parallel processing
     #[instrument(level = "info", skip(self, paths), fields(operation_id = %operation_id))]
@@ -594,7 +760,7 @@ impl ClipboardDispatcher {
                 }
 
                 Err(e) => {
-                    let failed_path = paths[i].clone();
+                    let failed_path: PathBuf = paths[i].clone();
                     failed_paths.push(failed_path);
 
                     warn!(
@@ -1131,6 +1297,8 @@ impl ActionMatcher for ClipboardDispatcher {
                 | Action::ClipboardUp
                 | Action::ClipboardDown
                 | Action::SelectClipboardItem(_)
+                | Action::RemoveFromClipboard(_)
+                | Action::CloseOverlay
                 // clipr advanced operations
                 | Action::ClipboardAddBatch { .. }
                 | Action::ClipboardPasteBatch { .. }

@@ -83,7 +83,7 @@ impl OptimizedClipboardOverlay {
             duration_us = tracing::field::Empty,
         )
     )]
-    pub async fn render(
+    pub fn render(
         &mut self,
         frame: &mut Frame<'_>,
         area: Rect,
@@ -103,11 +103,7 @@ impl OptimizedClipboardOverlay {
         // Get or compute layout
         let layout = self.get_or_compute_layout(area);
 
-        // Update items cache if needed
-        if !self.cache_valid {
-            self.update_items_cache(clipboard).await?;
-        }
-
+        // Use cached items - cache should be updated elsewhere
         let clipboard_len = self.cached_items.len();
 
         self.selected_index = if clipboard_len > 0 {
@@ -369,6 +365,14 @@ impl OptimizedClipboardOverlay {
         Ok(())
     }
 
+    pub async fn update_cache(&mut self, clipboard: &ClipBoard) -> Result<(), AppError> {
+        if !self.cache_valid {
+            self.update_items_cache(clipboard).await?;
+        }
+
+        Ok(())
+    }
+
     /// Synchronous cache update for compatibility
     pub fn update_cache_sync(&mut self, _clipboard: &ClipBoard) -> Result<(), AppError> {
         // For compatibility with existing sync rendering
@@ -425,7 +429,7 @@ impl OptimizedClipboardOverlay {
             if filename.len() < max_len - 5 {
                 let available = max_len - filename.len() - 4; // 4 for ".../"
                 if path.len() > available {
-                    return format!(".../{}", filename);
+                    return format!(".../{filename}");
                 }
             }
         }
@@ -451,7 +455,7 @@ impl OptimizedClipboardOverlay {
         }
 
         if unit_idx == 0 {
-            format!("{}B", size)
+            format!("{size}B")
         } else {
             format!("{:.1}{}", size_f, UNITS[unit_idx])
         }
@@ -491,7 +495,7 @@ impl OptimizedClipboardOverlay {
         let diff_secs = diff_ns / 1_000_000_000;
 
         if diff_secs < 60 {
-            format!("{}s ago", diff_secs)
+            format!("{diff_secs}s ago")
         } else if diff_secs < 3600 {
             format!("{}m ago", diff_secs / 60)
         } else if diff_secs < 86400 {
