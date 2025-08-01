@@ -2,17 +2,25 @@
 name = "fsm-core"
 version = "1.0.0"
 edition = "2024"
+description = "A file system manager with TUI interface"
+authors = ["Your Name <your.email@example.com>"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/yourusername/fsm"
+keywords = ["file-manager", "tui", "terminal", "filesystem"]
+categories = ["command-line-utilities", "filesystem"]
 
 [dependencies]
-# Clipboard crate dependency
+# Local workspace dependencies
 clipr = { path = "../clipr" }
 
-# UI and async runtime
-ratatui = { workspace = true }
-crossterm = { workspace = true }
+# Core async and UI dependencies
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 futures = { workspace = true }
+
+# Terminal UI
+ratatui = { workspace = true }
+crossterm = { workspace = true }
 
 # Serialization and configuration
 serde = { workspace = true }
@@ -25,22 +33,49 @@ anyhow = { workspace = true }
 
 # Utilities and system info
 uuid = { workspace = true }
+bytesize = { workspace = true }
+sys-info = { workspace = true }
+directories = { workspace = true }
+walkdir = { workspace = true }
+
+# Logging and tracing
 tracing = { workspace = true }
 tracing-appender = { workspace = true }
 tracing-subscriber = { workspace = true }
+
+# Date/time handling
 chrono = { workspace = true }
 humantime-serde = { workspace = true }
 
-# File operations
-walkdir = { workspace = true }
-directories = { workspace = true }
-bytesize = { workspace = true }
+# Performance and data structures
+moka = { workspace = true }
+dashmap = { workspace = true, features = ["inline", "serde", "typesize"] }
+compact_str = { workspace = true }
+smallvec = { workspace = true }
+once_cell = { workspace = true }
 
 # Additional utilities
 ansi-to-tui = { workspace = true }
-moka = { workspace = true }
-sys-info = { workspace = true }
+tempfile = { workspace = true }
+criterion = { workspace = true, features = [
+    "async",
+    "async_futures",
+    "async_tokio",
+    "html_reports",
+    "csv_output",
+] }
 
 [[bin]]
-name = "fs"
+name = "fsm"
 path = "src/main.rs"
+
+[features]
+default = ["file-operations", "search", "plugins"]
+file-operations = []
+search = []
+plugins = []
+debug-logging = []
+
+[[bench]]
+name = "logging_benchmark"
+harness = false

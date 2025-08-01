@@ -11,7 +11,7 @@ use std::{
     panic::PanicHookInfo,
     path::PathBuf,
     sync::Arc,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result};
@@ -24,16 +24,15 @@ use tokio::{
     signal,
     sync::{Mutex, MutexGuard, Notify, mpsc},
 };
-use tracing::{info, warn};
 
 use fsm_core::{
-    Logger,
     cache::cache_manager::ObjectInfoCache,
     config::Config,
     controller::{
         actions::Action,
         event_loop::{EventLoop, TaskResult},
     },
+    logging_opt::{init_default_logging, shutdown_logging},
     model::{
         app_state::AppState,
         fs_state::FSState,
@@ -41,22 +40,23 @@ use fsm_core::{
     },
     view::ui::View,
 };
+use tracing::{self as Tracer, instrument};
+use tracing_appender::non_blocking::WorkerGuard;
 
 type AppTerminal = Terminal<Backend<Stdout>>;
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() -> Result<()> {
-    // Setup panic handler early
     setup_panic_handler();
 
-    // Initialize and run the application
     let app: App = App::new()
         .await
         .context("Failed to initialize application")?;
 
     app.run().await.context("Application runtime error")?;
 
-    info!("Application exited cleanly");
+    println!("Application exited cleanly");
+
     Ok(())
 }
 
@@ -67,13 +67,15 @@ struct App {
     state: Arc<Mutex<AppState>>,
     shutdown: Arc<Notify>,
     last_memory_check: Instant,
+    _tracer_guard: WorkerGuard,
 }
 
 impl App {
     /// Initialize the application with all necessary components
     async fn new() -> Result<Self> {
-        Logger::init_tracing();
-        info!("Starting File Manager TUI");
+        let tracer_guard: WorkerGuard = init_default_logging().await?;
+
+        Tracer::info!("Starting File Manager TUI");
 
         let terminal: AppTerminal = setup_terminal().context("Failed to initialize terminal")?;
 
@@ -82,7 +84,7 @@ impl App {
         let dir_handle = tokio::spawn(tokio::fs::canonicalize("."));
 
         let config: Arc<Config> = Arc::new(config_handle.await?.unwrap_or_else(|e| {
-            info!("Failed to load config, using defaults: {}", e);
+            Tracer::info!("Failed to load config, using defaults: {}", e);
             Config::default()
         }));
 
@@ -116,7 +118,7 @@ impl App {
             state.ui.request_redraw(RedrawFlag::All); // Use UI state for redraw management
         }
 
-        info!("Application initialization complete");
+        Tracer::info!("Application initialization complete");
 
         Ok(Self {
             terminal,
@@ -124,6 +126,7 @@ impl App {
             state: app_state,
             shutdown,
             last_memory_check: Instant::now(),
+            _tracer_guard: tracer_guard,
         })
     }
 
@@ -132,7 +135,7 @@ impl App {
         // Setup graceful shutdown handler
         self.setup_shutdown_handler().await;
 
-        info!("Starting main event loop");
+        Tracer::info!("Starting main event loop");
 
         // Main event loop
         loop {
@@ -145,15 +148,17 @@ impl App {
             // Wait for next event
             let action: Action = tokio::select! {
                 _ = self.shutdown.notified() => {
-                    info!("Shutdown signal received");
-                    break;
+                   Tracer::info!("Shutdown signal received");
+
+                   break;
                 }
 
                 maybe_action = self.controller.next_action() => {
                     match maybe_action {
                         Some(action) => action,
+
                         None => {
-                            info!("Controller stream ended");
+                           Tracer::info!("Controller stream ended");
                             break;
                         }
                     }
@@ -162,7 +167,7 @@ impl App {
 
             // Handle quit action
             if matches!(action, Action::Quit) {
-                info!("Quit action received");
+                Tracer::info!("Quit action received");
                 break;
             }
 
@@ -170,7 +175,10 @@ impl App {
             self.controller.dispatch_action(action).await;
         }
 
-        info!("Main event loop ended");
+        Tracer::info!("Main event loop ended");
+
+        self.shutdown().await?;
+
         Ok(())
     }
 
@@ -190,10 +198,11 @@ impl App {
             state.ui.clear_redraw();
 
             // Monitor render performance - log slow renders that could impact UX
-            let duration = start.elapsed();
+            let duration: Duration = start.elapsed();
+
             if duration.as_millis() > 16 {
                 // > 16ms = < 60fps
-                info!(
+                Tracer::info!(
                     "Slow render detected: {}ms (target: <16ms for 60fps)",
                     duration.as_millis()
                 );
@@ -224,26 +233,29 @@ impl App {
                     // Log memory warnings based on available memory
                     if available_mb < 100 {
                         // Less than 100MB available
-                        warn!(
+                        Tracer::warn!(
                             "Critical memory usage: Only {}MB available ({}% used)",
-                            available_mb, used_percent as u32
+                            available_mb,
+                            used_percent as u32
                         );
                     } else if available_mb < 500 {
                         // Less than 500MB available
-                        info!(
+                        Tracer::info!(
                             "High memory usage: {}MB available ({}% used)",
-                            available_mb, used_percent as u32
+                            available_mb,
+                            used_percent as u32
                         );
                     } else if used_percent > 80.0 {
-                        tracing::debug!(
+                        Tracer::debug!(
                             "Memory usage: {}MB available ({}% used)",
                             available_mb,
                             used_percent as u32
                         );
                     }
                 }
+
                 Err(e) => {
-                    tracing::debug!("Failed to get memory info: {}", e);
+                    Tracer::debug!("Failed to get memory info: {}", e);
                 }
             }
         }
@@ -265,13 +277,15 @@ impl App {
 
                 tokio::select! {
                     _ = sigterm.recv() => {
-                        info!("Received SIGTERM signal");
+                       Tracer::info!("Received SIGTERM signal");
                     }
+
                     _ = sigint.recv() => {
-                        info!("Received SIGINT signal");
+                       Tracer::info!("Received SIGINT signal");
                     }
+
                     _ = signal::ctrl_c() => {
-                        info!("Received Ctrl+C signal");
+                       Tracer::info!("Received Ctrl+C signal");
                     }
                 }
             }
@@ -282,18 +296,31 @@ impl App {
                     warn!("Failed to listen for Ctrl+C: {}", e);
                     return;
                 }
-                info!("Received Ctrl+C signal");
+                Tracer::info!("Received Ctrl+C signal");
             }
 
             shutdown.notify_one();
         });
     }
+
+    pub async fn shutdown(mut self) -> Result<()> {
+        Tracer::info!("Application shutting down gracefully");
+
+        // Shutdown logging system first (this is async-safe)
+        shutdown_logging().await?;
+
+        // Then cleanup terminal
+        cleanup_terminal(&mut self.terminal)?;
+
+        Ok(())
+    }
 }
 
 impl Drop for App {
+    #[instrument(skip(self))]
     fn drop(&mut self) {
         if let Err(e) = cleanup_terminal(&mut self.terminal) {
-            warn!("Failed to cleanup terminal: {}", e);
+            eprintln!("Failed to cleanup terminal: {e}");
         }
     }
 }
@@ -309,7 +336,7 @@ fn setup_terminal() -> Result<AppTerminal> {
     let terminal: Terminal<Backend<Stdout>> =
         Terminal::new(backend).context("Failed to create terminal")?;
 
-    info!("Terminal setup complete");
+    Tracer::info!("Terminal setup complete");
     Ok(terminal)
 }
 
@@ -322,21 +349,33 @@ fn cleanup_terminal(terminal: &mut AppTerminal) -> Result<()> {
 
     terminal.show_cursor().context("Failed to show cursor")?;
 
-    info!("Terminal cleanup complete");
+    Tracer::info!("Terminal cleanup complete");
     Ok(())
 }
 
 /// Setup panic handler for graceful terminal restoration
 fn setup_panic_handler() {
-    let original_hook: Box<dyn Fn(&PanicHookInfo<'_>) + Send + Sync + 'static> =
-        std::panic::take_hook();
+    use std::panic as StdPanicker;
 
-    std::panic::set_hook(Box::new(move |panic_info| {
+    let original_hook: Box<dyn Fn(&PanicHookInfo<'_>) + Send + Sync + 'static> =
+        StdPanicker::take_hook();
+
+    StdPanicker::set_hook(Box::new(move |panic_info: &PanicHookInfo<'_>| {
         // Try to restore terminal on panic
         let _ = disable_raw_mode();
         let _ = execute!(io::stderr(), LeaveAlternateScreen);
 
-        warn!("Application panicked: {}", panic_info);
+        eprintln!("Application panicked: {panic_info}");
+
         original_hook(panic_info);
     }));
 }
+
+// fn structured_json() -> Result<()> {
+//     let log_file: PathBuf = StdEnv::current_dir()
+//         .context("Failed to retireive current directory using std::env")?
+//         .join("logs")
+//         .join("app_logs");
+
+//     TokioCmd::Command::new("cat")
+// }

@@ -1,49 +1,81 @@
 [workspace]
-members = [
-    "fsm-core",
-    "clipr"
-]
+members = ["fsm-core", "clipr"]
 resolver = "2"
 
 [workspace.dependencies]
 # Core async and UI dependencies
-tokio = { version = "1.46.1", features = ["full", "macros", "rt-multi-thread", "time"] }
+tokio = { version = "1.47.0", features = [
+    "full",
+    "macros",
+    "rt-multi-thread",
+    "time",
+] }
+tokio-util = { version = "0.7.15", features = ["codec", "io"] }
+futures = "0.3.31"
+
+# Terminal UI
 ratatui = "0.29.0"
 crossterm = { version = "0.29.0", features = ["event-stream"] }
 
 # Serialization and configuration
 serde = { version = "1.0.219", features = ["derive"] }
-serde_json = "1.0.141"
-toml = "0.9.2"
+serde_json = { version = "1.0.142", features = ["indexmap"] }
+toml = "0.9.4"
 
 # Error handling
 thiserror = "2.0.12"
-anyhow = "1.0.98"
+anyhow = "1.0.9"
 
-# Utilities
+# Utilities and system info
 uuid = "1.17.0"
+bytesize = "2.0.1"
+sys-info = "0.9.1"
+directories = "6.0.0"
+walkdir = "2.5.0"
+
+# Logging and tracing
 tracing = "0.1.41"
-tokio-util = { version = "0.7.15", features = ["codec", "io"] }
+tracing-appender = "0.2.3"
+tracing-subscriber = { version = "0.3.19", features = [
+    "chrono",
+    "env-filter",
+    "json",
+    "serde",
+    "serde_json",
+] }
 
 # Date/time handling
 chrono = { version = "0.4.41", features = ["serde"] }
 humantime-serde = "1.1.1"
 
-# File operations and system utilities
-walkdir = "2.5.0"
-directories = "6.0.0"
-bytesize = "2.0.1"
-
-# Additional dependencies for main app
-tracing-appender = "0.2.3"
-tracing-subscriber = { version = "0.3.19", features = ["chrono", "env-filter", "json", "serde", "serde_json"] }
-ansi-to-tui = "7.0.0"
-futures = "0.3.31"
+# Performance and data structures
 moka = { version = "0.12.10", features = ["future"] }
-sys-info = "0.9.1"
+dashmap = { version = "6.1.0", features = ["rayon", "serde"] }
+compact_str = { version = "0.9.0", features = [
+    "bytes",
+    "quickcheck",
+    "rkyv",
+    "smallvec",
+    "zeroize",
+    "serde",
+] }
+smallvec = { version = "1.15.1", features = ["union", "const_generics"] }
+once_cell = { version = "1.21.3" }
+
+# Additional utilities
+ansi-to-tui = "7.0.0"
+tempfile = { version = "3.20.0" }
+
+# Benchmarking
+criterion = { version = "0.7.0" }
 
 [profile.release]
 opt-level = 3
 lto = true
 codegen-units = 1
 strip = "debuginfo"
+
+[profile.dev]
+opt-level = 0
+debug = true
+overflow-checks = true

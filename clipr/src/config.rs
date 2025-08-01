@@ -125,9 +125,7 @@ impl ClipBoardConfig {
 
         // Use MessagePack for faster deserialization
         let config: Self = rmp_serde::from_slice(&content).map_err(|e| {
-            ClipError::ConfigError(CompactString::from(format!(
-                "Failed to parse config: {e}"
-            )))
+            ClipError::ConfigError(CompactString::from(format!("Failed to parse config: {e}")))
         })?;
 
         Ok(config)
@@ -235,9 +233,10 @@ impl ClipBoardConfig {
     #[inline]
     pub fn set_item_expiry_ns(&self, value: Option<u64>) {
         if let Some(atomic) = &self.item_expiry_ns
-            && let Some(ns) = value {
-                atomic.store(ns, Ordering::Relaxed);
-            }
+            && let Some(ns) = value
+        {
+            atomic.store(ns, Ordering::Relaxed);
+        }
     }
 
     #[inline]

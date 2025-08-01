@@ -128,6 +128,8 @@ pub mod error;
 /// - Persistent settings via config files
 pub mod config;
 
+pub mod logging_opt;
+
 // =============================================================================
 // CACHING - High-performance object metadata cache
 // =============================================================================
@@ -496,7 +498,6 @@ pub mod tasks {
 /// - Performance monitoring
 /// - File and console output options
 pub mod logging;
-pub use logging::Logger;
 
 /// **Plugin System** - Extensibility framework (future)
 ///

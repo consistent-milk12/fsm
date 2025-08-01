@@ -1,156 +1,39 @@
-# FSM - AI Context Memory (Sonnet 4)
-**LOAD FIRST: Core project context for persistent AI development sessions**
+READ-ONLY
 
-## Project Identity
-- **FSM**: Rust TUI file manager (ratatui+tokio, async MVC, actor model)
-- **Status**: Production-ready with async file ops, progress tracking, search, commands
-- **Current Phase**: 2.3 (FileOperationsOverlay UI component)
+# AI Context (Sonnet 4) - MANDATORY RULES
+**CRITICAL**: These rules are MANDATORY and BINDING ONLY when @CLAUDE.md is the FIRST file loaded in a new session. If CLAUDE.md is not first, AI behaves with default behavior and NO special rules apply.
 
-## Architecture (Critical AI Context)
-```rust
-// Core pattern: Arc<Mutex<AppState>> + mpsc channels
-AppState { fs: FSState, ui: UIState, task_tx, action_tx }
-EventLoop -> dispatch_action() -> background tasks -> TaskResult -> UI updates
-```
+## CONTEXT LOADING REQUIREMENT
+**MANDATORY CONTEXT**: When CLAUDE.md is first file loaded, AI MUST also load these files fully into context:
+- @CLAUDE.md - This rules file (already loaded)
+- @docs/TRACING.md - This file contains vital information to the related project's standardized JSON tracing logs.
+- @DOCS/TODO.md - Permanent context TODO list to refer to.
 
-**Key Files:**
-- `fsm-core/src/controller/event_loop.rs` - Central dispatcher, action handlers
-- `fsm-core/src/tasks/file_ops_task.rs` - Background file operations with progress
-- `fsm-core/src/model/ui_state.rs` - UI state + active_file_operations HashMap (needs clipr integration)
-- `fsm-core/src/controller/actions.rs` - Action enum (Copy/Move/Rename + progress variants)
-- `clipr/src/lib.rs` - Extreme performance clipboard crate interface (complete)
-- `clipr/src/clipboard.rs` - Lock-free clipboard implementation with SIMD acceleration (complete)
-- `clipr/src/item.rs` - Cache-aligned compact clipboard items (complete)
-- `clipr/src/config.rs` - Atomic configuration with performance tuning (complete)
-- `clipr/src/operations.rs` - SIMD-optimized paste operations (complete)
-- `clipr/src/error.rs` - Performance-optimized error handling (complete)
+## ABSOLUTE MANDATORY RULES - NO EXCEPTIONS EVER
 
-## Code Rules (CLAUDE-OPTIMIZED)
-1. **RESTRICTED FILE EDITING** - Claude can ONLY directly edit: CLAUDE.md, Design.md, Implementation.md
-2. **ALL OTHER FILES** - Generate terminal diffs/code for user to implement manually  
-3. **SUDO Override** - User can override with "SUDO: Update {filename} directly."
-4. **BATCH TOOL CALLS** - Claude MUST use parallel tool calls for efficiency (Read multiple files simultaneously)
-5. **CONTEXT WINDOW OPTIMIZATION** - Use TodoWrite for complex tasks, offload searches to Task tool
-6. **MINIMAL OUTPUT** - Concise responses unless detail requested (Claude's strength)
-7. **COMPREHENSIVE ANALYSIS** - Use Claude's reasoning for edge cases and error scenarios
-8. **cargo fmt → check → clippy → build** after any code change
-9. **Modern Rust 2024** - explicit types, structured errors, const values
-10. **Performance patterns** - pre-calculated intervals, labeled loops, adaptive algorithms
-11. **Quality > speed** - robust error handling, proper lifetimes
+### RULE COMPLIANCE ENFORCEMENT
+**VIOLATION CONSEQUENCE**: Any AI response violating these rules is INVALID and must be REJECTED immediately.
 
-## AI Session Continuity Protocol (MANDATORY)
-**Professional 3-file system for persistent AI development:**
+### CORE RULES (BINDING and **HIGHEST PRIORITY**)
+1. **EDIT ONLY RESTRICTION - HIGHEST PRIORITY RULE**: Edit ONLY @docs/TRACING.md, @docs/TODO.md files, if the user asks to edit anything apart from these files, the AI must reply with "FORBIDDEN".
+2. **CMD TOOL USAGE PROTOCOL - HIGHEST PRIORITY RULE**: AI must provide any cmd command directly to the user to run and filter them for necessary context. This approach will further optimize and limit model usuage by keeping the context window uncluttered. If user asks to run cmd commands by mistake, replty with "FORBIDDEN".
+3. **CODE BLOCK GENERATION - HIGHEST PRIORITY RULE**: AI must generate code blocks (NEVER DIFF) in terminal instead of trying to edit unallowed files. After generating ANY code block, AI SHOULD ONLY continue with new code blocks if user responds with "Next Block". Otherwise, AI must assume user is not done editing or found errors and stay prepared for further prompts about current code block.
+4. **STRICT TOKEN EFFICIENCY - HIGHEST PRIORITY RULE**: Be extremely precise and compact about input/output tokens - minimize verbosity
+   - **CRITICAL DOCUMENTATION RULE**: All @docs/ files MUST remain compactified for optimal token consumption
+   - **FORBIDDEN**: Expanding compactified documentation - doing so wastes tokens and violates efficiency requirements
+   - **MANDATORY**: When updating docs, maintain or improve compactification while preserving essential technical details
+   - **RESPONSE OPTIMIZATION**: After 
+   - **PREAMBLE/POSTAMBLE FORBIDDEN**: No "Here's what I'll do" or "In summary" - direct responses only
+   - **CONTEXT EFFICIENCY**: Only load minimal essential context - avoid reading unnecessary files
+5. **MANDATORY JSON TRACING**: ALL code changes MUST use a standardized JSON tracing protocol.
 
-### CLAUDE.md - AI Context & Rules (THIS FILE)
-- **Purpose**: Project identity, rules, workflow for AI sessions
-- **AI Usage**: FIRST file loaded in every session for context
-- **Updates**: AI can edit directly for workflow improvements
-- **Critical**: Contains file editing permissions and development rules
+### TSV TRACING REQUIREMENTS (ABSOLUTELY MANDATORY)
+**ENFORCEMENT**: Any code without proper TSV tracing will be REJECTED as non-compliant.
 
-### Design.md - Archive & ADRs 
-- **Purpose**: Completed implementations + Architecture Decision Records
-- **AI Usage**: Historical context, architectural decisions, lessons learned
-- **Updates**: AI adds completed phases + ADRs, never removes content
-- **Format**: ADRs → Completed Phases → Technical Foundation → Roadmap
-
-### Implementation.md - Active Work Specification
-- **Purpose**: Current feature specification with standardized template
-- **AI Usage**: Complete implementation roadmap with success criteria
-- **Updates**: AI replaces entirely when phase completes
-- **Format**: Executive Summary → Context → Success Criteria → Technical Approach → Code Specs
-
-## Current Implementation Context (Active Phase)
-**Phase 2.4 Complete:** ESC key cancellation with comprehensive cleanup and user feedback
-**Progress System Complete:** Full file operations with visual progress and user cancellation  
-**Phase 3.1 Complete:** Extreme Performance Clipboard Infrastructure (`clipr` crate) - production-ready with 10-100x performance improvements
-**Current Status:** Ready for Phase 3.2 (Basic Copy/Move Operations with key bindings)
-
-## Key System Knowledge
-- **TaskResult enum**: Legacy + FileOperationComplete + FileOperationProgress variants
-- **Progress flow**: file_ops_task → TaskResult → event_loop → UIState → UI rendering
-- **Cancellation**: tokio_util::CancellationToken integrated, escape key handling pending
-- **Error patterns**: AppError with manual Clone impl, structured error construction
-- **Performance**: 64KB BUFFER_SIZE, adaptive progress intervals, hot loop optimization
-
-## Dependencies & Build
-```bash
-# Workspace dependencies
-ratatui tokio crossterm tracing moka serde anyhow thiserror ansi-to-tui tokio-util uuid walkdir
-
-# Build commands (from workspace root)
-cargo build --workspace
-cargo fmt --all && cargo check --workspace && cargo clippy --workspace
-RUST_LOG=debug cargo run -p fsm-core --bin fs
-```
-
-## Features Status
-✅ **Async navigation** - incremental loading, background metadata
-✅ **File operations** - c/m/r keys, background tasks, progress backend  
-✅ **Search** - filename (/) + content (:search), ripgrep ANSI colors
-✅ **Commands** - vim-style (:), auto-completion, input prompts
-✅ **Progress infrastructure** - real-time tracking, cancellation tokens, state management
-✅ **Progress UI** - FileOperationsOverlay component with real-time metrics
-✅ **ESC Cancellation** - User-initiated operation cancellation with cleanup
-✅ **Extreme Performance Clipboard** - lock-free, SIMD-accelerated, 10-100x performance improvements
-
-## AI Development Workflow (STRICT - CLEAN SESSION PROTOCOL)
-
-### New Session Initialization (Claude-Optimized)
-1. **MANDATORY**: User loads CLAUDE.md first for Claude context
-2. **BATCH READ**: Claude reads Design.md + Implementation.md simultaneously (parallel tool calls)
-3. **SMART CONTEXT**: Claude analyzes current phase and reads only relevant system files
-4. **PROACTIVE TODO**: Claude creates TodoWrite for complex multi-step tasks immediately
-5. **CONTEXT SUMMARY**: Claude provides 2-line summary of current state for user confirmation
-
-### Development Cycle (Claude-Optimized)
-1. **SMART ANALYSIS**: Claude reads Implementation.md + uses reasoning to identify key dependencies
-2. **BATCH RESEARCH**: Claude reads multiple relevant files simultaneously (parallel tool calls)
-3. **STRUCTURED GENERATION**: Claude creates terminal diffs with clear change explanations
-4. **CONCISE DISPLAY**: Claude shows implementation with minimal commentary (leverage brevity strength)
-5. **SAFETY RESTRICTION**: NO direct file edits except CLAUDE.md, Design.md, Implementation.md
-6. **SUDO OVERRIDE**: "SUDO: Update {filename} directly" allows controlled exceptions
-7. **EFFICIENT VERIFICATION**: Claude batch-reads updated files to verify implementation
-8. **TODO MANAGEMENT**: Claude actively uses TodoWrite to track complex multi-step processes
-9. **COMPLETION ANALYSIS**: Claude uses reasoning to check success criteria and edge cases
-
-### Phase Completion Protocol
-1. **Archive**: Add completed phase to Design.md with technical details
-2. **ADR**: Document major architectural decisions in Design.md  
-3. **Reset**: Replace Implementation.md with next phase specification
-4. **Update**: Modify CLAUDE.md current phase context
-5. **Validate**: Ensure all files synchronized for next session
-
-### Quality Gates
-- **Pre-code**: cargo fmt && cargo check && cargo clippy
-- **Post-implementation**: cargo build && integration tests
-- **Documentation**: All changes reflected in Design.md archive
-
-## Claude-Specific Optimizations
-
-### Context Window Management
-- **Prioritized Loading**: Load CLAUDE.md → Design.md ADRs → Implementation.md → key system files only
-- **Smart File Selection**: Claude analyzes current phase to determine which files are actually needed
-- **Chunked Analysis**: Use Task tool for complex searches to preserve context space
-- **Context Efficiency**: Batch read related files simultaneously rather than sequential reads
-
-### Leverage Claude's Strengths
-- **Reasoning Power**: Use for architectural analysis, edge case detection, error scenario planning
-- **Code Analysis**: Deep understanding of code relationships and dependencies
-- **Concise Communication**: Minimal output unless detail specifically requested
-- **Safety Focus**: Conservative approach to file editing with clear change explanations
-- **Parallel Processing**: Simultaneous tool calls for efficient information gathering
-
-### Claude Limitations Mitigations
-- **No Memory Between Sessions**: CLAUDE.md system provides persistent context
-- **Context Window Limits**: Task tool offloading for complex searches
-- **File Editing Restrictions**: Terminal diff system for safe code changes
-- **Batch Operations**: Parallel tool calls instead of sequential operations
-
-### Performance Patterns for Claude
-- **Single Message Multi-Tool**: Batch multiple tool calls in one response
-- **Context Preservation**: Read all needed files upfront, not as-needed
-- **Structured Output**: Use markdown formatting for clear diffs and explanations
-- **Proactive Todo Management**: Create todos immediately for multi-step processes
-- **Error Anticipation**: Use reasoning to predict and prevent common issues
-
-**This context enables seamless Claude session continuity with optimized performance and safety.**
+### RULE VERIFICATION CHECKLIST
+Before ANY response, AI MUST verify:
+- Generate code blocks in terminal for unallowed files (NO file edits without SUDO)
+- **HIGHEST PRIORITY**: After ANY code block, write "Waiting..." and wait for "Next Block" response
+- All code includes proper TSV tracing with standardized markers
+- Response is token-efficient and precise
+- **DOCUMENTATION COMPLIANCE**: All @docs/ files remain compactified - NO expansion of compact documentation allowed

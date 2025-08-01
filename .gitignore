@@ -1,6 +1,10 @@
 /backup
 /target
 /Cargo.lock
-/logs
 Notes.md
 .claude
+_start_session.sh
+ignore.sh
+.back_up
+.docs
+.logs

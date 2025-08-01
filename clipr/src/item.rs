@@ -238,9 +238,10 @@ impl CompactMetadata {
 
         // Check for hidden files (Unix dot files, Windows hidden attribute)
         if let Some(filename) = path.file_name()
-            && filename.to_string_lossy().starts_with('.') {
-                flags |= 0b0100; // Hidden flag
-            }
+            && filename.to_string_lossy().starts_with('.')
+        {
+            flags |= 0b0100; // Hidden flag
+        }
 
         #[cfg(windows)]
         {

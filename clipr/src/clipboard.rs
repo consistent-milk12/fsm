@@ -25,10 +25,10 @@ pub struct ClipBoard {
     /// SIMD-optimized path deduplication with fast hashing
     path_index: AsyncRwLock<AHashSet<CompactString>>,
 
-    /// Ordered access with RwLock for thread safety
+    /// Ordered access with `RwLock` for thread safety
     item_order: RwLock<Vec<u64>>,
 
-    /// Configuration with RwLock for safe access
+    /// Configuration with `RwLock` for safe access
     config: RwLock<ClipBoardConfig>,
 
     /// High-resolution creation timestamp
@@ -68,32 +68,32 @@ impl AtomicStats {
     }
 
     /// Atomic increment with relaxed ordering for maximum performance
-    #[inline(always)]
+    #[inline]
     fn inc_total_items(&self) {
         self.total_items.fetch_add(1, Ordering::Relaxed);
     }
 
-    #[inline(always)]
+    #[inline]
     fn inc_copy_items(&self) {
         self.copy_items.fetch_add(1, Ordering::Relaxed);
     }
 
-    #[inline(always)]
+    #[inline]
     fn inc_move_items(&self) {
         self.move_items.fetch_add(1, Ordering::Relaxed);
     }
 
-    #[inline(always)]
+    #[inline]
     fn add_size(&self, size: u64) {
         self.total_size.fetch_add(size, Ordering::Relaxed);
     }
 
-    #[inline(always)]
+    #[inline]
     fn inc_cache_hit(&self) {
         self.cache_hits.fetch_add(1, Ordering::Relaxed);
     }
 
-    #[inline(always)]
+    #[inline]
     fn inc_cache_miss(&self) {
         self.cache_misses.fetch_add(1, Ordering::Relaxed);
     }
@@ -252,13 +252,13 @@ impl ClipBoard {
     }
 
     /// Fast clipboard emptiness check with atomic operation
-    #[inline(always)]
+    #[inline]
     pub fn is_empty(&self) -> bool {
         self.stats.total_items.load(Ordering::Relaxed) == 0
     }
 
     /// Fast item count with atomic operation
-    #[inline(always)]
+    #[inline]
     pub fn len(&self) -> usize {
         self.stats.total_items.load(Ordering::Relaxed) as usize
     }
@@ -462,6 +462,7 @@ impl ClipBoard {
 
     /// Calculate cache hit rate for performance monitoring
     #[inline]
+    #[allow(clippy::cast_precision_loss)]
     fn calculate_cache_hit_rate(&self) -> f64 {
         let hits = self.stats.cache_hits.load(Ordering::Relaxed) as f64;
         let misses = self.stats.cache_misses.load(Ordering::Relaxed) as f64;
@@ -496,11 +497,8 @@ impl Clone for ClipBoard {
     fn clone(&self) -> Self {
         // Create new clipboard with same config
         let config = self.config.read().unwrap().clone();
-        let new_clipboard = Self::new(config);
 
-        // Note: In a real implementation, you might want to copy items as well
-        // For now, we create an empty clipboard with the same configuration
-        new_clipboard
+        Self::new(config)
     }
 }
 
@@ -517,17 +515,20 @@ pub struct ClipBoardStats {
 
 impl ClipBoardStats {
     /// Get human-readable total size
+    #[must_use]
     pub fn total_size_human(&self) -> String {
         use bytesize::ByteSize;
         ByteSize::b(self.total_size).to_string()
     }
 
     /// Calculate clipboard age
+    #[must_use]
     pub fn age(&self) -> std::time::Duration {
         self.created_at.elapsed()
     }
 
     /// Get performance summary
+    #[must_use]
     pub fn performance_summary(&self) -> String {
         format!(
             "Items: {}, Size: {}, Cache Hit Rate: {:.1}%, Age: {:.1}s",
@@ -550,7 +551,7 @@ mod tests {
 
         // Test concurrent additions
         let paths: Vec<_> = (0..100)
-            .map(|i| PathBuf::from(format!("/tmp/test_{}", i)))
+            .map(|i| PathBuf::from(format!("/tmp/test_{i}")))
             .collect();
 
         let results = clipboard
@@ -559,7 +560,7 @@ mod tests {
 
         // Verify all operations succeeded
         assert_eq!(results.len(), 100);
-        assert!(results.iter().all(|r| r.is_ok()));
+        assert!(results.iter().all(Result::is_ok));
 
         // Verify statistics
         let stats = clipboard.stats();
@@ -604,7 +605,7 @@ mod tests {
         // Add large number of items to trigger memory mapping
         for i in 0..1000 {
             clipboard
-                .add_copy(PathBuf::from(format!("/tmp/large_test_{}", i)))
+                .add_copy(PathBuf::from(format!("/tmp/large_test_{i}")))
                 .await
                 .unwrap();
         }

@@ -13,8 +13,8 @@ rayon = "1.10.0"
 crossbeam = "0.8.4"
 
 # Memory optimization and zero-copy
-smallvec = { version = "1.15.1", features = ["union", "const_generics"] }
-compact_str = { version = "0.9.0", features = ["serde"] }
+smallvec = { workspace = true }
+compact_str = { workspace = true }
 bytes = "1.10.1"
 memmap2 = "0.9.7"
 
@@ -41,16 +41,20 @@ atomic = "0.6.1"
 
 # Performance monitoring
 criterion = { version = "0.7.0", features = ["html_reports"] }
-thiserror.workspace = true
-serde = { workspace = true, features = ["derive"] }
+thiserror = { workspace = true }
+serde = { workspace = true }
 num_cpus = "1.17.0"
-directories.workspace = true
-sys-info.workspace = true
+directories = { workspace = true }
+sys-info = { workspace = true }
 tempfile = "3.20.0"
-bytesize.workspace = true
+bytesize = { workspace = true }
 
 [features]
 default = ["fast-hash", "simd"]
 fast-hash = []
 simd = []
 io-uring = ["dep:io-uring"]
+
+[lib]
+name = "clipr"
+path = "src/lib.rs"
