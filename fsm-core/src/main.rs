@@ -32,7 +32,7 @@ use fsm_core::{
         actions::Action,
         event_loop::{EventLoop, TaskResult},
     },
-    logging_opt::{init_default_logging, shutdown_logging},
+    logging_opt::{finalize_logs, init_default_logging, shutdown_logging},
     model::{
         app_state::AppState,
         fs_state::FSState,
@@ -56,6 +56,8 @@ async fn main() -> Result<()> {
     app.run().await.context("Application runtime error")?;
 
     println!("Application exited cleanly");
+
+    finalize_logs();
 
     Ok(())
 }

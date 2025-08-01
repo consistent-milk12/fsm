@@ -1,5 +1,7 @@
 use std::{
     collections::{HashMap, VecDeque},
+    fs::File,
+    io::{BufRead, BufReader, BufWriter},
     path::{Path, PathBuf},
     sync::{
         Arc, LazyLock,
@@ -12,11 +14,12 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use compact_str::{CompactString, ToCompactString};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::io::Write;
 use std::str::FromStr;
 use tokio::{
     fs as TokioFs,
-    sync::{Mutex, MutexGuard, RwLock, mpsc, oneshot},
+    sync::{Mutex, MutexGuard, RwLock, RwLockWriteGuard, mpsc, oneshot},
     time,
 };
 use tracing::{Level, field::Visit};
@@ -83,7 +86,8 @@ impl StringInterner {
         }
 
         // Need to write
-        let mut guard = self.strings.write().await;
+        let mut guard: RwLockWriteGuard<'_, HashMap<String, &'static str>> =
+            self.strings.write().await;
         if let Some(&interned) = guard.get(s) {
             return interned;
         }
@@ -102,25 +106,44 @@ static STRING_INTERNER: LazyLock<StringInterner> = LazyLock::new(StringInterner:
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoggerConfig {
     pub log_dir: PathBuf,
-    pub log_file_prefix: CompactString, // Use CompactString for short prefixes
+
+    // Use CompactString for short prefixes
+    pub log_file_prefix: CompactString,
+
     pub batch_size: usize,
+
     pub flush_interval: Duration,
-    pub log_level: CompactString, // Use CompactString for log level
+
+    // Use CompactString for log level
+    pub log_level: CompactString,
+
     pub max_log_file_size: u64,
+
     pub max_log_files: usize,
+
     pub max_field_size: usize,
+
     pub max_fields_count: usize,
+
     pub rotation: LogRotation,
+
     pub enable_console_output: bool,
-    pub use_string_interning: bool, // New: Enable/disable string interning
-    pub preallocate_buffers: bool,  // New: Preallocate serialization buffers
+
+    // Enable/disable string interning
+    pub use_string_interning: bool,
+
+    // Preallocate serialization buffers
+    pub preallocate_buffers: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum LogRotation {
     Never,
+
     Minutely,
+
     Hourly,
+
     Daily,
 }
 
@@ -136,7 +159,7 @@ impl Default for LoggerConfig {
             max_log_files: 10,                   // Increased retention
             max_field_size: 2048,                // Increased field size limit
             max_fields_count: 64,                // Increased field count
-            rotation: LogRotation::Daily,
+            rotation: LogRotation::Never,
             enable_console_output: true,
             use_string_interning: true,
             preallocate_buffers: true,
@@ -366,7 +389,7 @@ impl LoggingSystem {
         let file_appender: RollingFileAppender = RollingFileAppender::builder()
             .rotation(rotation)
             .filename_prefix(config.log_file_prefix.as_str())
-            .filename_suffix("json")
+            .filename_suffix("jsonl")
             .max_log_files(config.max_log_files)
             .build(&config.log_dir)
             .context("Failed to create file appender")?;
@@ -572,9 +595,13 @@ static LOG_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 fn get_level_string(level: Level) -> &'static str {
     match level {
         Level::ERROR => LEVEL_STRINGS[0],
+
         Level::WARN => LEVEL_STRINGS[1],
+
         Level::INFO => LEVEL_STRINGS[2],
+
         Level::DEBUG => LEVEL_STRINGS[3],
+
         Level::TRACE => LEVEL_STRINGS[4],
     }
 }
@@ -670,12 +697,6 @@ impl LoggerBuilder {
         let custom_layer: JsonLayer = JsonLayer::new(system_arc.clone());
         let subscriber = tracing_subscriber::registry()
             .with(custom_layer.with_filter(EnvFilter::from_default_env().add_directive(directive)));
-
-        // if self.config.enable_console_output {
-        //     let _ = subscriber.with(tracing_subscriber::fmt::layer()).try_init();
-        // } else {
-        //     let _ = subscriber.try_init();
-        // }
 
         let _ = subscriber.try_init();
 
@@ -785,7 +806,7 @@ impl JsonLayer {
 
         entry.source_location = CompactString::new(format!(
             "{}:{}",
-            event_data.file.unwrap_or_else(|| "unknown".to_string()),
+            event_data.file.unwrap_or("UNKNWON".to_string()),
             event_data.line.unwrap_or(0)
         ));
 
@@ -1001,4 +1022,78 @@ impl LogEntry {
         self.fs_state = Some(state);
         self
     }
+}
+
+/// Extremely optimized JSONL to pretty JSON array converter for large files
+pub fn convert_jsonl_to_pretty_array_optimized(input_path: &str, output_path: &str) -> Result<()> {
+    // Use larger buffer sizes for better I/O performance
+    const READ_BUFFER_SIZE: usize = 64 * 1024; // 64KB read buffer
+    const WRITE_BUFFER_SIZE: usize = 64 * 1024; // 64KB write buffer
+
+    let input_file: File = File::open(input_path)?;
+    let mut reader: BufReader<File> = BufReader::with_capacity(READ_BUFFER_SIZE, input_file);
+
+    let output_file: File = File::create(output_path)?;
+    let mut writer: BufWriter<File> = BufWriter::with_capacity(WRITE_BUFFER_SIZE, output_file);
+
+    // Write opening bracket
+    writer.write_all(b"[\n")?;
+
+    let mut first: bool = true;
+    let mut line_buffer: String = String::with_capacity(1024);
+
+    loop {
+        line_buffer.clear();
+        let bytes_read: usize = reader.read_line(&mut line_buffer)?;
+
+        if bytes_read == 0 {
+            break; // EOF
+        }
+
+        let line = line_buffer.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        // Use streaming JSON parser for memory efficiency
+        match serde_json::from_str::<Value>(line) {
+            Ok(mut json_value) => {
+                // Optimize filename formatting with in-place mutation
+                if let Some(filename_obj) = json_value.get("filename")
+                    && let Some(filename) = filename_obj.as_str()
+                    && let Some(line_number) = json_value
+                        .get("line_number")
+                        .and_then(|l: &Value| l.as_u64())
+                {
+                    // Use compact string formatting
+                    let clickable = format!("{filename}:{line_number}");
+                    json_value["filename"] = Value::String(clickable);
+                }
+
+                // Write separator for non-first entries
+                if !first {
+                    writer.write_all(b",\n")?;
+                } else {
+                    first = false;
+                }
+
+                // Stream pretty-printed JSON directly to writer
+                serde_json::to_writer_pretty(&mut writer, &json_value)?;
+            }
+            Err(_) => {
+                // Skip malformed JSON lines silently for robustness
+                continue;
+            }
+        }
+    }
+
+    // Write closing bracket and flush
+    writer.write_all(b"\n]")?;
+    writer.flush()?;
+
+    Ok(())
+}
+
+pub fn finalize_logs() -> Result<()> {
+    convert_jsonl_to_pretty_array_optimized("logs/app.jsonl", "logs/app.json")
 }
