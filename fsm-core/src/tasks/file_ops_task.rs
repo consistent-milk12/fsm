@@ -5,9 +5,9 @@
 //! Handles copy, move, and rename operations asynchronously to prevent UI
 //! blocking during large file operations.
 
-use crate::error::AppError;
+use crate::{config::Config, error::AppError, logging_opt::ProfilingData};
 use crate::{AppState, controller::event_loop::TaskResult};
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 use std::{
     fs::Metadata,
     io::{Error, ErrorKind},
@@ -91,6 +91,9 @@ impl FileOperationTask {
     pub async fn execute(&self) -> Result<(), AppError> {
         use FileOperation::{Copy, Move, Rename};
 
+        let start_time = Instant::now();
+        let start_memory_kb = ProfilingData::get_current_memory_kb();
+
         // Check for cancellation before starting
         if self.cancel_token.is_cancelled() {
             let err_kind: ErrorKind = ErrorKind::Interrupted;
@@ -161,6 +164,15 @@ impl FileOperationTask {
                 .await
             }
         };
+
+        // Calculate final profiling data using new API
+        let duration: Duration = start_time.elapsed();
+        let config: Config = Config::load().await.unwrap_or_default();
+        let _profiling_data: ProfilingData = ProfilingData::collect_profiling_data_conditional(
+            start_memory_kb,
+            duration,
+            &config.profiling
+        );
 
         // Send completion result regardless of success/failure
         let completion_result: TaskResult = TaskResult::FileOperationComplete {

@@ -1,8 +1,4 @@
-#![allow(clippy::missing_errors_doc)]
-#![allow(clippy::cargo_common_metadata)]
-#![allow(clippy::wildcard_dependencies)]
-#![allow(clippy::multiple_crate_versions)]
-//! src/main.rs
+//! ``src/main.rs``
 //! ============================================================================
 //! # File Manager TUI Application Entry Point
 //!
@@ -10,17 +6,23 @@
 //! Features include directory navigation, file operations, search functionality,
 //! and a command palette for power users.
 
+#![allow(clippy::missing_errors_doc)]
+#![allow(clippy::cargo_common_metadata)]
+#![allow(clippy::wildcard_dependencies)]
+#![allow(clippy::multiple_crate_versions)]
+
 use std::{
-    io::{self, Stdout},
+    io::{self, Stdout}, 
     panic::PanicHookInfo,
     path::PathBuf,
+    result::Result as StdResult,
     sync::Arc,
-    time::{Duration, Instant},
+    time::{Duration, Instant}
 };
 
-use fsm_core::logging_opt;
+use fsm_core::logging_opt::{ProfilingData};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Error, Result};
 use crossterm::{
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
@@ -28,7 +30,7 @@ use crossterm::{
 use ratatui::{Frame, Terminal, backend::CrosstermBackend as Backend};
 use tokio::{
     signal,
-    sync::{Mutex, MutexGuard, Notify, mpsc},
+    sync::{mpsc, Mutex, MutexGuard, Notify}, task::JoinHandle,
 };
 
 use fsm_core::{
@@ -89,21 +91,35 @@ impl App {
         let terminal: AppTerminal = setup_terminal().context("Failed to initialize terminal")?;
 
         // Concurrently load configuration and determine the current directory to improve startup time.
-        let config_handle = tokio::spawn(Config::load());
+        let config_handle: JoinHandle<StdResult<Config, Error>> = tokio::spawn(Config::load());
         let dir_handle = tokio::spawn(tokio::fs::canonicalize("."));
 
-        let config: Arc<Config> = Arc::new(config_handle.await?.unwrap_or_else(|e| {
-            Tracer::info!("Failed to load config, using defaults: {}", e);
-            Config::default()
-        }));
+        let config: Arc<Config> = Arc::new(
+            config_handle
+                .await?
+                .unwrap_or_else(
+                    |e| -> Config 
+                    {
+                        Tracer::info!("Failed to load config, using defaults: {e}");
+                        Config::default()
+                    }
+                )
+            );
 
         let cache: Arc<ObjectInfoCache> =
             Arc::new(ObjectInfoCache::with_config(config.cache.clone()));
         let fs_state: FSState = FSState::default();
         let ui_state: UIState = UIState::default();
 
-        let (task_tx, task_rx) = mpsc::unbounded_channel::<TaskResult>();
-        let (action_tx, action_rx) = mpsc::unbounded_channel::<Action>();
+        let (
+            task_tx,
+            task_rx
+        ) = mpsc::unbounded_channel::<TaskResult>();
+ 
+        let (
+            action_tx, 
+            action_rx
+        ) = mpsc::unbounded_channel::<Action>();
 
         let app_state: Arc<Mutex<AppState>> = Arc::new(Mutex::new(AppState::new(
             config,
@@ -221,9 +237,12 @@ impl App {
             );
 
             self.terminal
-                .draw(|frame: &mut Frame<'_>| {
-                    View::redraw(frame, &mut state);
-                })
+                .draw(
+                    |frame: &mut Frame<'_>| 
+                    {
+                        View::redraw(frame, &mut state);
+                    }
+                )
                 .context("Failed to draw terminal")?;
 
             state.ui.clear_redraw();
@@ -236,7 +255,10 @@ impl App {
             let duration_us: u64 = duration.as_micros() as u64;
 
             // Collect profiling data for render operations
-            let profiling_data = logging_opt::collect_profiling_data(None, duration);
+            let profiling_data: ProfilingData = ProfilingData::collect_profiling_data(
+                None, 
+                duration
+            );
             
             if duration.as_millis() > 16 {
                 tracing::warn!(

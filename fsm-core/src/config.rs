@@ -148,7 +148,7 @@ impl Default for Config {
             cache: CacheConfig::default(), // Use centralized cache config
             profiling: ProfilingConfig::default(), // Default profiling config (disabled)
             show_hidden: false,
-            editor_cmd: "nvim".to_string(),
+            editor_cmd: "code".to_string(),
         }
     }
 }

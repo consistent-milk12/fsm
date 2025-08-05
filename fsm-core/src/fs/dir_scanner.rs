@@ -8,7 +8,6 @@
 use crate::{config::ProfilingConfig, controller::actions::Action, logging_opt::ProfilingData, tasks::metadata_task::batch_load_metadata_task};
 use crate::error::AppError;
 use crate::fs::object_info::{LightObjectInfo, ObjectInfo};
-use crate::logging_opt::{collect_profiling_data_conditional, get_current_memory_kb};
 use std::{cmp::Ordering, ffi::OsStr, path::{Path, PathBuf}, time::Duration};
 use std::time::{Instant, SystemTime};
 use tokio::{fs::{self, DirEntry, ReadDir}, sync::mpsc::{UnboundedReceiver, UnboundedSender}};
@@ -28,7 +27,7 @@ pub async fn scan_dir(
     profiling_config: &ProfilingConfig,
 ) -> Result<Vec<ObjectInfo>, AppError> {
     let start_time = Instant::now();
-    let start_mem = get_current_memory_kb();
+    let start_mem = ProfilingData::get_current_memory_kb();
 
     let mut entries: Vec<ObjectInfo> = Vec::new();
     let mut read_dir: ReadDir = fs::read_dir(path).await?;
@@ -66,9 +65,11 @@ pub async fn scan_dir(
         }
     });
 
-    let duration = start_time.elapsed();
-    let profiling_data =
-        collect_profiling_data_conditional(profiling_config, start_mem, duration);
+    let duration: Duration = start_time.elapsed();
+    let profiling_data: ProfilingData = ProfilingData::collect_profiling_data_conditional(
+         start_mem, duration, profiling_config
+    );
+    
     if let Some(duration_ns) = profiling_data.operation_duration_ns {
         info!(
             marker = "PERF_DIRECTORY_SCAN",
@@ -171,7 +172,7 @@ impl DirectoryScanner {
 
     async fn scan(self) -> Result<Vec<ObjectInfo>, AppError> {
         let start_time: Instant = Instant::now();
-        let start_mem: Option<i64> = get_current_memory_kb();
+        let start_mem: Option<i64> = ProfilingData::get_current_memory_kb();
 
         let mut entries: Vec<ObjectInfo> = Vec::new();
         let mut light_entries: Vec<LightObjectInfo> = Vec::new();
@@ -190,10 +191,10 @@ impl DirectoryScanner {
         self.start_background_metadata_loading(light_entries);
 
         let duration: Duration = start_time.elapsed();
-        let profiling_data: ProfilingData = collect_profiling_data_conditional(
-            &self.profiling_config,
+        let profiling_data: ProfilingData = ProfilingData::collect_profiling_data_conditional(
             start_mem,
             duration,
+            &self.profiling_config
         );
 
         if let Some(duration_ns) = profiling_data.operation_duration_ns {

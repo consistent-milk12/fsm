@@ -1,6 +1,7 @@
 use std::{
-    collections::{HashMap, VecDeque}, hash::{DefaultHasher, Hash, Hasher}, path::{Path, PathBuf}, sync::{
-        atomic::{AtomicU64, Ordering}, Arc, LazyLock
+    collections::{HashMap, VecDeque}, path::{Path, PathBuf}, 
+    sync::{
+        atomic::{AtomicU64, Ordering}, Arc, LazyLock, MutexGuard as StdMutexGuard
     }, time::{Duration, Instant}
 };
 
@@ -9,6 +10,7 @@ use chrono::{DateTime, Utc};
 use compact_str::CompactString;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
+use sysinfo::{Pid, Process, ProcessesToUpdate, System};
 use std::io::Write;
 use std::str::FromStr;
 use tokio::{
@@ -16,6 +18,9 @@ use tokio::{
     sync::{Mutex, MutexGuard, RwLock, RwLockWriteGuard, mpsc, oneshot},
     time,
 };
+
+use std::sync::Mutex as StdMutex;
+
 use tracing::{field::Visit, span::{Id as TraceId, Record}, Event, Level, Metadata, Subscriber};
 use tracing_appender::{
     non_blocking::WorkerGuard,
@@ -30,40 +35,55 @@ use tracing_subscriber::{
     util::SubscriberInitExt,
 };
 
+use crate::config::ProfilingConfig;
+
+static SYSTEM_INFO: LazyLock<StdMutex<System>> = LazyLock::new(
+    || -> StdMutex<System>
+    {
+        StdMutex::new(System::new())
+    }
+);
+
 const LEVEL_INFO: &str = "INFO";
 const LEVEL_DEBUG: &str = "DEBUG";
 const LEVEL_WARN: &str = "WARN";
 const LEVEL_ERROR: &str = "ERROR";
 const LEVEL_TRACE: &str = "TRACE";
 
-static COMMON_MARKERS: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(|| {
-    [
-        ("ENTER_START", "ENTER_START"),
-        ("ENTER_COMPLETE", "ENTER_COMPLETE"),
-        ("STATE_BEFORE", "STATE_BEFORE"),
-        ("STATE_AFTER", "STATE_AFTER"),
-        ("PERF_DIRECTORY_SCAN", "PERF_DIRECTORY_SCAN"),
-        ("UI_RENDER_START", "UI_RENDER_START"),
-        ("UI_RENDER_COMPLETE", "UI_RENDER_COMPLETE"),
-        ("unknown", "unknown"),
-    ]
-    .iter()
-    .copied()
-    .collect()
-});
+static COMMON_MARKERS: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(
+    || -> HashMap<&'static str, &'static str> 
+    {
+        [
+            ("ENTER_START", "ENTER_START"),
+            ("ENTER_COMPLETE", "ENTER_COMPLETE"),
+            ("STATE_BEFORE", "STATE_BEFORE"),
+            ("STATE_AFTER", "STATE_AFTER"),
+            ("PERF_DIRECTORY_SCAN", "PERF_DIRECTORY_SCAN"),
+            ("UI_RENDER_START", "UI_RENDER_START"),
+            ("UI_RENDER_COMPLETE", "UI_RENDER_COMPLETE"),
+            ("unknown", "unknown"),
+        ]
+        .iter()
+        .copied()
+        .collect()
+    }
+);
 
-static COMMON_OPERATIONS: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(|| {
-    [
-        ("directory_entry", "directory_entry"),
-        ("navigate", "navigate"),
-        ("render", "render"),
-        ("file_operation", "file_operation"),
-        ("unknown", "unknown"),
-    ]
-    .iter()
-    .copied()
-    .collect()
-});
+static COMMON_OPERATIONS: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(
+    || -> HashMap<&'static str, &'static str> 
+    {
+        [
+            ("directory_entry", "directory_entry"),
+            ("navigate", "navigate"),
+            ("render", "render"),
+            ("file_operation", "file_operation"),
+            ("unknown", "unknown"),
+        ]
+        .iter()
+        .copied()
+        .collect()
+    }
+);
 
 const TRACE_MARKER: CompactString = CompactString::const_new("marker");
 const TRACE_MARKER_UNKNOWN_COMPACT: CompactString = CompactString::const_new("UNKNOWN_MARKER");
@@ -1375,25 +1395,33 @@ pub async fn init_logging_with_config(config: LoggerConfig) -> Result<WorkerGuar
 // Integration with existing application state
 impl LogEntry {
     #[must_use]
-    pub fn with_app_state(mut self, state: AppStateInfo) -> Self {
+    pub fn with_app_state(mut self, state: AppStateInfo) -> Self 
+    {
         self.app_state = Some(state);
         self
     }
 
     #[must_use]
-    pub fn with_ui_state(mut self, state: UIStateInfo) -> Self {
+    pub fn with_ui_state(mut self, state: UIStateInfo) -> Self 
+    {
         self.ui_state = Some(state);
         self
     }
 
     #[must_use]
-    pub fn with_fs_state(mut self, state: FileSystemStateInfo) -> Self {
+    pub fn with_fs_state(mut self, state: FileSystemStateInfo) -> Self 
+    {
         self.fs_state = Some(state);
         self
     }
 
     #[must_use]
-    pub const fn with_profiling_data(mut self, cpu_percent: Option<f32>, memory_delta: Option<i64>, duration_ns: Option<u64>) -> Self {
+    pub const fn with_profiling_data(
+        mut self, 
+        cpu_percent: Option<f32>,
+        memory_delta: Option<i64>,
+        duration_ns: Option<u64>) -> Self 
+    {
         self.cpu_usage_percent = cpu_percent;
         self.memory_delta_kb = memory_delta;
         self.operation_duration_ns = duration_ns;
@@ -1427,91 +1455,107 @@ impl ProfilingData {
             operation_duration_ns: Some(duration.as_nanos() as u64),
         }
     }
-}
 
-/// Lightweight performance monitoring helper
-/// Collects CPU and memory metrics without blocking
-#[must_use]
-#[expect(clippy::cast_possible_truncation, reason = "Expected accuracy loss")] 
-pub const fn collect_profiling_data(start_memory_kb: Option<i64>, duration: Duration) -> ProfilingData {
-    // Get current memory usage (simplified - in production would use more sophisticated metrics)
-    let current_memory_kb = get_current_memory_kb();
-    
-    let memory_delta = if let (Some(current), Some(start)) = (current_memory_kb, start_memory_kb) {
-        Some(current - start)
-    } else {
-        None
-    };
-
-    ProfilingData {
-        cpu_usage_percent: None, // CPU tracking requires more complex implementation
-        memory_delta_kb: memory_delta,
-        operation_duration_ns: Some(duration.as_nanos() as u64),
-    }
-}
-
-/// Conditional profiling data collection based on configuration
-/// Only collects data if profiling is enabled and meets sampling/duration criteria
-#[must_use]
-#[expect(
-    clippy::cast_possible_truncation, 
-    clippy::cast_sign_loss, 
-    clippy::cast_precision_loss,
-    reason = "Expected accuracy loss"
-)] 
-pub fn collect_profiling_data_conditional(
-    config: &crate::config::ProfilingConfig,
-    start_memory_kb: Option<i64>, 
-    duration: Duration
-) -> ProfilingData {
-    // Check if profiling is enabled
-    if !config.enabled {
-        return ProfilingData::empty();
-    }
-    
-    // Check minimum duration threshold
-    if duration.as_millis() < u128::from(config.min_duration_ms) {
-        return ProfilingData::empty();
-    }
-    
-    // Apply sampling rate
-       
-    let mut hasher = DefaultHasher::new();
-    std::thread::current().id().hash(&mut hasher);
-    let thread_hash = hasher.finish();
-    let sample_threshold = (config.sample_rate * u64::MAX as f32) as u64;
-    
-    if thread_hash > sample_threshold {
-        return ProfilingData::empty();
-    }
-    
-    // Collect profiling data based on enabled features
-    let memory_delta = if config.memory_tracking && start_memory_kb.is_some() {
-        let current_memory_kb = get_current_memory_kb();
-        if let (Some(current), Some(start)) = (current_memory_kb, start_memory_kb) {
+    /// Lightweight performance monitoring helper with real sysinfo metrics
+    #[must_use]
+    #[expect(clippy::cast_possible_truncation, reason = "Expected accuracy loss")]
+    pub fn collect_profiling_data(
+        start_memory_kb: Option<i64>,
+        duration: Duration,
+    ) -> Self {
+        let current_memory_kb: Option<i64> = Self::get_current_memory_kb();
+        let memory_delta_kb: Option<i64> = if let (Some(current), Some(start)) =
+            (current_memory_kb, start_memory_kb)
+        {
             Some(current - start)
         } else {
             None
-        }
-    } else {
-        None
-    };
-    
-    ProfilingData {
-        cpu_usage_percent: None, // CPU tracking not yet implemented
-        memory_delta_kb: memory_delta,
-        operation_duration_ns: Some(duration.as_nanos() as u64),
-    }
-}
+        };
 
-/// Get current memory usage in KB (simplified implementation)
-/// In production, this would use platform-specific APIs for accuracy
-#[must_use] 
-pub const fn get_current_memory_kb() -> Option<i64> {
-    // Simplified memory tracking - returns None for now
-    // Real implementation would use:
-    // - Linux: /proc/self/status VmRSS
-    // - macOS: task_info with TASK_BASIC_INFO
-    // - Windows: GetProcessMemoryInfo
-    None
+        Self {
+            cpu_usage_percent: Self::get_cpu_usage_percent(),
+            memory_delta_kb,
+            operation_duration_ns: Some(duration.as_nanos() as u64),
+        }
+    }
+
+
+    /// Conditionally collect performance data (memory & optional CPU)
+    #[must_use]
+    #[expect(clippy::cast_possible_truncation, reason = "Expected accuracy loss")]
+    pub fn collect_profiling_data_conditional(
+        start_memory_kb: Option<i64>,
+        duration: Duration,
+        config: &ProfilingConfig, // assuming a config parameter
+    ) -> Self {
+        // Refresh and retrieve the current memory usage
+        let current_memory_kb: Option<i64> = Self::get_current_memory_kb();
+        let memory_delta_kb: Option<i64> = if let (
+            Some(current), 
+            Some(start)
+        ) = (current_memory_kb, start_memory_kb)
+        {
+            Some(current - start)
+        } else {
+            None
+        };
+
+        // Collect CPU usage if memory_tracking is enabled
+        let cpu_usage_percent: Option<f32> = if config.memory_tracking {
+            Self::get_cpu_usage_percent()
+        } else {
+            None
+        };
+
+        Self {
+            cpu_usage_percent,
+            memory_delta_kb,
+            operation_duration_ns: Some(duration.as_nanos() as u64),
+        }
+    }
+
+
+    /// Get current memory usage in KB using sysinfo for cross-platform accuracy
+    #[must_use]
+    #[expect(clippy::cast_possible_wrap, reason = "Expected accuracy loss")]
+    pub fn get_current_memory_kb() -> Option<i64> {
+        // 1) Obtain the current PID
+        let current_pid: Pid = sysinfo::get_current_pid().ok()?;
+        
+        // 2) Lock the shared System instance
+        let mut system: StdMutexGuard<'_, System> = SYSTEM_INFO.lock().ok()?;
+        
+        // 3) Refresh only this process’s info
+        system.refresh_processes(
+            ProcessesToUpdate::Some(&[current_pid]),
+            true
+        );
+        
+        // 4) Convert bytes (u64) → KB (i64)
+        system
+            .process(current_pid)
+            .map(|process: &Process| -> i64 {(process.memory() / 1024) as i64})
+    }
+
+    /// Get current CPU usage percentage for the process using sysinfo
+    #[must_use]
+    pub fn get_cpu_usage_percent() -> Option<f32> {
+        // 1) Obtain the current PID
+        let current_pid: Pid = sysinfo::get_current_pid().ok()?;
+        
+        // 2) Lock the shared System instance
+        let mut system: StdMutexGuard<'_, System> = SYSTEM_INFO.lock().ok()?;
+
+        // 3) Refresh only this process’s info (necessary for cpu_usage deltas)        
+        system.refresh_processes(
+            ProcessesToUpdate::Some(&[current_pid]),
+            true
+        );
+        
+        // 4) Return the CPU usage percentage
+        system
+            .process(current_pid)
+            .map(|process: &Process| -> f32 {process.cpu_usage()})
+    }
+
 }

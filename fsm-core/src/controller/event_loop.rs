@@ -11,7 +11,7 @@
 //! - Performance monitoring and resource management
 //! - Extensive logging and debugging support
 
-use crate::controller::actions::{Action, InputPromptType};
+use crate::{controller::actions::{Action, InputPromptType}, logging_opt::ProfilingData};
 use crate::fs::dir_scanner::ScanUpdate;
 use crate::fs::object_info::ObjectInfo;
 use crate::model::app_state::AppState;
@@ -156,7 +156,10 @@ impl EventLoop {
         // Log performance warnings with profiling data
         if time_ms > 16.0 {
             // 60fps threshold - collect profiling data for slow events
-            let profiling_data = crate::logging_opt::collect_profiling_data(None, processing_time);
+            let profiling_data = ProfilingData::collect_profiling_data(
+                None, 
+                processing_time
+            );
             
             info!(
                 marker = "PERF_SLOW_EVENT",
