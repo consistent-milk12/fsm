@@ -20,7 +20,7 @@ use tokio::{
 use crate::{
     config::Config,
     controller::{actions::Action, event_loop::TaskResult},
-    logging_opt::{ProfilingData}
+    logging::{ProfilingData}
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]

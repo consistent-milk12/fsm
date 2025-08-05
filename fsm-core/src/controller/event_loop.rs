@@ -11,7 +11,7 @@
 //! - Performance monitoring and resource management
 //! - Extensive logging and debugging support
 
-use crate::{controller::actions::{Action, InputPromptType}, logging_opt::ProfilingData};
+use crate::{controller::actions::{Action, InputPromptType}, logging::ProfilingData};
 use crate::fs::dir_scanner::ScanUpdate;
 use crate::fs::object_info::ObjectInfo;
 use crate::model::app_state::AppState;

@@ -7,7 +7,7 @@ pub mod error;
 
 pub mod config;
 
-pub mod logging_opt;
+pub mod logging;
 
 pub mod printer;
 
@@ -117,7 +117,6 @@ pub mod tasks {
     pub mod file_ops_task;
 }
 
-pub mod logging;
 pub mod plugins;
 
 pub mod util;

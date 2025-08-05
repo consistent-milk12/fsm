@@ -5,7 +5,7 @@
 //! Handles copy, move, and rename operations asynchronously to prevent UI
 //! blocking during large file operations.
 
-use crate::{config::Config, error::AppError, logging_opt::ProfilingData};
+use crate::{config::Config, error::AppError, logging::ProfilingData};
 use crate::{AppState, controller::event_loop::TaskResult};
 use std::{sync::Arc, time::Duration};
 use std::{

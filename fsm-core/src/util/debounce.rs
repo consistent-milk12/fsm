@@ -3,16 +3,16 @@
 //!  High-performance Debounce / Throttle / Batch utilities
 //!
 //!  • 100 % async-safe: no busy-waits, no un-awaited tasks.
-//!  • Per-key state lives in a small slab to avoid repeated HashMap
+//!  • Per-key state lives in a small slab to avoid repeated `HashMap`
 //!    allocations under heavy keystroke storms.
 //!  • Uses `tokio::time::Sleep` handles – cancelled sleeps are
 //!    automatically dropped, so we never leak green threads.
-//!  • Public API unchanged: DebounceConfig, Debouncer, Throttler,
-//!    EventBatcher.
+//!  • Public API unchanged: `DebounceConfig`, Debouncer, Throttler,
+//!    `EventBatcher`.
 //!
 //!  -------------------------------------------------------------------
 //!  NOTE: delivered in two parts for readability.  Part 2 contains the
-//!  Throttler & EventBatcher rewrites plus unit tests.
+//!  Throttler & `EventBatcher` rewrites plus unit tests.
 //!  -------------------------------------------------------------------
 
 use std::{
@@ -22,7 +22,7 @@ use std::{
 };
 use slab::Slab;
 use tokio::{
-    sync::{mpsc, Mutex},
+    sync::{mpsc, Mutex, MutexGuard},
     task::JoinHandle,
     time::{sleep_until, Instant as TokioInstant},
 };
@@ -54,7 +54,7 @@ impl DebounceConfig {
     #[must_use]
     pub const fn search_input() -> Self {
         // must avoid calling Default::default() in const fn
-        DebounceConfig {
+        Self {
             delay:      Duration::from_millis(300),
             max_delay:  Some(Duration::from_millis(1000)),
             leading:    false,
@@ -65,7 +65,7 @@ impl DebounceConfig {
     /// Quick config for UI redraw throttling
     #[must_use]
     pub const fn redraw_throttle() -> Self {
-        DebounceConfig {
+        Self {
             delay:      Duration::from_millis(16),
             max_delay:  Some(Duration::from_millis(100)),
             leading:    true,
@@ -76,7 +76,7 @@ impl DebounceConfig {
     /// Quick config for file system watching
     #[must_use]
     pub const fn fs_watch() -> Self {
-        DebounceConfig {
+        Self {
             delay:      Duration::from_millis(500),
             max_delay:  Some(Duration::from_millis(2000)),
             leading:    false,
@@ -123,30 +123,34 @@ impl<T: Clone + Send + 'static> Debouncer<T> {
         trace!("Debouncer received event for key: {}", key);
 
         // 1) Find or allocate a slab slot index
-        let idx = {
-            let mut km = self.key_map.lock().await;
+        let idx: usize = {
+            let mut km: MutexGuard<'_, HashMap<String, usize>> = self.key_map.lock().await;
+            
             if let Some(&i) = km.get(&key) {
                 i
             } else {
-                let mut slab = self.slab.lock().await;
-                let i = slab.insert(Slot {
-                    last_leading: Instant::now(),
-                    last_event:   None,
-                    sleeper:      None,
-                });
+                let i: usize = self.slab.lock().await.insert(Slot 
+                    {
+                        last_leading: Instant::now(),
+                        last_event:   None,
+                        sleeper:      None,
+                    }
+                );
+              
                 km.insert(key.clone(), i);
+              
                 i
             }
         };
 
         // 2) Access the slot mutably
-        let mut slab_guard = self.slab.lock().await;
-        let slot = &mut slab_guard[idx];
+        let slot: &mut Slot<T> = &mut self.slab.lock().await[idx];
 
         // Leading-edge: fire immediately on first event if configured
         if self.cfg.leading && slot.last_event.is_none() {
             debug!("Triggering leading edge for key: {}", key);
             let _ = self.tx.send((key.clone(), ev.clone()));
+            
             slot.last_leading = Instant::now();
         }
 
@@ -233,7 +237,7 @@ impl Throttler {
     }
 
     /// Reset the internal timer to allow the next call immediately.
-    pub fn reset(&mut self) { self.last = None; }
+    pub const fn reset(&mut self) { self.last = None; }
 }
 
 /* ========================== EventBatcher ============================ */

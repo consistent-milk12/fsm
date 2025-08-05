@@ -363,11 +363,12 @@ impl FilenameSearchTask {
                             // Child has exited, break the loop
                             break;
                         }
+                        
                         Ok(None) => {
                             // Child still running, continue but log warning
                             warn!("Line read timeout but child still running");
-                            continue;
                         }
+
                         Err(e) => {
                             warn!("Failed to check child status: {}", e);
                             break;

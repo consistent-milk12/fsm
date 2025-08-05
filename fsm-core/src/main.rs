@@ -20,7 +20,7 @@ use std::{
     time::{Duration, Instant}
 };
 
-use fsm_core::logging_opt::{ProfilingData};
+use fsm_core::logging::{ProfilingData};
 
 use anyhow::{Context, Error, Result};
 use crossterm::{
@@ -40,7 +40,7 @@ use fsm_core::{
         actions::Action,
         event_loop::{EventLoop, TaskResult},
     },
-    logging_opt::{init_default_logging, shutdown_logging},
+    logging::{init_default_logging, shutdown_logging},
     model::{
         app_state::AppState,
         fs_state::FSState,

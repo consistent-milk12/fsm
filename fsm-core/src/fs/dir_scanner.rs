@@ -5,7 +5,7 @@
 //! Provides an asynchronous function to scan a directory and return a sorted
 //! list of `ObjectInfo` entries. Designed for non-blocking UI updates.
 
-use crate::{config::ProfilingConfig, controller::actions::Action, logging_opt::ProfilingData, tasks::metadata_task::batch_load_metadata_task};
+use crate::{config::ProfilingConfig, controller::actions::Action, logging::ProfilingData, tasks::metadata_task::batch_load_metadata_task};
 use crate::error::AppError;
 use crate::fs::object_info::{LightObjectInfo, ObjectInfo};
 use std::{cmp::Ordering, ffi::OsStr, path::{Path, PathBuf}, time::Duration};

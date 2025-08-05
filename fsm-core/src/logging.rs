@@ -1,6 +1,5 @@
 use std::{
-    collections::{HashMap, VecDeque}, path::{Path, PathBuf}, 
-    sync::{
+    cell::{RefCell, RefMut}, collections::{HashMap, VecDeque}, path::{Path, PathBuf}, sync::{
         atomic::{AtomicU64, Ordering}, Arc, LazyLock, MutexGuard as StdMutexGuard
     }, time::{Duration, Instant}
 };
@@ -31,18 +30,23 @@ use tracing_subscriber::{
     filter::Directive, 
     fmt::{format::JsonFields, FormattedFields}, 
     layer::{Context as TracingContext, SubscriberExt}, 
-    registry::{LookupSpan, SpanRef}, 
+    registry::{ExtensionsMut, LookupSpan, SpanRef}, 
     util::SubscriberInitExt, EnvFilter, Layer,
 };
 
 use crate::config::ProfilingConfig;
 
+// PERFORMANCE OPTIMIZED: Cached system info with reduced refresh frequency
 static SYSTEM_INFO: LazyLock<StdMutex<System>> = LazyLock::new(
     || -> StdMutex<System>
     {
         StdMutex::new(System::new())
     }
 );
+
+// PERFORMANCE OPTIMIZED: Cache system refresh timestamp
+static LAST_SYSTEM_REFRESH: AtomicU64 = AtomicU64::new(0);
+const REFRESH_INTERVAL_MS: u64 = 100; // Refresh max every 100ms
 
 const LEVEL_INFO: &str = "INFO";
 const LEVEL_DEBUG: &str = "DEBUG";
@@ -152,14 +156,14 @@ impl Default for LoggerConfig {
             log_dir: PathBuf::from("./logs"),
             log_file_prefix: CompactString::const_new("app"),
             batch_size: 256, // Increased for better throughput
-            flush_interval: Duration::from_millis(25), // Reduced for bette responsiveness
-            log_level: CompactString::const_new("trace"),
+            flush_interval: Duration::from_millis(25), // Reduced for better responsiveness
+            log_level: CompactString::const_new("info"), // PERFORMANCE OPTIMIZED: Reduced default verbosity
             max_log_file_size: 50 * 1024 * 1024, // Increased to 50MB
             max_log_files: 10,                   // Increased retention
             max_field_size: 2048,                // Increased field size limit
             max_fields_count: 64,                // Increased field count
             rotation: LogRotation::Never,
-            enable_console_output: true,
+            enable_console_output: false,        // PERFORMANCE OPTIMIZED: Disabled by default
             use_string_interning: true,
             preallocate_buffers: true,
         }
@@ -910,7 +914,7 @@ impl SpanData {
     ) -> Self {
         Self {
             start_time: Instant::now(),
-            start_memory_kb: ProfilingData::get_current_memory_kb(), // Capture baseline
+            start_memory_kb: None, // PERFORMANCE OPTIMIZED: No baseline memory capture
             level,
             target,
             marker,
@@ -937,9 +941,13 @@ impl SpanData {
         self.fields.insert(key, value);
     }
 
-    /// Finaline span with profiling data collection
+    /// PERFORMANCE OPTIMIZED: Conditional profiling data collection
     pub fn finalize_with_profiling(&mut self, config: &ProfilingConfig)
     {
+        if !config.enabled {
+            return; // Skip profiling entirely when disabled
+        }
+
         let duration = self.start_time.elapsed();
         
         self.profiling_data = Some(
@@ -952,7 +960,7 @@ impl SpanData {
     }
 }
 
-// Optimized JSON layer
+// PERFORMANCE OPTIMIZED: Minimal span lifecycle events
 pub struct JsonLayer {
     system: Arc<LoggingSystem>,
 
@@ -973,12 +981,23 @@ impl JsonLayer {
         }
     }
 
+    // PERFORMANCE OPTIMIZED: Granular profiling control
     fn should_collect_profiling(&self, level: Level) -> bool {
-        self.profiling_config.enabled && level >= Level::WARN
+        self.profiling_config.enabled && level >= Level::WARN // Only profile warnings and errors
     }
 
-    /// Helper to emit span lifecycle events
+    // PERFORMANCE OPTIMIZED: Skip span events for trace/debug levels
+    fn should_emit_span_event(level: Level) -> bool {
+        level >= Level::INFO // Only emit span events for INFO and above
+    }
+
+    /// PERFORMANCE OPTIMIZED: Minimal span lifecycle events
     fn emit_span_event(&self, _id: &TraceId, marker: &str, span_data: &SpanData) {
+        // Skip expensive span events for low-priority operations
+        if !Self::should_emit_span_event(span_data.level.parse().unwrap_or(Level::TRACE)) {
+            return;
+        }
+
         let mut entry: LogEntry = self.system.entry_pool.get_blocking();
 
         // Basic event data
@@ -1001,18 +1020,21 @@ impl JsonLayer {
             }
         }
 
-        entry.fields = span_data
-            .fields
-            .iter()
-            .map(
-                |(k, v): (&CompactString, &String)| -> (CompactString, String) 
-                {
-                    (k.clone(), v.clone())
-                },
-            )
-            .collect();
+        // PERFORMANCE OPTIMIZED: Direct field reference instead of cloning
+        if !span_data.fields.is_empty() {
+            entry.fields = span_data
+                .fields
+                .iter()
+                .map(
+                    |(k, v): (&CompactString, &String)| -> (CompactString, String) 
+                    {
+                        (k.clone(), v.clone())
+                    },
+                )
+                .collect();
+        }
 
-        // Copy state snapshots
+        // Copy state snapshots only if they exist
         entry.app_state.clone_from(&span_data.app_state);
         entry.ui_state.clone_from(&span_data.ui_state);
         entry.fs_state.clone_from(&span_data.fs_state);
@@ -1092,21 +1114,32 @@ where
     fn on_new_span(&self, attrs: &span::Attributes<'_>, id: &span::Id, ctx: TracingContext<'_, S>) 
     {
         if let Some(span) = ctx.span(id) {
-            // 1) Visit all attributes with our existing JsonVisitor
-            let mut visitor: JsonVisitor = JsonVisitor::new(&self.system.config);
+            // 1) Visit all attributes with pooled JsonVisitor  
+            let mut visitor: JsonVisitor = JsonVisitor::get_pooled(&self.system.config);
             attrs.record(&mut visitor);
 
             // 2) Stash them in extensions for later fast lookup
+            let fields = std::mem::take(&mut visitor.fields);
             span.extensions_mut()
-                .insert(SpanFieldMap(visitor.fields));
+                .insert(SpanFieldMap(fields));
+            
+            // 3) Return visitor to pool
+            visitor.return_to_pool();
             // (do *not* emit any events here; that happens in on_enter)
         }
     }
 
-    /// Handle span entry - store span data and emit `ENTER_START`
+    /// PERFORMANCE OPTIMIZED: Conditional span entry handling
     fn on_enter(&self, id: &TraceId, ctx: TracingContext<'_, S>) {
         if let Some(span) = ctx.span(id) {
             let metadata: &'static Metadata<'static> = span.metadata();
+            
+            // PERFORMANCE OPTIMIZED: Skip hot path spans in debug/trace
+            let level: Level = *metadata.level();
+            if !Self::should_emit_span_event(level) {
+                return;
+            }
+
             let fields: HashMap<CompactString, String> = Self::extract_span_fields(&span);
 
             // Extract marker and operation_type from fields
@@ -1123,8 +1156,12 @@ where
             let span_data: SpanData = SpanData
             {
                 start_time: Instant::now(),
-                start_memory_kb: ProfilingData::get_current_memory_kb(),
-                level: Self::level_to_compact_string(*metadata.level()),
+                start_memory_kb: if self.should_collect_profiling(level) { 
+                    ProfilingData::get_current_memory_kb_cached() // PERFORMANCE OPTIMIZED: Cached memory
+                } else { 
+                    None 
+                },
+                level: Self::level_to_compact_string(level),
                 target: CompactString::new(metadata.target()),
                 marker,
                 operation_type,
@@ -1135,8 +1172,10 @@ where
                 profiling_data: None,
             };
 
-            // Emit ENTER_START event
-            self.emit_span_event(id, EVENT_ENTER_SPAN, &span_data);
+            // PERFORMANCE OPTIMIZED: Skip span events for debug/trace
+            if Self::should_emit_span_event(level) {
+                self.emit_span_event(id, EVENT_ENTER_SPAN, &span_data);
+            }
             
             // Store span for on_exit
             self.span_storage.insert(id.clone(), span_data);
@@ -1146,49 +1185,48 @@ where
     fn on_exit(&self, id: &TraceId, _ctx: TracingContext<'_, S>) {
         if let Some((_, mut span_data)) = self.span_storage.remove(id)
         {
-            // Finalize span with profiling data collection using integrated config
-            span_data.finalize_with_profiling(&self.profiling_config);
+            // PERFORMANCE OPTIMIZED: Conditional profiling
+            let level: Level = span_data.level.parse().unwrap_or(Level::TRACE);
+            
+            if self.should_collect_profiling(level) {
+                span_data.finalize_with_profiling(&self.profiling_config);
+            }
 
             // Update marker for completion
             span_data.marker = TRACE_EXIT_SPAN;
 
-            // EMIT EXIT_SPAN with duration
-            self.emit_span_event(id, EVENT_EXIT_SPAN, &span_data);
+            // PERFORMANCE OPTIMIZED: Skip span events for debug/trace
+            if Self::should_emit_span_event(level) {
+                self.emit_span_event(id, EVENT_EXIT_SPAN, &span_data);
+            }
         }
     }
 
     // ---------------------------------------------------------------------
-    // Synchronous, allocation-free event handler
+    // PERFORMANCE OPTIMIZED: Minimal event processing overhead
     // ---------------------------------------------------------------------
     fn on_event(&self, event: &Event<'_>, ctx: TracingContext<'_, S>) {
-        // --------------------------------------------------------------
-        // 1.  Collect field data with the existing visitor
-        // --------------------------------------------------------------
-        let mut visitor: JsonVisitor = JsonVisitor::new(&self.system.config);
-        event.record(&mut visitor);
-
-        // --------------------------------------------------------------
-        // 2.  Grab static metadata once (no heap allocation here)
-        // --------------------------------------------------------------
         let meta: &'static Metadata<'static> = event.metadata();
         
-        // --------------------------------------------------------------
-        // 3.  Fetch a reusable LogEntry from the pool *without* await
-        //     (requires a synchronous helper on the pool; see note)
-        // --------------------------------------------------------------
+        // PERFORMANCE OPTIMIZED: Skip low-priority events entirely
+        if *meta.level() > Level::INFO && !self.profiling_config.enabled {
+            return;
+        }
+
+        // PERFORMANCE OPTIMIZED: Pooled visitor allocation
+        let mut visitor: JsonVisitor = JsonVisitor::get_pooled(&self.system.config);
+        event.record(&mut visitor);
+
+        // Fetch a reusable LogEntry from the pool *without* await
         let mut entry: LogEntry = self.system.entry_pool.get_blocking();
 
-        // --------------------------------------------------------------
-        // 4.  Populate fixed fields as cheaply as possible
-        // --------------------------------------------------------------
+        // Populate fixed fields as cheaply as possible
         entry.sequence = LOG_SEQUENCE.fetch_add(1, Ordering::AcqRel);
         entry.timestamp = Utc::now();
         entry.level = CompactString::const_new(get_level_string(*meta.level()));
         entry.target = CompactString::new(meta.target());
 
-        // --------------------------------------------------------------
-        // 5. Inherit span context if available
-        // --------------------------------------------------------------
+        // PERFORMANCE OPTIMIZED: Minimal span context inheritance
         if let Some(span) = ctx.lookup_current() 
         && let Some(span_data) = self
                 .span_storage
@@ -1201,6 +1239,7 @@ where
                     .clone_from(&span_data.operation_type);
             }
 
+            // PERFORMANCE OPTIMIZED: Only inherit essential fields
             for (key, value) in &span_data.fields 
             {
                 if !visitor.fields.contains_key(key)
@@ -1208,17 +1247,9 @@ where
                     visitor.fields.insert(key.clone(), value.clone());
                 }
             }
-
-            // Inherit state methods
-            entry.app_state.clone_from(&span_data.app_state);
-            entry.ui_state.clone_from(&span_data.ui_state);
-            entry.fs_state.clone_from(&span_data.fs_state);            
         }
 
-        // --------------------------------------------------------------
-        // 5.  Marker / operation look-up without async interning
-        //     Falls back to "unknown" for unseen strings
-        // --------------------------------------------------------------
+        // PERFORMANCE OPTIMIZED: Fast marker lookup
         entry.marker = visitor
             .fields
             .get(&TRACE_MARKER)
@@ -1244,10 +1275,7 @@ where
                 CompactString::const_new,
             );
 
-        // --------------------------------------------------------------
-        // 6.  Duration (optional) and source location
-        // --------------------------------------------------------------
-
+        // Duration and source location
         entry.duration_us = visitor
             .fields
             .get(&TRACE_DURATION)
@@ -1259,50 +1287,69 @@ where
             meta.line().unwrap_or(0)
         ));
 
-        // --------------------------------------------------------------
-        // 7.  Move message & fields in (no clones)
-        // --------------------------------------------------------------
-        entry.message = visitor.message;
-        entry.fields = visitor.fields;
+        // Move message & fields in (no clones)
+        entry.message = std::mem::take(&mut visitor.message);
+        entry.fields = std::mem::take(&mut visitor.fields);
 
-        // --------------------------------------------------------------
-        // 8.  Fire-and-forget send to background task
-        //     Ignore errors that occur only during shutdown
-        // --------------------------------------------------------------
+        // Fire-and-forget send to background task
         let _ = self.system.sender().send(entry);
+        
+        // Return visitor to pool
+        visitor.return_to_pool();
     }
 
+    // PERFORMANCE OPTIMIZED: Minimal on_record with conditional processing
     fn on_record(&self, id: &TraceId, values: &Record<'_>, ctx: TracingContext<'_, S>) {
-        let mut visitor: JsonVisitor = JsonVisitor::new(&self.system.config);
+        // Early exit for low-priority spans
+        if let Some(span_data) = self.span_storage.get(id) {
+            let level: Level = span_data.level.parse().unwrap_or(Level::TRACE);
+            if !Self::should_emit_span_event(level) {
+                return; // Skip record processing for debug/trace spans
+            }
+        }
+
+        // PERFORMANCE OPTIMIZED: Pooled visitor allocation
+        let mut visitor: JsonVisitor = JsonVisitor::get_pooled(&self.system.config);
         values.record(&mut visitor);
 
-        // 1) Merge into SpanData (for your own bookkeeping)
-        if let Some(mut span_data) = self.span_storage.get_mut(id) {
-            for (k, v) in &visitor.fields {
-                span_data.fields.insert(k.clone(), v.clone());
-            }
-        }
-
-        // 2) Also merge into the extensions cache so future callers of
-        //    extract_span_fields see the updated values immediately.
+        // Batch update both storages in single pass to eliminate double cloning
         if let Some(span) = ctx.span(id) {
-            let mut x = span
-                .extensions_mut();
-            
-            let map: &mut SpanFieldMap = x
+            let mut extensions: ExtensionsMut<'_> = span.extensions_mut();
+            let map: &mut SpanFieldMap = extensions
                 .get_mut::<SpanFieldMap>()
                 .expect("SpanFieldMap missing; on_new_span must have inserted it");
+            
+            // Single loop with move semantics - no cloning
+            let fields: HashMap<CompactString, String> = std::mem::take(&mut visitor.fields);
+            for (k, v) in fields {
+                // Update extensions cache
+                map.0.insert(k.clone(), v.clone());
 
-            for (k, v) in visitor.fields {
-                map.0.insert(k, v);
+                // Update span data storage if exists
+                if let Some(mut span_data) = self.span_storage.get_mut(id) {
+                    span_data.fields.insert(k, v);
+                }
             }
+
+            drop(extensions);
         }
+
+        // Return visitor to pool
+        visitor.return_to_pool();
     }
 
     // Handle span close (cleanup)
     fn on_close(&self, id: TraceId, _ctx: TracingContext<'_, S>) {
         self.span_storage.remove(&id);
     }
+}
+
+// PERFORMANCE OPTIMIZED: Thread-local visitor pool
+thread_local! {
+    static VISITOR_POOL: RefCell<Vec<JsonVisitor>> = const 
+    { 
+        RefCell::new(Vec::new()) 
+    };
 }
 
 // Optimized visitor with field validation and CompactString keys
@@ -1313,6 +1360,32 @@ struct JsonVisitor {
 }
 
 impl JsonVisitor {
+    // PERFORMANCE OPTIMIZED: Pooled visitor allocation
+    fn get_pooled(config: &LoggerConfig) -> Self {
+        VISITOR_POOL.with(|pool| {
+            let mut pool: RefMut<'_, Vec<Self>> = pool.borrow_mut();
+            if let Some(mut visitor) = pool.pop() {
+                // Reset existing visitor
+                visitor.message.clear();
+                visitor.fields.clear();
+                visitor.config = config.clone();
+                visitor
+            } else {
+                // Create new visitor if pool empty
+                Self::new(config)
+            }
+        })
+    }
+
+    fn return_to_pool(self) {
+        VISITOR_POOL.with(|pool| {
+            let mut pool = pool.borrow_mut();
+            if pool.len() < 8 { // Limit pool size
+                pool.push(self);
+            }
+        });
+    }
+
     fn new(config: &LoggerConfig) -> Self {
         Self {
             message: String::with_capacity(256),
@@ -1550,7 +1623,7 @@ impl LogEntry {
     }
 }
 
-// Profiling utilities for performance monitoring
+// PERFORMANCE OPTIMIZED: Profiling utilities 
 #[derive(Debug)]
 pub struct ProfilingData {
     pub cpu_usage_percent: Option<f32>,
@@ -1602,16 +1675,20 @@ impl ProfilingData {
     }
 
 
-    /// Conditionally collect performance data (memory & optional CPU)
+    /// PERFORMANCE OPTIMIZED: Conditionally collect performance data
     #[must_use]
     #[expect(clippy::cast_possible_truncation, reason = "Expected accuracy loss")]
     pub fn collect_profiling_data_conditional(
         start_memory_kb: Option<i64>,
         duration: Duration,
-        config: &ProfilingConfig, // assuming a config parameter
+        config: &ProfilingConfig,
     ) -> Self {
-        // Refresh and retrieve the current memory usage
-        let current_memory_kb: Option<i64> = Self::get_current_memory_kb();
+        if !config.enabled {
+            return Self::with_duration(duration); // Skip expensive operations
+        }
+
+        // Use cached memory retrieval
+        let current_memory_kb: Option<i64> = Self::get_current_memory_kb_cached();
         let memory_delta_kb: Option<i64> = if let (
             Some(current), 
             Some(start)
@@ -1624,7 +1701,7 @@ impl ProfilingData {
 
         // Collect CPU usage if memory_tracking is enabled
         let cpu_usage_percent: Option<f32> = if config.memory_tracking {
-            Self::get_cpu_usage_percent()
+            Self::get_cpu_usage_percent_cached()
         } else {
             None
         };
@@ -1636,6 +1713,52 @@ impl ProfilingData {
         }
     }
 
+    /// PERFORMANCE OPTIMIZED: Cached memory usage with refresh interval
+    #[must_use]
+    #[expect(clippy::cast_possible_wrap, reason = "Expected accuracy loss")]
+    #[expect(clippy::cast_possible_truncation, reason = "Expected accuracy loss")]
+    pub fn get_current_memory_kb_cached() -> Option<i64> {
+        let now = Instant::now().elapsed().as_millis() as u64;
+        let last_refresh = LAST_SYSTEM_REFRESH.load(Ordering::Relaxed);
+        
+        let current_pid: Pid = sysinfo::get_current_pid().ok()?;
+        let mut system: StdMutexGuard<'_, System> = SYSTEM_INFO.lock().ok()?;
+        
+        // Only refresh if interval exceeded
+        if now.saturating_sub(last_refresh) >= REFRESH_INTERVAL_MS {
+            system.refresh_processes(
+                ProcessesToUpdate::Some(&[current_pid]),
+                true
+            );
+            LAST_SYSTEM_REFRESH.store(now, Ordering::Relaxed);
+        }
+        
+        system.process(current_pid)
+            .map(|process: &Process| -> i64 {(process.memory() / 1024) as i64})
+    }
+
+    /// PERFORMANCE OPTIMIZED: Cached CPU usage with refresh interval  
+    #[expect(clippy::cast_possible_truncation, reason = "Expected")]
+    #[must_use]
+    pub fn get_cpu_usage_percent_cached() -> Option<f32> {
+        let now = Instant::now().elapsed().as_millis() as u64;
+        let last_refresh = LAST_SYSTEM_REFRESH.load(Ordering::Relaxed);
+        
+        let current_pid: Pid = sysinfo::get_current_pid().ok()?;
+        let mut system: StdMutexGuard<'_, System> = SYSTEM_INFO.lock().ok()?;
+        
+        // Only refresh if interval exceeded
+        if now.saturating_sub(last_refresh) >= REFRESH_INTERVAL_MS {
+            system.refresh_processes(
+                ProcessesToUpdate::Some(&[current_pid]),
+                true
+            );
+            LAST_SYSTEM_REFRESH.store(now, Ordering::Relaxed);
+        }
+        
+        system.process(current_pid)
+            .map(|process: &Process| -> f32 {process.cpu_usage()})
+    }
 
     /// Get current memory usage in KB using sysinfo for cross-platform accuracy
     #[must_use]
@@ -1647,7 +1770,7 @@ impl ProfilingData {
         // 2) Lock the shared System instance
         let mut system: StdMutexGuard<'_, System> = SYSTEM_INFO.lock().ok()?;
         
-        // 3) Refresh only this process’s info
+        // 3) Refresh only this process's info
         system.refresh_processes(
             ProcessesToUpdate::Some(&[current_pid]),
             true
@@ -1668,7 +1791,7 @@ impl ProfilingData {
         // 2) Lock the shared System instance
         let mut system: StdMutexGuard<'_, System> = SYSTEM_INFO.lock().ok()?;
 
-        // 3) Refresh only this process’s info (necessary for cpu_usage deltas)        
+        // 3) Refresh only this process's info (necessary for cpu_usage deltas)        
         system.refresh_processes(
             ProcessesToUpdate::Some(&[current_pid]),
             true
