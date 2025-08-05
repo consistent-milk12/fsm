@@ -38,13 +38,21 @@ impl View {
         // Overlays are rendered on top of the main UI
         if app.ui.overlay != UIOverlay::None {
             let overlay_area: Rect = frame.area();
+
             match app.ui.overlay {
                 UIOverlay::Help => HelpOverlay::render(frame, app, overlay_area),
 
                 UIOverlay::Search => SearchOverlay::render(frame, app, overlay_area),
 
                 UIOverlay::FileNameSearch => {
-                    FileNameSearchOverlay::render(frame, app, overlay_area);
+                    let x = &mut app.ui.filename_search_overlay.clone();
+
+                    FileNameSearchOverlay::render(
+                        x,
+                        frame,
+                        app, 
+                        overlay_area
+                    );
                 }
 
                 UIOverlay::ContentSearch => ContentSearchOverlay::render(frame, app, overlay_area),

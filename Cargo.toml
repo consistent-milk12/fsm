@@ -50,6 +50,8 @@ tracing-subscriber = { version = "0.3.19", features = [
     "json",
     "serde",
     "serde_json",
+    "fmt",
+    "std",
 ] }
 
 # Date/time handling
@@ -72,6 +74,8 @@ once_cell = { version = "1.21.3" }
 simd-json = { version = "0.15.1", features = ["serde"] }
 itoa = { version = "1.0.15" }
 regex = { version = "1.11.1" }
+hashbrown = { version = "*" }
+slab = { version = "*" }
 
 # Additional utilities
 ansi-to-tui = "7.0.0"

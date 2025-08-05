@@ -78,10 +78,10 @@ pub struct ProfilingConfig {
 impl Default for ProfilingConfig {
     fn default() -> Self {
         Self {
-            enabled: false, // Disabled by default for performance
+            enabled: true, // Disabled by default for performance
             sample_rate: 0.1, // 10% sampling
-            memory_tracking: false,
-            cpu_tracking: false,
+            memory_tracking: true,
+            cpu_tracking: true,
             min_duration_ms: 5, // Only profile operations taking >5ms
         }
     }
@@ -133,6 +133,7 @@ pub struct Config {
     
     pub cache: CacheConfig, // Centralized cache configuration
     
+    #[serde(default)] // Backward compatibility - use default if missing
     pub profiling: ProfilingConfig, // Performance profiling configuration
     
     pub show_hidden: bool,

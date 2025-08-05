@@ -161,12 +161,18 @@ impl EventLoop {
                 processing_time
             );
             
+            // Check channel queue lengths for diagnostic info
+            let task_queue_len = self.task_rx.len();
+            let action_queue_len = self.action_rx.len();
+            
             info!(
                 marker = "PERF_SLOW_EVENT",
                 operation_type = "event_processing", 
                 duration_ns = profiling_data.operation_duration_ns.unwrap_or(0),
-                "Slow event processing: {:.2}ms (avg: {:.2}ms)",
-                time_ms, self.avg_response_time
+                task_queue_len = task_queue_len,
+                action_queue_len = action_queue_len,
+                "Slow event processing: {:.2}ms (avg: {:.2}ms) [task_q:{}, action_q:{}]",
+                time_ms, self.avg_response_time, task_queue_len, action_queue_len
             );
         }
 

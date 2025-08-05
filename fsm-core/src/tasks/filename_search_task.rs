@@ -14,6 +14,7 @@ use tokio::{
     io::{AsyncBufReadExt, BufReader},
     process::Command,
     sync::mpsc::UnboundedSender,
+    time::timeout,
 };
 use tracing::{Span, instrument, warn};
 use tracing::field::Empty as EmptyTraceField;
@@ -28,6 +29,7 @@ use crate::{
 // CONSTANTS - RULE 11: Const evaluation mastery
 // ============================================================================
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(500);
+const SEARCH_TIMEOUT: Duration = Duration::from_secs(30); // Max 30 seconds for search operations
 
 // ============================================================================
 // CORE IMPLEMENTATION
@@ -298,39 +300,85 @@ impl FilenameSearchTask {
 
         let mut reader: Lines<BufReader<ChildStdout>> = BufReader::new(stdout).lines();
         let mut last_progress: Instant = Instant::now();
+        let stream_start: Instant = Instant::now();
 
-        while let Ok(Some(line)) = reader.next_line().await {
-            let line: &str = line.trim();
-            if line.is_empty() { continue; }
-
-            processed_count += 1;
-            let file_path: PathBuf = PathBuf::from(line);
-
-            if !file_path.exists() {
-                error_count += 1;
-                continue;
+        // Stream processing with timeout and early termination
+        loop {
+            // Check for overall timeout
+            if stream_start.elapsed() > SEARCH_TIMEOUT {
+                warn!("Search operation timed out after {:?}", SEARCH_TIMEOUT);
+                let _ = child.kill().await;
+                break;
             }
 
-            match ObjectInfo::from_path(&file_path).await {
-                Ok(info) => {
-                    results.push(info);
+            // Read next line with timeout
+            let line_result = timeout(Duration::from_secs(5), reader.next_line()).await;
+            
+            match line_result {
+                Ok(Ok(Some(line))) => {
+                    let line: &str = line.trim();
+                    if line.is_empty() { continue; }
 
-                    // Progress updates at intervals
-                    if last_progress.elapsed() >= PROGRESS_INTERVAL {
-                        Self::send_progress_update(
-                            task_id,
-                            task_tx,
-                            results.len(),
-                            processed_count,
-                            error_count,
-                        );
+                    processed_count += 1;
+                    let file_path: PathBuf = PathBuf::from(line);
 
-                        last_progress = Instant::now();
+                    if !file_path.exists() {
+                        error_count += 1;
+                        continue;
+                    }
+
+                    match ObjectInfo::from_path(&file_path).await {
+                        Ok(info) => {
+                            results.push(info);
+
+                            // Progress updates at intervals
+                            if last_progress.elapsed() >= PROGRESS_INTERVAL {
+                                Self::send_progress_update(
+                                    task_id,
+                                    task_tx,
+                                    results.len(),
+                                    processed_count,
+                                    error_count,
+                                );
+
+                                last_progress = Instant::now();
+                            }
+                        }
+                        Err(_) => error_count += 1,
                     }
                 }
-                Err(_) => error_count += 1,
+                Ok(Ok(None)) => {
+                    // End of stream - normal termination
+                    break;
+                }
+                Ok(Err(e)) => {
+                    warn!("Stream read error: {}", e);
+                    error_count += 1;
+                    break;
+                }
+                Err(_) => {
+                    // Line read timeout - check if child is still alive
+                    match child.try_wait() {
+                        Ok(Some(_)) => {
+                            // Child has exited, break the loop
+                            break;
+                        }
+                        Ok(None) => {
+                            // Child still running, continue but log warning
+                            warn!("Line read timeout but child still running");
+                            continue;
+                        }
+                        Err(e) => {
+                            warn!("Failed to check child status: {}", e);
+                            break;
+                        }
+                    }
+                }
             }
         }
+
+        // Ensure child process is terminated
+        let _ = child.kill().await;
 
         Span::current()
             .record("processed_count", processed_count)

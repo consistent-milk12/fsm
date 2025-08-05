@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 
 use tokio_util::sync::CancellationToken;
 
-use crate::controller::actions::InputPromptType;
+use crate::{controller::actions::InputPromptType, FileNameSearchOverlay};
 use crate::fs::object_info::ObjectInfo;
 use crate::model::command_palette::{Command, CommandAction, CommandPaletteState};
 use crate::tasks::search_task::RawSearchResult;
@@ -329,6 +329,8 @@ pub struct UIState {
     /// Track cancellation tokens for active operations
     pub operations_cancel_tokens: HashMap<String, CancellationToken>,
 
+    pub filename_search_overlay: FileNameSearchOverlay,
+
     /// Clipboard overlay state
     pub clipboard_overlay_active: bool,
     pub selected_clipboard_item: Option<String>,
@@ -391,6 +393,8 @@ impl UIState {
 
             // Operation cancel tracker
             operations_cancel_tokens: HashMap::new(),
+
+            filename_search_overlay: FileNameSearchOverlay::new(),
 
             // Clipboard Flag
             clipboard_overlay_active: false,
