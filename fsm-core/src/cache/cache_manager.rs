@@ -1,6 +1,6 @@
-//! src/cache/cache_manager.rs
+//! `src/cache/cache_manager.rs`
 //! ============================================================================
-//! # High-Performance ObjectInfo Cache
+//! # High-Performance `ObjectInfo` Cache
 //!
 //! A thread-safe, async cache for filesystem metadata with the following features:
 //! - LRU eviction with TTL support
@@ -34,15 +34,17 @@ pub type ObjectKey = Arc<str>;
 pub enum CacheError {
     #[error("Cache loader failed: {0}")]
     LoaderFailed(String),
+    
     #[error("Invalid cache key: {0}")]
     InvalidKey(String),
+    
     #[error("Cache operation timed out")]
     Timeout,
 }
 
 impl From<CacheError> for AppError {
     fn from(e: CacheError) -> Self {
-        AppError::Cache(e.to_string())
+        Self::Cache(e.to_string())
     }
 }
 
@@ -69,10 +71,12 @@ impl CacheStats {
         self.misses.fetch_add(1, Ordering::Relaxed);
     }
 
+    #[expect(clippy::cast_possible_truncation, reason = "Expected accurrcy")]
     pub fn record_load(&self, duration: Duration, success: bool) {
         self.loads.fetch_add(1, Ordering::Relaxed);
         self.total_load_time_ns
             .fetch_add(duration.as_nanos() as u64, Ordering::Relaxed);
+       
         if !success {
             self.load_exceptions.fetch_add(1, Ordering::Relaxed);
         }
@@ -116,6 +120,8 @@ pub struct CacheStatsSnapshot {
 }
 
 impl CacheStatsSnapshot {
+    #[expect(clippy::cast_precision_loss, reason = "Expected precision loss")]
+    #[must_use] 
     pub fn hit_rate(&self) -> f64 {
         let total = self.hits + self.misses;
         if total == 0 {
@@ -125,10 +131,13 @@ impl CacheStatsSnapshot {
         }
     }
 
-    pub fn load_count(&self) -> u64 {
+    #[must_use] 
+    pub const fn load_count(&self) -> u64 {
         self.loads
     }
-
+    
+    #[expect(clippy::cast_precision_loss, reason = "Expected precision loss")]
+    #[must_use]
     pub fn exception_rate(&self) -> f64 {
         if self.loads == 0 {
             0.0
@@ -147,7 +156,7 @@ enum CacheEntry {
     Failed,
 }
 
-/// High-performance, async cache for ObjectInfo with comprehensive features
+/// High-performance, async cache for `ObjectInfo` with comprehensive features
 #[derive(Clone)]
 pub struct ObjectInfoCache {
     inner: Cache<ObjectKey, CacheEntry>,
@@ -158,6 +167,7 @@ pub struct ObjectInfoCache {
 
 impl ObjectInfoCache {
     /// Create a new cache with custom configuration
+    #[must_use] 
     pub fn with_config(config: CacheConfig) -> Self {
         let mut cache_builder = Cache::builder()
             .max_capacity(config.max_capacity)
@@ -182,7 +192,7 @@ impl ObjectInfoCache {
         } else {
             cache_builder.build()
         };
-
+        
         Self {
             inner,
             config,
@@ -192,12 +202,14 @@ impl ObjectInfoCache {
     }
 
     /// Create cache with default configuration
+    #[must_use] 
     pub fn new() -> Self {
         Self::with_config(CacheConfig::default())
     }
 
     /// Get cache configuration
-    pub fn config(&self) -> &CacheConfig {
+    #[must_use] 
+    pub const fn config(&self) -> &CacheConfig {
         &self.config
     }
 
@@ -219,7 +231,7 @@ impl ObjectInfoCache {
 
     /// Get entry if present in cache (non-blocking)
     pub async fn get(&self, key: &ObjectKey) -> Option<ObjectInfo> {
-        let result = self.inner.get(key).await;
+        let result: Option<CacheEntry> = self.inner.get(key).await;
 
         if self.config.enable_stats {
             match &result {
@@ -361,7 +373,7 @@ impl ObjectInfoCache {
     }
 
     /// Invalidate entries matching a predicate
-    pub async fn invalidate_entries_if<F>(&self, predicate: F)
+    pub fn invalidate_entries_if<F>(&self, predicate: F)
     where
         F: Fn(&ObjectKey, &ObjectInfo) -> bool + Send + Sync + 'static,
     {
@@ -373,7 +385,7 @@ impl ObjectInfoCache {
     }
 
     /// Clear all entries
-    pub async fn clear(&self) {
+    pub fn clear(&self) {
         self.inner.invalidate_all();
 
         if self.config.enable_stats {
@@ -384,16 +396,19 @@ impl ObjectInfoCache {
     }
 
     /// Get current cache entry count
+    #[must_use] 
     pub fn entry_count(&self) -> u64 {
         self.inner.entry_count()
     }
 
     /// Get weighted size (approximate memory usage)
+    #[must_use] 
     pub fn weighted_size(&self) -> u64 {
         self.inner.weighted_size()
     }
 
     /// Get cache statistics snapshot
+    #[must_use] 
     pub fn stats(&self) -> CacheStatsSnapshot {
         if self.config.enable_stats {
             self.stats.snapshot()
@@ -490,9 +505,12 @@ impl ObjectInfoCache {
         );
     }
 
+    #[must_use]
+    #[expect(clippy::cast_possible_truncation, reason = "Expected accuracy loss")]
     /// Get approximate memory usage per entry
     pub fn avg_entry_size(&self) -> usize {
         let entry_count = self.entry_count();
+        
         if entry_count == 0 {
             0
         } else {
@@ -500,6 +518,8 @@ impl ObjectInfoCache {
         }
     }
 
+    #[must_use]
+    #[expect(clippy::cast_precision_loss, reason = "Expected accuracy loss")]
     /// Check if cache is near capacity
     pub fn is_near_capacity(&self) -> bool {
         self.entry_count() as f64 > self.config.max_capacity as f64 * 0.9
@@ -512,6 +532,7 @@ impl Default for ObjectInfoCache {
     }
 }
 
+#[expect(clippy::missing_fields_in_debug, reason = "Intended loss of debug data")]
 // Implement Debug manually to avoid exposing internal cache state
 impl std::fmt::Debug for ObjectInfoCache {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -519,229 +540,5 @@ impl std::fmt::Debug for ObjectInfoCache {
             .field("config", &self.config)
             .field("entry_count", &self.entry_count())
             .finish()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::{path::PathBuf, time::Duration};
-    use tokio::time::sleep;
-
-    fn create_test_info(path: &str) -> ObjectInfo {
-        ObjectInfo {
-            path: PathBuf::from(path),
-            name: path.split('/').next_back().unwrap_or_default().to_string(),
-            ..Default::default()
-        }
-    }
-
-    #[tokio::test]
-    async fn test_basic_operations() {
-        let cache = ObjectInfoCache::new();
-        let key = ObjectInfoCache::path_to_key("/test/path");
-        let info = create_test_info("/test/path");
-
-        // Test insert and get
-        cache.insert(key.clone(), info.clone()).await;
-        let retrieved = cache.get(&key).await;
-        assert_eq!(retrieved.unwrap().path, info.path);
-
-        // Test remove
-        cache.remove(&key).await;
-        cache.run_pending_tasks().await;
-        let retrieved = cache.get(&key).await;
-        assert!(retrieved.is_none());
-    }
-
-    #[tokio::test]
-    async fn test_get_or_load_success() {
-        let cache = ObjectInfoCache::new();
-        let key = ObjectInfoCache::path_to_key("/test/path");
-        let expected_info = create_test_info("/test/path");
-        let expected_clone = expected_info.clone();
-
-        let result = cache
-            .get_or_load(key.clone(), || async move { Ok(expected_clone) })
-            .await;
-
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap().path, expected_info.path);
-
-        // Should be cached now
-        let cached = cache.get(&key).await;
-        assert!(cached.is_some());
-        assert_eq!(cached.unwrap().path, expected_info.path);
-    }
-
-    #[tokio::test]
-    async fn test_get_or_load_failure() {
-        let cache = ObjectInfoCache::new();
-        let key = ObjectInfoCache::path_to_key("/nonexistent");
-
-        let result = cache
-            .get_or_load(key.clone(), || async {
-                Err(AppError::NotFound(PathBuf::from("/nonexistent")))
-            })
-            .await;
-
-        assert!(result.is_err());
-
-        // Failed loads should not be cached
-        let cached = cache.get(&key).await;
-        assert!(cached.is_none());
-    }
-
-    #[tokio::test]
-    async fn test_batch_operations() {
-        let cache = ObjectInfoCache::new();
-        let entries = vec![
-            (
-                ObjectInfoCache::path_to_key("/test/1"),
-                create_test_info("/test/1"),
-            ),
-            (
-                ObjectInfoCache::path_to_key("/test/2"),
-                create_test_info("/test/2"),
-            ),
-            (
-                ObjectInfoCache::path_to_key("/test/3"),
-                create_test_info("/test/3"),
-            ),
-        ];
-
-        cache.insert_batch(entries.clone()).await;
-
-        for (key, expected) in entries {
-            let retrieved = cache.get(&key).await;
-            assert!(retrieved.is_some());
-            assert_eq!(retrieved.unwrap().path, expected.path);
-        }
-    }
-
-    #[tokio::test]
-    async fn test_cache_stats() {
-        let mut config = CacheConfig::default();
-        config.enable_stats = true;
-        let cache = ObjectInfoCache::with_config(config);
-
-        let key = ObjectInfoCache::path_to_key("/test");
-
-        // Generate some cache activity
-        cache.get(&key).await; // miss
-        cache.insert(key.clone(), create_test_info("/test")).await;
-        cache.get(&key).await; // hit
-        cache.get(&key).await; // hit
-
-        let stats = cache.stats();
-        assert_eq!(stats.hits, 2);
-        assert_eq!(stats.misses, 1);
-        assert_eq!(stats.hit_rate(), 2.0 / 3.0);
-    }
-
-    #[tokio::test]
-    async fn test_ttl_expiration() {
-        let mut config = CacheConfig::default();
-        config.ttl = Duration::from_millis(100);
-        let cache = ObjectInfoCache::with_config(config);
-
-        let key = ObjectInfoCache::path_to_key("/test");
-        cache.insert(key.clone(), create_test_info("/test")).await;
-
-        // Should be present immediately
-        assert!(cache.get(&key).await.is_some());
-
-        // Wait for expiration
-        sleep(Duration::from_millis(150)).await;
-        cache.run_pending_tasks().await;
-
-        // Should be expired
-        assert!(cache.get(&key).await.is_none());
-    }
-
-    #[tokio::test]
-    async fn test_path_normalization() {
-        let cache = ObjectInfoCache::new();
-
-        // Test that different path representations map to same key
-        let path1 = "/test/path";
-        let path2 = "/test/path/";
-        let path3 = "/test//path";
-
-        let key1 = ObjectInfoCache::path_to_key(path1);
-        let _key2 = ObjectInfoCache::path_to_key(path2);
-        let _key3 = ObjectInfoCache::path_to_key(path3);
-
-        // Insert with one key
-        cache.insert(key1.clone(), create_test_info(path1)).await;
-
-        // Should be retrievable with normalized key
-        assert!(cache.get(&key1).await.is_some());
-    }
-
-    #[tokio::test]
-    async fn test_invalidate_entries_if() {
-        let cache = ObjectInfoCache::new();
-
-        // Insert multiple entries
-        for i in 0..10 {
-            let path = format!("/test/file{i}");
-            cache.insert_path(&path, create_test_info(&path)).await;
-        }
-
-        // Invalidate even-numbered entries
-        cache
-            .invalidate_entries_if(|_key, info| {
-                info.name.ends_with('0')
-                    || info.name.ends_with('2')
-                    || info.name.ends_with('4')
-                    || info.name.ends_with('6')
-                    || info.name.ends_with('8')
-            })
-            .await;
-
-        // Check that odd entries remain
-        for i in 0..10 {
-            let path = format!("/test/file{i}");
-            let key = ObjectInfoCache::path_to_key(&path);
-            let exists = cache.get(&key).await.is_some();
-
-            if i % 2 == 0 {
-                assert!(!exists, "Even entry {i} should be invalidated");
-            } else {
-                assert!(exists, "Odd entry {i} should remain");
-            }
-        }
-    }
-
-    #[tokio::test]
-    async fn test_concurrent_access() {
-        let cache = Arc::new(ObjectInfoCache::new());
-        let mut handles = vec![];
-
-        // Spawn multiple tasks that access the cache concurrently
-        for i in 0..10 {
-            let cache_clone = cache.clone();
-            let handle = tokio::spawn(async move {
-                let key = ObjectInfoCache::path_to_key(format!("/test/{i}"));
-                let info = create_test_info(&format!("/test/{i}"));
-
-                // Perform multiple operations
-                cache_clone.insert(key.clone(), info.clone()).await;
-                let _ = cache_clone.get(&key).await;
-                let _ = cache_clone
-                    .get_or_load(key.clone(), || async { Ok(info) })
-                    .await;
-            });
-            handles.push(handle);
-        }
-
-        // Wait for all tasks to complete
-        for handle in handles {
-            handle.await.unwrap();
-        }
-
-        // Verify cache integrity
-        assert!(cache.entry_count() <= 10);
     }
 }

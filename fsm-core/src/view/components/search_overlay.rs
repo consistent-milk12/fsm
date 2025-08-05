@@ -1,9 +1,9 @@
-//! src/view/components/search_overlay.rs
+//! ``src/view/components/search_overlay.rs``
 //! ============================================================================
-//! # SearchOverlay: Modal Full-Text Search/Input (ratatui v0.24+)
+//! # `SearchOverlay`: Modal Full-Text Search/Input (ratatui v0.24+)
 //!
 //! - Displays a search input field and optional live match count
-//! - Integrates with UIState's input buffer and last_query
+//! - Integrates with `UIState`'s input buffer and `last_query`
 //! - Themed, keyboard-centric, and visually distinct
 
 use crate::AppState;

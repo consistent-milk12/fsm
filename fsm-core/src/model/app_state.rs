@@ -1,6 +1,6 @@
-//! src/model/app_state.rs
+//! ``src/model/app_state.rs``
 //! ============================================================================
-//! # AppState: Advanced, Power-User-Oriented Application State
+//! # `AppState`: Advanced, Power-User-Oriented Application State
 //!
 //! `AppState` unifies all persistent and transient state for the terminal file
 //! manager. Its design is optimized for power users, async workflows, and advanced
@@ -25,12 +25,13 @@ use crate::fs::dir_scanner;
 use crate::fs::object_info::ObjectInfo;
 use crate::model::fs_state::{FSState, PaneState};
 use crate::model::ui_state::{RedrawFlag, UIState};
+use crate::tasks::filename_search_task::FilenameSearchTask;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Error;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tokio::process::Command;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
@@ -99,7 +100,8 @@ pub struct PluginInfo {
 }
 
 impl AppState {
-    /// Construct a new, ready-to-use AppState.
+    #[must_use]
+    /// Construct a new, ready-to-use `AppState`.
     pub fn new(
         config: Arc<Config>,
         cache: Arc<ObjectInfoCache>,
@@ -183,7 +185,7 @@ impl AppState {
 
     /// Set the latest error message (display in UI).
     pub fn set_error(&mut self, msg: impl Into<String>) {
-        let msg_str = msg.into();
+        let msg_str: String = msg.into();
         warn!("Setting error: {}", msg_str);
         self.last_error = Some(msg_str.clone());
         self.ui.show_error(msg_str);
@@ -192,7 +194,7 @@ impl AppState {
 
     /// Set the latest info/status message (display in UI).
     pub fn set_status(&mut self, msg: impl Into<String>) {
-        let msg_str = msg.into();
+        let msg_str: String = msg.into();
         info!("Setting status: {}", msg_str);
         self.ui.last_status = Some(msg_str.clone());
         self.ui.show_info(msg_str);
@@ -234,8 +236,8 @@ impl AppState {
             }
         };
 
-        let current_pane = self.fs.active_pane_mut();
-        current_pane.cwd = canonical_path.clone();
+        let current_pane: &mut PaneState = self.fs.active_pane_mut();
+        current_pane.cwd.clone_from(&canonical_path);
         current_pane.is_loading = true;
         self.ui.request_redraw(RedrawFlag::All);
 
@@ -468,8 +470,10 @@ impl AppState {
         }
     }
 
+    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::missing_panics_doc)]
     /// Perform a file name search (recursive, background task)
-    pub fn filename_search(&mut self, pattern: String) {
+    pub fn filename_search(&mut self, pattern: &str) {
         let trimmed_pattern = pattern.trim();
         if trimmed_pattern.is_empty() {
             debug!("Filename search called with empty pattern, ignoring");
@@ -511,8 +515,8 @@ impl AppState {
         }
 
         // Generate unique task ID (use timestamp + random component to avoid collisions)
-        let task_id = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        let task_id = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64;
 
@@ -540,7 +544,7 @@ impl AppState {
             current_dir.display()
         );
 
-        crate::tasks::filename_search_task::filename_search_task(
+        FilenameSearchTask::filename_search_task(
             task_id,
             trimmed_pattern.to_string(),
             current_dir,
@@ -586,9 +590,9 @@ impl AppState {
         crate::tasks::search_task::search_task(task_id, pattern, path, task_tx, action_tx);
     }
 
-    /// Updates an ObjectInfo in the active pane with new data from a background task.
-    pub fn update_object_info(&mut self, parent_dir: PathBuf, info: ObjectInfo) {
-        if let Some(pane) = self.fs.panes.iter_mut().find(|p| p.cwd == parent_dir)
+    /// Updates an `ObjectInfo` in the active pane with new data from a background task.
+    pub fn update_object_info(&mut self, parent_dir: &PathBuf, info: &ObjectInfo) {
+        if let Some(pane) = self.fs.panes.iter_mut().find(|p| &p.cwd == parent_dir)
             && let Some(entry) = pane.entries.iter_mut().find(|e| e.path == info.path)
         {
             entry.size = info.size;
@@ -598,7 +602,7 @@ impl AppState {
             debug!(
                 "Updating object info for {}: modified = {}",
                 info.path.display(),
-                info.modified.format("%Y-%m-%d")
+                info.format_date("%Y-%m-%d")
             );
             self.ui.request_redraw(RedrawFlag::All);
         }
@@ -638,6 +642,8 @@ impl AppState {
 impl std::fmt::Debug for AppState {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         f.debug_struct("AppState")
+            .field("task_tx", &"Transfer Channel")
+            .field("action_tx", &"Receiver Channel")
             .field("config", &"Config")
             .field("cache", &"ObjectInfoCache")
             .field("fs", &self.fs)

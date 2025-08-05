@@ -8,7 +8,7 @@
 
 use crate::fs::object_info::ObjectInfo;
 use crossterm::event::{KeyEvent, MouseEvent};
-use std::path::PathBuf;
+use std::{path::PathBuf};
 
 /// Type of input prompt to show
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,7 +72,7 @@ pub enum Action {
     ShowSearchResults(Vec<crate::fs::object_info::ObjectInfo>),
 
     /// Show filename search results.
-    ShowFilenameSearchResults(Vec<crate::fs::object_info::ObjectInfo>),
+    ShowFilenameSearchResults(Vec<ObjectInfo>),
 
     /// Show rich content search results with line numbers and context (deprecated).
     ShowRichSearchResults(Vec<String>),
@@ -127,7 +127,7 @@ pub enum Action {
 
     Filter(String),
 
-    /// Updates an ObjectInfo in the state (e.g., from a background task).
+    /// Updates an `ObjectInfo` in the state (e.g., from a background task).
     UpdateObjectInfo {
         parent_dir: PathBuf,
         info: ObjectInfo,
@@ -149,7 +149,7 @@ pub enum Action {
     ReloadDirectory,
 
     /// Open a file with external editor, optionally jumping to a specific line.
-    OpenFile(PathBuf, Option<u32>),
+    OpenFile(PathBuf, Option<usize>),
 
     /// Show input prompt for file/directory creation.
     ShowInputPrompt(InputPromptType),

@@ -1,3 +1,7 @@
+#![allow(clippy::missing_errors_doc)]
+#![allow(clippy::cargo_common_metadata)]
+#![allow(clippy::wildcard_dependencies)]
+#![allow(clippy::multiple_crate_versions)]
 //! src/main.rs
 //! ============================================================================
 //! # File Manager TUI Application Entry Point
@@ -13,6 +17,8 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
+
+use fsm_core::logging_opt;
 
 use anyhow::{Context, Result};
 use crossterm::{
@@ -32,12 +38,13 @@ use fsm_core::{
         actions::Action,
         event_loop::{EventLoop, TaskResult},
     },
-    logging_opt::{finalize_logs, init_default_logging, shutdown_logging},
+    logging_opt::{init_default_logging, shutdown_logging},
     model::{
         app_state::AppState,
         fs_state::FSState,
         ui_state::{RedrawFlag, UIState},
     },
+    printer::finalize_logs,
     view::ui::View,
 };
 use tracing::{self as Tracer, instrument};
@@ -45,7 +52,7 @@ use tracing_appender::non_blocking::WorkerGuard;
 
 type AppTerminal = Terminal<Backend<Stdout>>;
 
-#[tokio::main(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() -> Result<()> {
     setup_panic_handler();
 
@@ -57,7 +64,7 @@ async fn main() -> Result<()> {
 
     println!("Application exited cleanly");
 
-    finalize_logs();
+    let _ = finalize_logs();
 
     Ok(())
 }
@@ -132,64 +139,86 @@ impl App {
         })
     }
 
-    /// Run the main application event loop
     async fn run(mut self) -> Result<()> {
-        // Setup graceful shutdown handler
         self.setup_shutdown_handler().await;
 
-        Tracer::info!("Starting main event loop");
+        tracing::info!(
+            marker = "APP_START",
+            operation_type = "application",
+            "Starting main event loop"
+        );
 
-        // Main event loop
         loop {
-            // Render UI if needed
             self.render().await?;
-
-            // Check memory usage periodically (every 5 seconds)
             self.check_memory_usage();
 
-            // Wait for next event
             let action: Action = tokio::select! {
-                _ = self.shutdown.notified() => {
-                   Tracer::info!("Shutdown signal received");
+                () = self.shutdown.notified() => {
+                    tracing::info!(
+                        marker = "APP_EXIT_CLEAN",
+                        operation_type = "application",
+                        "Shutdown signal received"
+                    );
 
-                   break;
+                    break;
                 }
 
                 maybe_action = self.controller.next_action() => {
-                    match maybe_action {
-                        Some(action) => action,
+                    if let Some(action) = maybe_action { action } else {
+                        tracing::info!(
+                            marker = "APP_EXIT_CLEAN",
+                            operation_type = "application",
+                            "Controller stream ended"
+                        );
 
-                        None => {
-                           Tracer::info!("Controller stream ended");
-                            break;
-                        }
+                        break;
                     }
                 }
             };
 
-            // Handle quit action
             if matches!(action, Action::Quit) {
-                Tracer::info!("Quit action received");
+                tracing::info!(
+                    marker = "QUIT_ACTION_PROCESSED",
+                    operation_type = "application",
+                    "Quit action received"
+                );
+
                 break;
             }
 
-            // Dispatch action to controller
+            tracing::debug!(
+                marker = "ACTION_DISPATCH_START",
+                operation_type = "action_handling",
+                action = ?action,
+                "Dispatching action to controller"
+            );
+
             self.controller.dispatch_action(action).await;
         }
 
-        Tracer::info!("Main event loop ended");
+        tracing::info!(
+            marker = "APP_EXIT_CLEAN",
+            operation_type = "application",
+            "Main event loop ended"
+        );
 
         self.shutdown().await?;
 
         Ok(())
     }
 
-    /// Render the UI if a redraw is needed with performance monitoring
+    // Enhanced render function with performance tracing
     async fn render(&mut self) -> Result<()> {
         let mut state: MutexGuard<'_, AppState> = self.state.lock().await;
 
         if state.ui.needs_redraw() {
             let start: Instant = Instant::now();
+
+            tracing::debug!(
+                marker = "UI_RENDER_START",
+                operation_type = "render",
+                "Starting UI render"
+            );
 
             self.terminal
                 .draw(|frame: &mut Frame<'_>| {
@@ -199,24 +228,43 @@ impl App {
 
             state.ui.clear_redraw();
 
-            // Monitor render performance - log slow renders that could impact UX
+            drop(state);
+
             let duration: Duration = start.elapsed();
 
+            #[allow(clippy::cast_possible_truncation)]
+            let duration_us: u64 = duration.as_micros() as u64;
+
+            // Collect profiling data for render operations
+            let profiling_data = logging_opt::collect_profiling_data(None, duration);
+            
             if duration.as_millis() > 16 {
-                // > 16ms = < 60fps
-                Tracer::info!(
+                tracing::warn!(
+                    marker = "PERF_FRAME_RENDER",
+                    operation_type = "render",
+                    duration_us = duration_us,
+                    duration_ns = profiling_data.operation_duration_ns.unwrap_or(0),
                     "Slow render detected: {}ms (target: <16ms for 60fps)",
                     duration.as_millis()
                 );
-            } else if duration.as_millis() > 8 {
-                // Log renders that are getting close to the threshold
-                tracing::debug!("Render time: {}ms", duration.as_millis());
+            } else {
+                tracing::debug!(
+                    marker = "UI_RENDER_COMPLETE",
+                    operation_type = "render",
+                    duration_us = duration_us,
+                    duration_ns = profiling_data.operation_duration_ns.unwrap_or(0),
+                    "Render completed in {}ms",
+                    duration.as_millis()
+                );
             }
         }
 
         Ok(())
     }
 
+    #[allow(clippy::cast_sign_loss)]
+    #[allow(clippy::cast_precision_loss)]
+    #[allow(clippy::cast_possible_truncation)]
     /// Check memory usage and log warnings if memory is getting low
     fn check_memory_usage(&mut self) {
         let now: Instant = Instant::now();
@@ -263,6 +311,7 @@ impl App {
         }
     }
 
+    #[allow(clippy::unused_async)]
     /// Setup signal handlers for graceful shutdown
     async fn setup_shutdown_handler(&self) {
         let shutdown: Arc<Notify> = self.shutdown.clone();
@@ -372,12 +421,3 @@ fn setup_panic_handler() {
         original_hook(panic_info);
     }));
 }
-
-// fn structured_json() -> Result<()> {
-//     let log_file: PathBuf = StdEnv::current_dir()
-//         .context("Failed to retireive current directory using std::env")?
-//         .join("logs")
-//         .join("app_logs");
-
-//     TokioCmd::Command::new("cat")
-// }

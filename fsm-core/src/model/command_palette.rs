@@ -1,6 +1,8 @@
-// src/model/command_palette.rs
+//!
+//!  ``src/model/command_palette.rs``
+//! 
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandPaletteState {
     pub input: String,
     pub filtered: Vec<Command>,
@@ -12,6 +14,7 @@ pub struct CommandPaletteState {
 }
 
 impl CommandPaletteState {
+    #[must_use]
     pub fn new(commands: Vec<Command>) -> Self {
         Self {
             input: String::new(),
@@ -62,7 +65,7 @@ impl CommandPaletteState {
 
         for cmd in &built_in_commands {
             if cmd.starts_with(&command_part) {
-                candidates.push(cmd.to_string());
+                candidates.push((*cmd).to_string());
             }
         }
 
@@ -110,9 +113,8 @@ impl CommandPaletteState {
             let input_parts: Vec<&str> = self.input.split_whitespace().collect();
 
             tracing::debug!(
-                "Before apply: input='{}', completion='{}'",
+                "Before apply: input='{0}', completion='{completion}'",
                 self.input,
-                completion
             );
 
             if input_parts.is_empty() {
@@ -133,14 +135,14 @@ impl CommandPaletteState {
     }
 
     /// Move to next completion suggestion
-    pub fn next_completion(&mut self) {
+    pub const fn next_completion(&mut self) {
         if !self.completions.is_empty() {
             self.completion_index = (self.completion_index + 1) % self.completions.len();
         }
     }
 
     /// Move to previous completion suggestion
-    pub fn prev_completion(&mut self) {
+    pub const fn prev_completion(&mut self) {
         if !self.completions.is_empty() {
             self.completion_index = if self.completion_index == 0 {
                 self.completions.len() - 1
@@ -151,15 +153,16 @@ impl CommandPaletteState {
     }
 
     /// Hide completions
-    pub fn hide_completions(&mut self) {
+    pub const fn hide_completions(&mut self) {
         self.show_completions = false;
     }
 
     /// Show completions if available
-    pub fn show_completions_if_available(&mut self) {
+    pub const fn show_completions_if_available(&mut self) {
         self.show_completions = !self.completions.is_empty();
     }
 
+    #[must_use]
     /// Parse the current input for command with arguments (e.g., "nf filename.txt")
     pub fn parse_command(&self) -> Option<CommandAction> {
         let input = self.input.trim();
@@ -208,13 +211,13 @@ impl CommandPaletteState {
 }
 
 /// A user-invokable command.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Command {
     pub title: String,
     pub action: CommandAction,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommandAction {
     OpenConfig,
     Reload,
@@ -234,6 +237,7 @@ impl Default for CommandPaletteState {
     }
 }
 
+#[must_use]
 /// Get command descriptions for enhanced completions
 pub fn get_command_description(command: &str) -> Option<&'static str> {
     match command {
@@ -246,6 +250,7 @@ pub fn get_command_description(command: &str) -> Option<&'static str> {
     }
 }
 
+#[must_use]
 /// Get all available commands with descriptions for help documentation  
 pub fn get_all_commands_with_descriptions() -> Vec<(&'static str, &'static str, &'static str)> {
     vec![

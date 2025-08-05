@@ -37,7 +37,8 @@ impl Default for DebounceConfig {
 
 impl DebounceConfig {
     /// Quick config for search input debouncing
-    pub fn search_input() -> Self {
+    #[must_use] 
+    pub const fn search_input() -> Self {
         Self {
             delay: Duration::from_millis(300), // Wait 300ms after last keystroke
             max_delay: Some(Duration::from_millis(1000)), // Force search after 1s
@@ -47,7 +48,8 @@ impl DebounceConfig {
     }
 
     /// Quick config for UI redraw throttling
-    pub fn redraw_throttle() -> Self {
+    #[must_use] 
+    pub const fn redraw_throttle() -> Self {
         Self {
             delay: Duration::from_millis(16),            // ~60fps
             max_delay: Some(Duration::from_millis(100)), // Force redraw after 100ms
@@ -57,7 +59,8 @@ impl DebounceConfig {
     }
 
     /// Quick config for file system watching
-    pub fn fs_watch() -> Self {
+    #[must_use] 
+    pub const fn fs_watch() -> Self {
         Self {
             delay: Duration::from_millis(500), // Wait 500ms for fs changes to settle
             max_delay: Some(Duration::from_millis(2000)), // Force update after 2s
@@ -77,8 +80,12 @@ pub struct Debouncer<T> {
 
 impl<T: Clone + Send + 'static> Debouncer<T> {
     /// Create a new debouncer with the given configuration
+    #[must_use] 
     pub fn new(config: DebounceConfig) -> (Self, mpsc::UnboundedReceiver<(String, T)>) {
-        let (output_tx, output_rx) = mpsc::unbounded_channel();
+        let (
+            output_tx, 
+            output_rx
+        ) = mpsc::unbounded_channel();
 
         let debouncer = Self {
             config,
@@ -89,6 +96,9 @@ impl<T: Clone + Send + 'static> Debouncer<T> {
         (debouncer, output_rx)
     }
 
+    #[allow(clippy::unused_async)]
+    /// clippy is not able to detect the async move.
+    ///
     /// Submit an event for debouncing
     pub async fn submit(&mut self, key: String, event: T) {
         let now = Instant::now();
@@ -108,11 +118,11 @@ impl<T: Clone + Send + 'static> Debouncer<T> {
 
         // Start the debounce timer
         if self.config.trailing {
-            let key_clone = key.clone();
-            let event_clone = event.clone();
+            let key_clone = key;
+            let event_clone = event;
             let config = self.config.clone();
             let tx = self.output_tx.clone();
-            let _last_events = &mut self.last_events;
+            let _ = &mut self.last_events;
 
             tokio::spawn(async move {
                 // Wait for the debounce delay
@@ -148,7 +158,8 @@ pub struct Throttler {
 
 impl Throttler {
     /// Create a new throttler with the given interval
-    pub fn new(interval: Duration) -> Self {
+    #[must_use] 
+    pub const fn new(interval: Duration) -> Self {
         Self {
             last_trigger: None,
             interval,
@@ -173,7 +184,7 @@ impl Throttler {
     }
 
     /// Force next trigger (reset the timer)
-    pub fn reset(&mut self) {
+    pub const fn reset(&mut self) {
         self.last_trigger = None;
     }
 }
@@ -190,6 +201,7 @@ pub struct EventBatcher<T> {
 
 impl<T: Clone + Send + 'static> EventBatcher<T> {
     /// Create a new event batcher
+    #[must_use] 
     pub fn new(max_size: usize, max_age: Duration) -> (Self, mpsc::UnboundedReceiver<Vec<T>>) {
         let (output_tx, output_rx) = mpsc::unbounded_channel();
 
@@ -205,7 +217,7 @@ impl<T: Clone + Send + 'static> EventBatcher<T> {
     }
 
     /// Add an event to the batch
-    pub async fn add(&mut self, event: T) {
+    pub fn add(&mut self, event: T) {
         self.batch.push(event);
 
         // Check if we should flush due to size or age
@@ -213,12 +225,12 @@ impl<T: Clone + Send + 'static> EventBatcher<T> {
         let should_flush_age = self.last_flush.elapsed() >= self.max_age && !self.batch.is_empty();
 
         if should_flush_size || should_flush_age {
-            self.flush().await;
+            self.flush();
         }
     }
 
     /// Flush the current batch
-    pub async fn flush(&mut self) {
+    pub fn flush(&mut self) {
         if !self.batch.is_empty() {
             debug!("Flushing batch of {} events", self.batch.len());
             let batch = std::mem::take(&mut self.batch);

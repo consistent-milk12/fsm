@@ -1,9 +1,9 @@
-//! src/view/components/status_bar.rs
-//! ============================================================================
-//! # StatusBar: Persistent Status/Info/Error Display (ratatui v0.24+)
+//! ``src/view/components/status_bar.rs``
+//!
+//!  # `StatusBar`: Persistent Status/Info/Error Display (ratatui v0.24+)
 //!
 //! - Renders last error, status message, or hint at bottom of UI
-//! - Uses AppState's `last_error` and `last_status` fields
+//! - Uses `AppState`'s `last_error` and `last_status` fields
 //! - Themed, immediate-mode, power-user friendly
 
 use crate::AppState;

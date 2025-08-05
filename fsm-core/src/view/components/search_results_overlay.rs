@@ -1,6 +1,5 @@
-//! src/view/components/search_results_overlay.rs
-//! ============================================================================
-//! # SearchResultsOverlay: Displays Search Results
+//! ``src/view/components/search_results_overlay.rs``
+//! # `SearchResultsOverlay`: Displays Search Results
 
 use crate::AppState;
 use crate::view::theme;

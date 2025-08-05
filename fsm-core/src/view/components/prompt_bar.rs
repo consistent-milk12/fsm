@@ -1,9 +1,9 @@
-//! src/view/components/prompt_bar.rs
+//! ``src/view/components/prompt_bar.rs``
 //! ============================================================================
-//! # PromptBar: Modal User Input (Immediate-Mode, ratatui v0.24+)
+//! # `PromptBar`: Modal User Input (Immediate-Mode, ratatui v0.24+)
 //!
 //! - Unified single-line input for search, commands, rename, etc.
-//! - Uses UIState's input buffer
+//! - Uses `UIState`'s input buffer
 //! - Always centered, visually distinct, themable
 
 use crate::AppState;

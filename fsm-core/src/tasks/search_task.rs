@@ -1,4 +1,4 @@
-//! src/tasks/search_task.rs
+//! ``src/tasks/search_task.rs``
 //! ============================================================================
 //! # Search Task: Background ripgrep search with raw output
 //!
@@ -6,6 +6,7 @@
 //! and reports the result set back to the UI for direct display without blocking.
 
 use std::process::Stdio;
+use std::str::{self, Chars};
 use std::{path::PathBuf, process::ExitStatus};
 
 use ansi_to_tui::IntoText;
@@ -18,7 +19,7 @@ use tokio::{
 
 use crate::controller::{actions::Action, event_loop::TaskResult};
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawSearchResult {
     pub lines: Vec<String>,
     pub parsed_lines: Vec<Text<'static>>,
@@ -28,10 +29,11 @@ pub struct RawSearchResult {
 
 impl RawSearchResult {
     /// Strip ANSI escape codes from a string
+    #[must_use] 
     pub fn strip_ansi_codes(input: &str) -> String {
         // Simple regex-free approach to strip ANSI codes
-        let mut result = String::new();
-        let mut chars = input.chars();
+        let mut result: String = String::new();
+        let mut chars: Chars<'_> = input.chars();
 
         while let Some(c) = chars.next() {
             if c == '\x1b' {
@@ -53,8 +55,8 @@ impl RawSearchResult {
     }
 
     /// Parse file information from a ripgrep output line
-    /// Format: "filename:line_number:content" or just "filename" for headings
-    /// NOTE: This function should only be used with complete "filename:line:content" lines
+    /// Format: `filename:line_number:content` or just `filename` for headings
+    /// NOTE: This function should only be used with complete `filename:line:content` lines
     /// For parsing individual lines from ripgrep output, use stateful parsing in the search task
     pub fn parse_file_info(line: &str) -> Option<(PathBuf, Option<u32>)> {
         // Strip ANSI color codes first
@@ -71,7 +73,9 @@ impl RawSearchResult {
         // Check if it's a file heading (no line number, just filename)
         if !clean_line.contains(':') {
             let path = PathBuf::from(clean_line.trim());
+
             tracing::debug!("PARSE: File heading detected: {:?}", path);
+
             return Some((path, None));
         }
 
@@ -83,27 +87,31 @@ impl RawSearchResult {
             // This should be a complete filename:line:content format
             let file_path = PathBuf::from(parts[0].trim());
             let line_number = parts[1].trim().parse::<u32>().ok();
+
             tracing::debug!(
                 "PARSE: Parsed complete line - file: {:?}, line: {:?}",
                 file_path,
                 line_number
             );
+
             Some((file_path, line_number))
         } else if parts.len() == 2 {
             // This might be "line_number:content" format - we need context
-            if let Ok(line_num) = parts[0].trim().parse::<u32>() {
+            parts[0].trim().parse::<u32>().map_or_else(
+                |_| -> Option<(PathBuf, Option<u32>)> 
+            {
+                // This might be "filename:something"
+                let file_path: PathBuf = PathBuf::from(parts[0].trim());
+                tracing::debug!("PARSE: Parsed partial - file: {:?}", file_path);
+                Some((file_path, None))
+            }, |line_num: u32| -> Option<(PathBuf, Option<u32>)> {
                 tracing::debug!(
                     "PARSE: Found line:content format without filename - line: {}",
                     line_num
                 );
                 // Return None because we need filename context
                 None
-            } else {
-                // This might be "filename:something"
-                let file_path = PathBuf::from(parts[0].trim());
-                tracing::debug!("PARSE: Parsed partial - file: {:?}", file_path);
-                Some((file_path, None))
-            }
+            })
         } else {
             tracing::debug!("PARSE: Failed to parse - insufficient parts");
             None
@@ -148,12 +156,12 @@ impl RawSearchResult {
     }
 
     /// Parse a single line from ripgrep --heading output with stateful context
-    /// Returns (file_path, line_number) if this line represents a match
+    /// Returns (`file_path`, `line_number`) if this line represents a match
     pub fn parse_heading_line_with_context(
         line: &str,
         current_file: &mut Option<PathBuf>,
         base_dir: &std::path::Path,
-    ) -> Option<(PathBuf, Option<u32>)> {
+    ) -> Option<(PathBuf, Option<usize>)> {
         let clean_line = Self::strip_ansi_codes(line);
         tracing::debug!(
             "PARSE_HEADING: Processing line: '{}' with current_file: {:?}",
@@ -190,12 +198,14 @@ impl RawSearchResult {
                 }
             }
 
-            let path = PathBuf::from(clean_line.trim());
-            let absolute_path = if path.is_absolute() {
-                path.clone()
+            let path: PathBuf = PathBuf::from(clean_line.trim());
+            
+            let absolute_path: PathBuf = if path.is_absolute() {
+                path
             } else {
                 base_dir.join(&path)
             };
+
             *current_file = Some(absolute_path.clone());
             tracing::debug!("PARSE_HEADING: New file heading: {:?}", absolute_path);
             return Some((absolute_path, None));
@@ -204,7 +214,7 @@ impl RawSearchResult {
         // This should be a line:content format
         let parts: Vec<&str> = clean_line.splitn(2, ':').collect();
         if parts.len() == 2
-            && let Ok(line_num) = parts[0].trim().parse::<u32>()
+            && let Ok(line_num) = parts[0].trim().parse::<usize>()
         {
             // This is line_number:content format
             if let Some(current_path) = current_file {
@@ -222,6 +232,11 @@ impl RawSearchResult {
     }
 }
 
+///
+/// # Panics
+/// 
+/// If the stdout out is not piped (which is always handled by helpper functions).
+/// 
 pub fn search_task(
     task_id: u64,
     pattern: String,
@@ -253,6 +268,7 @@ pub fn search_task(
                     task_id,
                     format!("failed to spawn ripgrep: {e}"),
                 ));
+
                 return;
             }
         };
@@ -287,6 +303,7 @@ pub fn search_task(
                     task_id,
                     format!("failed to wait for ripgrep: {e}"),
                 ));
+                
                 return;
             }
         };
@@ -297,6 +314,7 @@ pub fn search_task(
                 task_id,
                 format!("ripgrep failed with status: {status}"),
             ));
+            
             return;
         }
 
@@ -315,6 +333,7 @@ pub fn search_task(
             total_matches: match_count,
             base_directory: path.clone(),
         };
+
         let _ = action_tx.send(Action::ShowRawSearchResults(raw_result));
     });
 }

@@ -1,119 +1,128 @@
-//! src/fs/object_info.rs
+//! ``src/fs/object_info.rs``
 //! ============================================================================
-//! # ObjectInfo: Rich Filesystem Entry Metadata
+//! # `ObjectInfo`: Rich Filesystem Entry Metadata
 //!
 //! Cross-platform, async-friendly abstraction for a file or directory entry.
-//! Integrates with ObjectTable (for TUI), moka cache, and async tasks.
+//! Integrates with `ObjectTable` (for TUI), moka cache, and async tasks.
 
-use chrono::{DateTime, Local, TimeZone, Utc};
+use compact_str::CompactString;
 use serde::{Deserialize, Serialize};
-use std::ffi::OsStr;
-use std::fs::{FileType, Metadata};
+use std::{ffi::OsStr, fs::{FileType, Metadata}, time::Duration};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tracing::{debug, info};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use tokio::fs::{self as TokioFs};
 
 /// Enum for object type, matching the table logic.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ObjectType {
     Dir,
     File,
     Symlink,
-    Other(String), // File extension or special case
 }
 
 impl std::fmt::Display for ObjectType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ObjectType::Dir => write!(f, "Dir"),
-            ObjectType::File => write!(f, "File"),
-            ObjectType::Symlink => write!(f, "Symlink"),
-            ObjectType::Other(ext) => write!(f, "{ext}"),
+            Self::Dir => write!(f, "Dir"),
+            Self::File => write!(f, "File"),
+            Self::Symlink => write!(f, "Symlink"),
         }
     }
 }
 
-/// Core metadata struct for file or directory.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ObjectInfo {
-    pub path: PathBuf,
-    pub name: String,
-    pub extension: Option<String>,
-    pub object_type: ObjectType,
-    pub is_dir: bool,
-    pub is_symlink: bool,
-    pub size: u64,
-    pub items_count: usize,        // Number of items in dir, 0 for files
-    pub modified: DateTime<Local>, // For display/sorting
-    /// Whether full metadata has been loaded
-    pub metadata_loaded: bool,
-}
+  #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+  pub struct ObjectInfo {
+      /// LARGEST FIRST (CLAUDE.md Rule 14)
+      /// ~24 bytes (largest)
+      pub path: PathBuf,
 
-/// Lightweight version with just basic info for immediate display
+      /// 16 bytes (no timezone overhead)
+      pub modified: SystemTime,
+
+      /// ~24 bytes (stack-optimized) 
+      pub name: CompactString,
+
+      /// ~24 bytes when Some
+      pub extension: Option<CompactString>,
+
+      /// 8-BYTE ALIGNED PRIMITIVES
+      pub size: u64,                          // 8 bytes
+      pub items_count: u64,                   // 8 bytes
+
+      // FLAGS GROUPED (cache-friendly)
+      pub is_dir: bool,                       // 1 byte
+      pub is_symlink: bool,                   // 1 byte
+      pub metadata_loaded: bool,              // 1 byte
+      // + 5 bytes padding = 8-byte boundary
+  }
+/// Lightweight version optimized for immediate display and minimal allocation
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LightObjectInfo {
-    pub path: PathBuf,
-    pub name: String,
-    pub extension: Option<String>,
-    pub object_type: ObjectType,
-    pub is_dir: bool,
-    pub is_symlink: bool,
+    // LARGEST FIRST (CLAUDE.md Rule 14)
+    pub path: PathBuf,                      // ~24 bytes (largest)
+    pub name: CompactString,                // ~24 bytes (stack-optimized)
+    pub extension: Option<CompactString>,   // ~24 bytes when Some
+
+    // FLAGS GROUPED (cache-friendly)
+    pub is_dir: bool,                       // 1 byte
+    pub is_symlink: bool,                   // 1 byte
+    // + 6 bytes padding = 8-byte boundary
 }
 
-impl ObjectInfo {
-    /// Create a lightweight object with just basic info (fast)
-    pub async fn from_path_light(path: &Path) -> std::io::Result<LightObjectInfo> {
-        let metadata: Metadata = tokio::fs::metadata(path).await?;
-        let file_type: FileType = metadata.file_type();
+impl LightObjectInfo {
+    // COMPUTED PROPERTY - No redundant storage
+    #[inline]
+    #[must_use]
+    pub const fn object_type(&self) -> ObjectType {
+        if self.is_dir {
+            ObjectType::Dir
+        } else if self.is_symlink {
+            ObjectType::Symlink
+        } else {
+            ObjectType::File
+        }
+    }
 
-        let name: String = path
-            .file_name()
-            .and_then(OsStr::to_str)
-            .unwrap_or("Unknown")
-            .to_string();
+    // OPTIMIZED CONSTRUCTION
+    pub async fn from_path(path: &Path) -> std::io::Result<Self> {
+        let metadata = TokioFs::metadata(path).await?;
+        let file_type = metadata.file_type();
+
+        let name = CompactString::new(
+            path.file_name()
+                .and_then(OsStr::to_str)
+                .unwrap_or("")
+        );
 
         let extension = if file_type.is_file() {
             path.extension()
                 .and_then(OsStr::to_str)
-                .map(|ext| ext.to_lowercase())
+                .map(|s| CompactString::new(s.to_lowercase()))
         } else {
             None
         };
 
-        let is_dir: bool = file_type.is_dir();
-        let is_symlink: bool = file_type.is_symlink();
-
-        let object_type: ObjectType = if is_dir {
-            ObjectType::Dir
-        } else if is_symlink {
-            ObjectType::Symlink
-        } else if let Some(ext) = &extension {
-            ObjectType::Other(ext.to_uppercase())
-        } else {
-            ObjectType::File
-        };
-
-        Ok(LightObjectInfo {
+        Ok(Self {
             path: path.to_path_buf(),
             name,
             extension,
-            object_type,
-            is_dir,
-            is_symlink,
+            is_dir: file_type.is_dir(),
+            is_symlink: file_type.is_symlink(),
         })
     }
 
-    /// Upgrade a lightweight object to full ObjectInfo with metadata (slow)
-    pub async fn from_light_info(light: LightObjectInfo) -> std::io::Result<Self> {
-        let metadata: Metadata = tokio::fs::symlink_metadata(&light.path).await?;
+    // CONVERSION TO FULL OBJECTINFO
+    pub async fn into_full_info(self) -> std::io::Result<ObjectInfo> {
+        let metadata = TokioFs::symlink_metadata(&self.path).await?;
 
-        let size: u64 = if light.is_dir { 0 } else { metadata.len() };
-
-        let items_count: usize = if light.is_dir {
-            match tokio::fs::read_dir(&light.path).await {
+        let size = if self.is_dir { 0 } else { metadata.len() };
+        let items_count = if self.is_dir {
+            // Optimized directory counting
+            match TokioFs::read_dir(&self.path).await {
                 Ok(mut entries) => {
-                    let mut count = 0;
-                    while let Ok(Some(_)) = entries.next_entry().await {
+                    let mut count = 0u64;
+                    while entries.next_entry().await?.is_some() {
                         count += 1;
                     }
                     count
@@ -124,150 +133,114 @@ impl ObjectInfo {
             0
         };
 
-        let modified: SystemTime = metadata.modified().unwrap_or_else(|e| {
-            info!("Failed to get modified time for {:?}: {}", light.path, e);
-            UNIX_EPOCH
-        });
-
-        let modified_dt: Duration = modified
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or(Duration::from_secs(0));
-
-        let modified_dt: DateTime<Local> = Local
-            .timestamp_opt(modified_dt.as_secs() as i64, modified_dt.subsec_nanos())
-            .single()
-            .unwrap_or_else(|| Local.timestamp_opt(0, 0).single().unwrap());
-
-        debug!(
-            "ObjectInfo for {}: modified_dt = {}",
-            light.path.display(),
-            modified_dt.format("%Y-%m-%d")
-        );
+        let modified = metadata
+            .modified()
+            .unwrap_or(SystemTime::UNIX_EPOCH);
 
         Ok(ObjectInfo {
-            path: light.path,
-            name: light.name,
-            extension: light.extension,
-            object_type: light.object_type,
-            is_dir: light.is_dir,
-            is_symlink: light.is_symlink,
+            path: self.path,
+            modified,
+            name: self.name,
+            extension: self.extension,
             size,
             items_count,
-            modified: modified_dt,
+            is_dir: self.is_dir,
+            is_symlink: self.is_symlink,
             metadata_loaded: true,
         })
-    }
-
-    /// Create from lightweight info with placeholder metadata (for immediate display)
-    pub fn with_placeholder_metadata(light: LightObjectInfo) -> Self {
-        // Try to get actual modified  even for placeholder
-        let modified: SystemTime = std::fs::metadata(&light.path)
-            .and_then(|metadata| metadata.modified())
-            .unwrap_or(UNIX_EPOCH);
-
-        let modified_dt = modified
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or(Duration::from_secs(0));
-
-        let modified_dt = Local
-            .timestamp_opt(modified_dt.as_secs() as i64, modified_dt.subsec_nanos())
-            .single()
-            .unwrap_or_else(|| Local.timestamp_opt(0, 0).single().unwrap());
-
-        ObjectInfo {
-            path: light.path,
-            name: light.name,
-            extension: light.extension,
-            object_type: light.object_type,
-            is_dir: light.is_dir,
-            is_symlink: light.is_symlink,
-            size: 0,
-            items_count: 0,
-            modified: modified_dt,
-            metadata_loaded: false,
-        }
-    }
-
-    /// Build from path and standard metadata. (You can adapt for async if needed.)
-    pub async fn from_path(path: &Path) -> std::io::Result<Self> {
-        use chrono::TimeZone;
-        use tokio::fs;
-
-        let metadata: Metadata = fs::symlink_metadata(path).await?;
-        let file_type: FileType = metadata.file_type();
-        let is_dir: bool = file_type.is_dir();
-        let is_symlink: bool = file_type.is_symlink();
-
-        let name: String = path
-            .file_name()
-            .map(|n: &OsStr| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| String::from(""));
-
-        let extension: Option<String> = path
-            .extension()
-            .map(|e: &OsStr| e.to_string_lossy().into_owned());
-
-        let object_type: ObjectType = if is_dir {
-            ObjectType::Dir
-        } else if is_symlink {
-            ObjectType::Symlink
-        } else if let Some(ref ext) = extension {
-            ObjectType::Other(ext.to_ascii_uppercase())
-        } else {
-            ObjectType::File
-        };
-
-        // Item count for directories is calculated in a background task.
-        let items_count: usize = 0;
-
-        // File size
-        let size: u64 = if is_dir { 0 } else { metadata.len() };
-
-        // Modification time, fall back to epoch on error
-        let modified: DateTime<Utc> = metadata
-            .modified()
-            .ok()
-            .and_then(|t: SystemTime| t.duration_since(UNIX_EPOCH).ok())
-            .map(|d: Duration| {
-                Utc.timestamp_opt(d.as_secs() as i64, d.subsec_nanos())
-                    .single()
-                    .unwrap_or_else(|| Utc.timestamp_opt(0, 0).single().unwrap())
-            })
-            .unwrap_or_else(|| Utc.timestamp_opt(0, 0).single().unwrap());
-
-        Ok(Self {
-            path: path.to_path_buf(),
-            name,
-            extension,
-            object_type,
-            is_dir,
-            is_symlink,
-            size,
-            items_count,
-            modified: modified.into(),
-            metadata_loaded: true,
-        })
-    }
-
-    /// Human-friendly file size.
-    pub fn size_human(&self) -> String {
-        bytesize::ByteSize::b(self.size).to_string()
     }
 }
 
-// --- Default (empty entry, for error stubs/caching) ---
-impl Default for ObjectInfo {
-    fn default() -> Self {
-        Self {
+impl ObjectInfo {
+      // COMPUTED PROPERTIES - No redundant storage
+      #[inline]
+      #[must_use]
+      pub const fn object_type(&self) -> ObjectType {
+          if self.is_dir {
+              ObjectType::Dir
+          } else if self.is_symlink {
+              ObjectType::Symlink
+          } else {
+              ObjectType::File
+          }
+      }
+
+      #[inline]
+      #[must_use]
+      pub fn size_human(&self) -> String {
+          bytesize::ByteSize::b(self.size).to_string()
+      }
+
+      // OPTIMIZED CONSTRUCTION - Zero-allocation where possible
+      pub async fn from_path(path: &Path) -> std::io::Result<Self> {
+          let metadata: Metadata = TokioFs::symlink_metadata(path).await?;
+          let file_type: FileType = metadata.file_type();
+
+          let is_dir = file_type.is_dir();
+          let is_symlink: bool = file_type.is_symlink();
+
+          // CompactString optimization for filenames
+          let name: CompactString = CompactString::new(
+              path.file_name()
+                  .and_then(OsStr::to_str)
+                  .unwrap_or("")
+          );
+
+          let extension = path
+              .extension()
+              .and_then(OsStr::to_str)
+              .map(CompactString::new);
+
+          let size = if is_dir { 0 } else { metadata.len() };
+          let modified = metadata
+            .modified()
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+
+          Ok(Self {
+              path: path.to_path_buf(),
+              modified,
+              name,
+              extension,
+              size,
+              items_count: 0, // Calculated separately if needed
+              is_dir,
+              is_symlink,
+              metadata_loaded: true,
+          })
+      }
+
+      #[expect(clippy::cast_possible_wrap, reason = "Expected accuracy")]
+      #[must_use]
+      pub fn format_date(&self, format: &str) -> String {
+          use chrono::{Local, TimeZone};
+
+          let duration: Duration = self.modified
+              .duration_since(UNIX_EPOCH)
+              .unwrap_or_default();
+
+          let datetime: chrono::DateTime<Local> = Local
+              .timestamp_opt(duration.as_secs() as i64, duration.subsec_nanos())
+              .single()
+              .unwrap_or_default();
+
+          datetime.format(format).to_string()
+      }
+  }
+
+  // Default implementation
+  impl Default for ObjectInfo {
+    fn default() -> Self 
+    {
+        Self 
+        {
             path: PathBuf::new(),
-            name: String::new(),
+            modified: SystemTime::UNIX_EPOCH,
+            name: CompactString::const_new(""),
             extension: None,
-            object_type: ObjectType::File,
-            is_dir: false,
-            is_symlink: false,
             size: 0,
             items_count: 0,
-            modified: chrono::Local.timestamp_opt(0, 0).unwrap(),
+            is_dir: false,
+            is_symlink: false,
             metadata_loaded: false,
         }
     }

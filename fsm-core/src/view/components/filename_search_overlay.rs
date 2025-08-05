@@ -1,6 +1,6 @@
-//! src/view/components/filename_search_overlay.rs
+//! ``src/view/components/filename_search_overlay.rs``
 //! ============================================================================
-//! # FileNameSearchOverlay: Enhanced Live file/folder name search
+//! # `FileNameSearchOverlay`: Enhanced Live file/folder name search
 //!
 //! Provides instant search results for file and folder names with improved responsiveness,
 //! debouncing, caching, and extensive logging for debugging and performance monitoring.
@@ -16,13 +16,14 @@
 use crate::fs::object_info::ObjectInfo;
 use crate::model::app_state::AppState;
 use crate::view::theme;
+use compact_str::{CompactString, ToCompactString};
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
 };
-use std::time::{Duration, Instant};
+use std::{path::{Path, PathBuf}, time::{Duration, Instant}};
 use tracing::{debug, info, trace};
 
 /// Configuration constants for search behavior
@@ -229,13 +230,13 @@ impl FileNameSearchOverlay {
 
             // Show any intermediate local results while searching
             let local_matches = Self::get_local_matches(app);
-            let subtitle = if !local_matches.is_empty() {
+            let subtitle = if local_matches.is_empty() {
+                "Scanning directories...".to_string()
+            } else {
                 format!(
                     "Found {} local matches, searching deeper...",
                     local_matches.len()
                 )
-            } else {
-                "Scanning directories...".to_string()
             };
 
             let loading_text_with_subtitle = format!("{loading_text}\n{subtitle}");
@@ -458,7 +459,10 @@ impl FileNameSearchOverlay {
                 .filter(|entry| !entry.is_dir)
                 .collect();
 
-            if !local_matches.is_empty() {
+            if local_matches.is_empty() {
+                // Only recursive file results
+                (recursive_files, SearchMode::Recursive)
+            } else {
                 // Mixed: both local and recursive files
                 let mut combined: Vec<&ObjectInfo> = local_matches;
                 combined.extend(recursive_files);
@@ -466,9 +470,6 @@ impl FileNameSearchOverlay {
                 combined.sort_by_key(|entry| &entry.path);
                 combined.dedup_by_key(|entry| &entry.path);
                 (combined, SearchMode::Mixed)
-            } else {
-                // Only recursive file results
-                (recursive_files, SearchMode::Recursive)
             }
         } else if !local_matches.is_empty() {
             // Only local file matches
@@ -487,16 +488,24 @@ impl FileNameSearchOverlay {
         search_mode: SearchMode,
     ) -> ListItem<'a> {
         // Display name based on search mode
-        let display_name = match search_mode {
+        let display_name: CompactString = match search_mode {
             SearchMode::Local => entry.name.clone(),
             SearchMode::Recursive | SearchMode::Mixed => {
                 // Show relative path for recursive results
-                let current_dir = &app.fs.active_pane().cwd;
-                if let Ok(relative) = entry.path.strip_prefix(current_dir) {
-                    relative.to_string_lossy().to_string()
-                } else {
-                    entry.path.to_string_lossy().to_string()
-                }
+                let current_dir: &PathBuf = &app.fs.active_pane().cwd;
+                
+                entry
+                    .path.strip_prefix(current_dir)
+                    .map_or_else(
+                        |_| -> CompactString 
+                        {
+                            entry.path.to_string_lossy().to_compact_string()
+                        },
+                         |relative: &Path| -> CompactString 
+                        {
+                            relative.to_string_lossy().to_compact_string()
+                        }
+                    )
             }
         };
 
@@ -520,6 +529,7 @@ impl FileNameSearchOverlay {
         ListItem::new(display_text).style(style)
     }
 
+    #[allow(clippy::cast_precision_loss)]
     /// Format file size in human readable format
     fn format_file_size(size: u64) -> String {
         const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];

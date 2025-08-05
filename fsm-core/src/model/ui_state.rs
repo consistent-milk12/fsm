@@ -1,6 +1,6 @@
-//! src/model/ui_state.rs
+//! ``src/model/ui_state.rs``
 //! ============================================================================
-//! # UIState: Power-User UI and Interaction State
+//! # `UIState`: Power-User UI and Interaction State
 //!
 //! Tracks all ephemeral and persistent UI state for the file manager, including
 //! selection, overlays, modes, panes, themes, quick actions, command palette, and more.
@@ -20,8 +20,6 @@ use crate::fs::object_info::ObjectInfo;
 use crate::model::command_palette::{Command, CommandAction, CommandPaletteState};
 use crate::tasks::search_task::RawSearchResult;
 
-use clipr::ClipBoard;
-
 /// Granular redraw flags for selective UI updates
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RedrawFlag {
@@ -36,6 +34,7 @@ pub enum RedrawFlag {
 }
 
 impl RedrawFlag {
+    #[must_use]
     pub const fn bits(self) -> u8 {
         match self {
             Self::Main => 0b0000_0001,         // Main file listing
@@ -116,7 +115,7 @@ pub enum NotificationLevel {
     Success,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Notification {
     pub message: String,
 
@@ -149,7 +148,7 @@ pub struct LoadingState {
 }
 
 /// Progress tracking structure for file operations
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FileOperationProgress {
     /// Operation type: "copy", "move", "rename"
     pub operation_type: String,
@@ -180,6 +179,7 @@ pub struct FileOperationProgress {
 }
 
 impl FileOperationProgress {
+    #[must_use]
     /// Create new progress tracker
     pub fn new(operation_type: String, total_bytes: u64, total_files: u32) -> Self {
         Self {
@@ -225,6 +225,8 @@ impl FileOperationProgress {
         }
     }
 
+    #[must_use]
+    #[allow(clippy::cast_precision_loss)]
     /// Get progress percentage (0.0 to 1.0)
     pub fn progress_ratio(&self) -> f64 {
         if self.total_bytes == 0 {
@@ -327,9 +329,6 @@ pub struct UIState {
     /// Track cancellation tokens for active operations
     pub operations_cancel_tokens: HashMap<String, CancellationToken>,
 
-    /// Integrated clipboard system
-    pub clipboard: ClipBoard,
-
     /// Clipboard overlay state
     pub clipboard_overlay_active: bool,
     pub selected_clipboard_item: Option<String>,
@@ -343,6 +342,7 @@ impl PartialEq for UIState {
 }
 
 impl UIState {
+    #[must_use]
     /// Construct a new UI state with default values.
     pub fn new() -> Self {
         Self {
@@ -393,7 +393,6 @@ impl UIState {
             operations_cancel_tokens: HashMap::new(),
 
             // Clipboard Flag
-            clipboard: ClipBoard::default(),
             clipboard_overlay_active: false,
             selected_clipboard_item: None,
             clipboard_view_mode: ClipBoardViewMode::default(),
@@ -401,7 +400,7 @@ impl UIState {
     }
 
     // --- Selection/marking ---
-    pub fn set_selected(&mut self, idx: Option<usize>) {
+    pub const fn set_selected(&mut self, idx: Option<usize>) {
         self.selected = idx;
         self.request_redraw(RedrawFlag::Main);
     }
@@ -422,7 +421,7 @@ impl UIState {
         self.request_redraw(RedrawFlag::Main);
     }
 
-    pub fn set_visual_range(&mut self, start: usize, end: usize) {
+    pub const fn set_visual_range(&mut self, start: usize, end: usize) {
         self.visual_range = Some((start, end));
         self.request_redraw(RedrawFlag::Main);
     }
@@ -446,17 +445,17 @@ impl UIState {
     }
 
     // --- Modes/overlay management ---
-    pub fn set_mode(&mut self, mode: UIMode) {
+    pub const fn set_mode(&mut self, mode: UIMode) {
         self.mode = mode;
         self.request_redraw_all();
     }
 
-    pub fn set_overlay(&mut self, overlay: UIOverlay) {
+    pub const fn set_overlay(&mut self, overlay: UIOverlay) {
         self.overlay = overlay;
         self.request_redraw_all();
     }
 
-    pub fn toggle_help_overlay(&mut self) {
+    pub const fn toggle_help_overlay(&mut self) {
         self.overlay = match self.overlay {
             UIOverlay::Help => UIOverlay::None,
             _ => UIOverlay::Help,
@@ -485,6 +484,7 @@ impl UIState {
         self.command_palette.completion_index = 0;
     }
 
+    #[must_use]
     /// Check if currently in command input mode
     pub fn is_in_command_mode(&self) -> bool {
         self.mode == UIMode::Command
@@ -511,7 +511,8 @@ impl UIState {
         }
         self.request_redraw(RedrawFlag::Overlay);
     }
-    pub fn close_all_overlays(&mut self) {
+
+    pub const fn close_all_overlays(&mut self) {
         self.overlay = UIOverlay::None;
         self.request_redraw(RedrawFlag::Overlay);
     }
@@ -562,7 +563,7 @@ impl UIState {
     pub fn update_notification(&mut self) -> bool {
         if let Some(notification) = &self.notification
             && let Some(auto_dismiss_ms) = notification.auto_dismiss_ms
-            && notification.timestamp.elapsed().as_millis() > auto_dismiss_ms as u128
+            && notification.timestamp.elapsed().as_millis() > u128::from(auto_dismiss_ms)
         {
             self.notification = None;
             self.request_redraw(RedrawFlag::Notification);
@@ -573,32 +574,34 @@ impl UIState {
 
     // --- Redraw and State Management ---
     /// Mark specific UI components for redraw.
-    pub fn request_redraw(&mut self, flag: RedrawFlag) {
+    pub const fn request_redraw(&mut self, flag: RedrawFlag) {
         self.redraw_flags |= flag.bits();
     }
 
     /// Mark the entire UI for redraw.
-    pub fn request_redraw_all(&mut self) {
+    pub const fn request_redraw_all(&mut self) {
         self.redraw_flags = RedrawFlag::All.bits();
     }
 
+    #[must_use]
     /// Check if any redraw is needed.
-    pub fn needs_redraw(&self) -> bool {
+    pub const fn needs_redraw(&self) -> bool {
         self.redraw_flags != 0
     }
 
+    #[must_use]
     /// Check if a specific component needs redraw.
-    pub fn needs_redraw_for(&self, flag: RedrawFlag) -> bool {
+    pub const fn needs_redraw_for(&self, flag: RedrawFlag) -> bool {
         (self.redraw_flags & flag.bits()) != 0
     }
 
     /// Clear redraw flags (called after rendering).
-    pub fn clear_redraw(&mut self) {
+    pub const fn clear_redraw(&mut self) {
         self.redraw_flags = 0;
     }
 
     /// Clear a specific redraw flag.
-    pub fn clear_redraw_for(&mut self, flag: RedrawFlag) {
+    pub const fn clear_redraw_for(&mut self, flag: RedrawFlag) {
         self.redraw_flags &= !flag.bits();
     }
 
@@ -645,15 +648,17 @@ impl UIState {
     }
 
     // --- UI toggles/theme/panes ---
-    pub fn toggle_show_hidden(&mut self) {
+    pub const fn toggle_show_hidden(&mut self) {
         self.show_hidden = !self.show_hidden;
         self.request_redraw(RedrawFlag::Main);
     }
+
     pub fn set_theme(&mut self, theme: impl Into<String>) {
         self.theme = theme.into();
         self.request_redraw_all();
     }
-    pub fn set_active_pane(&mut self, pane: usize) {
+    
+    pub const fn set_active_pane(&mut self, pane: usize) {
         self.active_pane = pane;
         self.request_redraw_all();
     }
@@ -702,7 +707,7 @@ impl UIState {
         }
     }
 
-    pub fn show_clipboard_overlay(&mut self) {
+    pub const fn show_clipboard_overlay(&mut self) {
         self.clipboard_overlay_active = true;
         self.request_redraw(RedrawFlag::Overlay);
     }

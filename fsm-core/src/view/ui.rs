@@ -44,7 +44,7 @@ impl View {
                 UIOverlay::Search => SearchOverlay::render(frame, app, overlay_area),
 
                 UIOverlay::FileNameSearch => {
-                    FileNameSearchOverlay::render(frame, app, overlay_area)
+                    FileNameSearchOverlay::render(frame, app, overlay_area);
                 }
 
                 UIOverlay::ContentSearch => ContentSearchOverlay::render(frame, app, overlay_area),
@@ -75,6 +75,7 @@ impl View {
         }
     }
 
+    #[allow(clippy::cast_possible_truncation)]
     /// Calculate overlay position - bottom of screen, above status bar
     fn calculate_progress_overlay_area(screen_size: Rect, operation_count: usize) -> Rect {
         let height: u16 = (operation_count + 3 + 2) as u16;

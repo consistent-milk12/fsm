@@ -1,4 +1,4 @@
-//! src/view/components/command_completion.rs
+//! ``src/view/components/command_completion.rs``
 //! ============================================================================
 //! # Command Completion: Advanced Auto-completion System
 //!
@@ -45,6 +45,7 @@ impl Default for CompletionConfig {
 pub struct CommandCompletion;
 
 impl CommandCompletion {
+    #[allow(clippy::cast_possible_truncation)]
     /// Render the complete command line with auto-completion
     /// Returns the area used for the command line
     pub fn render_command_interface(
@@ -74,8 +75,8 @@ impl CommandCompletion {
             Self::render_command_line(frame, &command_text, layout[0]);
 
             // Set cursor position
-            let cursor_x =
-                (layout[0].x + command_text.len() as u16).min(layout[0].x + layout[0].width - 1);
+            let cursor_x = (layout[0].x + format!(":{input}").len() as u16)
+                .min(layout[0].x + layout[0].width - 1);
             frame.set_cursor_position((cursor_x, layout[0].y));
 
             // Render completions
@@ -95,6 +96,7 @@ impl CommandCompletion {
         }
     }
 
+    #[allow(clippy::cast_possible_truncation)]
     /// Calculate the optimal height for completion display
     fn calculate_completion_height(
         palette: &crate::model::command_palette::CommandPaletteState,
@@ -261,12 +263,13 @@ impl CommandCompletion {
             )
         };
 
-        let display_text = if config.show_descriptions {
-            if let Some(desc) = get_command_description(completion) {
-                format!("{prefix}{completion:<12} - {desc}")
-            } else {
-                format!("{prefix}{completion}")
-            }
+        let display_text: String = if config.show_descriptions {
+            get_command_description(completion)
+            .map_or_else(
+                || -> String 
+                {format!("{prefix}{completion}")},
+                 |desc: &'static str| -> String 
+                 {format!("{prefix}{completion:<12} - {desc}")})
         } else {
             format!("{prefix}{completion}")
         };
@@ -315,6 +318,7 @@ impl CommandCompletion {
         }
     }
 
+    #[must_use]
     /// Calculate the total area needed for command interface
     pub fn calculate_required_height(
         palette: &crate::model::command_palette::CommandPaletteState,

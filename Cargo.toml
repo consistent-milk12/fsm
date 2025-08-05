@@ -1,17 +1,23 @@
 [workspace]
-members = ["fsm-core", "clipr"]
+members = ["fsm-core"]
 resolver = "2"
 
 [workspace.dependencies]
 # Core async and UI dependencies
-tokio = { version = "1.47.0", features = [
+tokio = { version = "1.47.1", features = [
     "full",
     "macros",
     "rt-multi-thread",
     "time",
 ] }
-tokio-util = { version = "0.7.15", features = ["codec", "io"] }
-futures = "0.3.31"
+
+tokio-util = { version = "0.7.16", features = ["codec", "io"] }
+
+futures = { version = "*" }
+
+# Memory
+memchr = "2.7.5"
+memmap2 = "0.9.7"
 
 # Terminal UI
 ratatui = "0.29.0"
@@ -20,16 +26,18 @@ crossterm = { version = "0.29.0", features = ["event-stream"] }
 # Serialization and configuration
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = { version = "1.0.142", features = ["indexmap"] }
-toml = "0.9.4"
+toml = "0.9.5"
 
 # Error handling
 thiserror = "2.0.12"
-anyhow = "1.0.9"
+anyhow = "1.0.98"
 
 # Utilities and system info
+nanoid = { version = "0.4.0" }
 uuid = "1.17.0"
 bytesize = "2.0.1"
-sys-info = "0.9.1"
+sysinfo = "0.36.1"
+sys-info = { version = "*" }
 directories = "6.0.0"
 walkdir = "2.5.0"
 
@@ -61,6 +69,9 @@ compact_str = { version = "0.9.0", features = [
 ] }
 smallvec = { version = "1.15.1", features = ["union", "const_generics"] }
 once_cell = { version = "1.21.3" }
+simd-json = { version = "0.15.1", features = ["serde"] }
+itoa = { version = "1.0.15" }
+regex = { version = "1.11.1" }
 
 # Additional utilities
 ansi-to-tui = "7.0.0"
@@ -68,6 +79,13 @@ tempfile = { version = "3.20.0" }
 
 # Benchmarking
 criterion = { version = "0.7.0" }
+
+# Parallel Processing
+rayon = { version = "1.10.0" }
+
+# NOTE: paste dependency warning - transitive via ratatui 0.29.0
+# Will be resolved when ratatui 0.30.0 stable is released (early 2025)
+# paste crate is unmaintained but poses no security risk
 
 [profile.release]
 opt-level = 3

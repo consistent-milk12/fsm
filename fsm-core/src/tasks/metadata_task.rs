@@ -1,4 +1,4 @@
-//! src/tasks/metadata_task.rs
+//! ``src/tasks/metadata_task.rs``
 //! ============================================================================
 //! # Background Metadata Loading Task
 //!
@@ -6,7 +6,7 @@
 //! for better UI responsiveness.
 
 use crate::controller::actions::Action;
-use crate::fs::object_info::{LightObjectInfo, ObjectInfo};
+use crate::fs::object_info::{LightObjectInfo};
 use std::path::PathBuf;
 use tokio::sync::mpsc;
 use tracing::{debug, info};
@@ -20,7 +20,7 @@ pub fn load_metadata_task(
     tokio::spawn(async move {
         debug!("Loading metadata for: {}", light_info.path.display());
 
-        match ObjectInfo::from_light_info(light_info).await {
+        match light_info.into_full_info().await {
             Ok(full_info) => {
                 let _ = action_tx.send(Action::UpdateObjectInfo {
                     parent_dir,
@@ -51,12 +51,13 @@ pub fn batch_load_metadata_task(
         let mut count: usize = 0;
         for light_info in light_entries {
             let light_info_path = light_info.path.clone();
-            match ObjectInfo::from_light_info(light_info).await {
+            
+            match light_info.into_full_info().await {
                 Ok(full_info) => {
                     debug!(
                         "Metadata task sending full_info for {}: modified = {}",
                         full_info.path.display(),
-                        full_info.modified.format("%Y-%m-%d")
+                        full_info.format_date("%Y-%m-%d")
                     );
 
                     let _ = action_tx.send(Action::UpdateObjectInfo {

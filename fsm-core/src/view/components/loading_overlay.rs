@@ -11,6 +11,7 @@ use ratatui::{
 pub struct LoadingOverlay;
 
 impl LoadingOverlay {
+    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
     pub fn render(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
         let Some(loading) = &app.ui.loading else {
             return;

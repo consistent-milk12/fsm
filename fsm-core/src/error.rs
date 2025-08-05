@@ -1,10 +1,10 @@
 //! src/error.rs
 //! ============================================================================
-//! # AppError: Unified Error Type for File Manager
+//! # `Self`: Unified Error Type for File Manager
 //!
-//! This module defines the comprehensive error enum (`AppError`) used across the
+//! This module defines the comprehensive error enum (`Self`) used across the
 //! entire application. Each variant carries rich context for diagnostics, and all
-//! major modules are expected to use `Result<T, AppError>` for consistency.
+//! major modules are expected to use `Result<T, Self>` for consistency.
 
 use serde_json;
 use std::{io, path::PathBuf};
@@ -136,14 +136,15 @@ pub enum AppError {
 }
 
 impl AppError {
+    #[must_use]
     /// Attach extra context to an error.
-    pub fn with_context<S: Into<String>>(self, ctx: S) -> AppError {
-        AppError::Other(format!("{}: {}", ctx.into(), self))
+    pub fn with_context<S: Into<String>>(self, ctx: S) -> Self {
+        Self::Other(format!("{}: {}", ctx.into(), self))
     }
 
     /// Create a search failure error
     pub fn search_failed<P: Into<PathBuf>, S: Into<String>>(path: P, reason: S) -> Self {
-        AppError::SearchFailed {
+        Self::SearchFailed {
             path: path.into(),
             reason: reason.into(),
         }
@@ -156,7 +157,7 @@ impl AppError {
         P: Into<PathBuf>,
         S2: Into<String>,
     {
-        AppError::FileOperationFailed {
+        Self::FileOperationFailed {
             operation: operation.into(),
             path: path.into(),
             reason: reason.into(),
@@ -165,7 +166,7 @@ impl AppError {
 
     /// Create a navigation failure error
     pub fn navigation_failed<P: Into<PathBuf>, S: Into<String>>(path: P, reason: S) -> Self {
-        AppError::NavigationFailed {
+        Self::NavigationFailed {
             path: path.into(),
             reason: reason.into(),
         }
@@ -176,7 +177,7 @@ impl AppError {
         component: S1,
         message: S2,
     ) -> Self {
-        AppError::UiComponent {
+        Self::UiComponent {
             component: component.into(),
             message: message.into(),
         }
@@ -184,7 +185,7 @@ impl AppError {
 
     /// Create an input validation error
     pub fn invalid_input<S1: Into<String>, S2: Into<String>>(field: S1, message: S2) -> Self {
-        AppError::InvalidInput {
+        Self::InvalidInput {
             field: field.into(),
             message: message.into(),
         }
@@ -192,7 +193,7 @@ impl AppError {
 
     /// Create a task failure error
     pub fn task_failed<S: Into<String>>(task_id: u64, reason: S) -> Self {
-        AppError::TaskFailed {
+        Self::TaskFailed {
             task_id,
             reason: reason.into(),
         }
@@ -200,7 +201,7 @@ impl AppError {
 
     /// Create a task timeout error
     pub fn task_timeout<S: Into<String>>(task_type: S, timeout_secs: u64) -> Self {
-        AppError::TaskTimeout {
+        Self::TaskTimeout {
             task_type: task_type.into(),
             timeout_secs,
         }
@@ -213,7 +214,7 @@ impl AppError {
         S2: Into<String>,
         S3: Into<String>,
     {
-        AppError::CacheOperation {
+        Self::CacheOperation {
             operation: operation.into(),
             key: key.into(),
             reason: reason.into(),
@@ -225,77 +226,77 @@ impl AppError {
 impl Clone for AppError {
     fn clone(&self) -> Self {
         match self {
-            AppError::Io(e) => AppError::Io(io::Error::new(e.kind(), e.to_string())),
-            AppError::FsMetadata { path, source } => AppError::FsMetadata {
+            Self::Io(e) => Self::Io(io::Error::new(e.kind(), e.to_string())),
+            Self::FsMetadata { path, source } => Self::FsMetadata {
                 path: path.clone(),
                 source: io::Error::new(source.kind(), source.to_string()),
             },
-            AppError::PermissionDenied(path) => AppError::PermissionDenied(path.clone()),
-            AppError::NotFound(path) => AppError::NotFound(path.clone()),
-            AppError::Cache(msg) => AppError::Cache(msg.clone()),
-            AppError::Config(e) => AppError::Other(format!("Config error: {e}")),
-            AppError::ConfigIo { path, source } => AppError::ConfigIo {
+            Self::PermissionDenied(path) => Self::PermissionDenied(path.clone()),
+            Self::NotFound(path) => Self::NotFound(path.clone()),
+            Self::Cache(msg) => Self::Cache(msg.clone()),
+            Self::Config(e) => Self::Other(format!("Config error: {e}")),
+            Self::ConfigIo { path, source } => Self::ConfigIo {
                 path: path.clone(),
                 source: io::Error::new(source.kind(), source.to_string()),
             },
-            AppError::Serde(e) => AppError::Other(format!("Serde error: {e}")),
+            Self::Serde(e) => Self::Other(format!("Serde error: {e}")),
 
-            AppError::ExternalCmd { cmd, code, stderr } => AppError::ExternalCmd {
+            Self::ExternalCmd { cmd, code, stderr } => Self::ExternalCmd {
                 cmd: cmd.clone(),
                 code: *code,
                 stderr: stderr.clone(),
             },
-            AppError::Ripgrep(msg) => AppError::Ripgrep(msg.clone()),
-            AppError::SearchFailed { path, reason } => AppError::SearchFailed {
+            Self::Ripgrep(msg) => Self::Ripgrep(msg.clone()),
+            Self::SearchFailed { path, reason } => Self::SearchFailed {
                 path: path.clone(),
                 reason: reason.clone(),
             },
-            AppError::FileOperationFailed {
+            Self::FileOperationFailed {
                 operation,
                 path,
                 reason,
-            } => AppError::FileOperationFailed {
+            } => Self::FileOperationFailed {
                 operation: operation.clone(),
                 path: path.clone(),
                 reason: reason.clone(),
             },
-            AppError::NavigationFailed { path, reason } => AppError::NavigationFailed {
+            Self::NavigationFailed { path, reason } => Self::NavigationFailed {
                 path: path.clone(),
                 reason: reason.clone(),
             },
-            AppError::UiComponent { component, message } => AppError::UiComponent {
+            Self::UiComponent { component, message } => Self::UiComponent {
                 component: component.clone(),
                 message: message.clone(),
             },
-            AppError::InvalidInput { field, message } => AppError::InvalidInput {
+            Self::InvalidInput { field, message } => Self::InvalidInput {
                 field: field.clone(),
                 message: message.clone(),
             },
-            AppError::TaskFailed { task_id, reason } => AppError::TaskFailed {
+            Self::TaskFailed { task_id, reason } => Self::TaskFailed {
                 task_id: *task_id,
                 reason: reason.clone(),
             },
-            AppError::TaskTimeout {
+            Self::TaskTimeout {
                 task_type,
                 timeout_secs,
-            } => AppError::TaskTimeout {
+            } => Self::TaskTimeout {
                 task_type: task_type.clone(),
                 timeout_secs: *timeout_secs,
             },
-            AppError::CacheOperation {
+            Self::CacheOperation {
                 operation,
                 key,
                 reason,
-            } => AppError::CacheOperation {
+            } => Self::CacheOperation {
                 operation: operation.clone(),
                 key: key.clone(),
                 reason: reason.clone(),
             },
-            AppError::Cancelled => AppError::Cancelled,
-            AppError::Terminal(msg) => AppError::Terminal(msg.clone()),
-            AppError::Resize(msg) => AppError::Resize(msg.clone()),
-            AppError::Plugin(msg) => AppError::Plugin(msg.clone()),
-            AppError::Other(msg) => AppError::Other(msg.clone()),
+            Self::Cancelled => Self::Cancelled,
+            Self::Terminal(msg) => Self::Terminal(msg.clone()),
+            Self::Resize(msg) => Self::Resize(msg.clone()),
+            Self::Plugin(msg) => Self::Plugin(msg.clone()),
+            Self::Other(msg) => Self::Other(msg.clone()),
         }
     }
 }
@@ -303,6 +304,6 @@ impl Clone for AppError {
 // Allow conversion from `anyhow::Error` as fallback.
 impl From<anyhow::Error> for AppError {
     fn from(e: anyhow::Error) -> Self {
-        AppError::Other(e.to_string())
+        Self::Other(e.to_string())
     }
 }

@@ -1,4 +1,4 @@
-//! src/controller/event_loop.rs
+//! ``src/controller/event_loop.rs``
 //! ============================================================================
 //! # Enhanced Event Loop Controller with Advanced Features
 //!
@@ -116,34 +116,52 @@ impl EventLoop {
 
     /// Calculate search result count across all types with caching
     fn current_result_count(app: &AppState) -> usize {
-        let count = if let Some(ref raw_results) = app.ui.raw_search_results {
-            raw_results.lines.len()
-        } else if !app.ui.rich_search_results.is_empty() {
-            app.ui.rich_search_results.len()
-        } else {
-            app.ui.search_results.len()
-        };
+        let count: usize = app
+            .ui.raw_search_results
+            .as_ref()
+            .map_or(if app
+                    .ui
+                    .rich_search_results
+                    .is_empty() 
+                {
+                    app.ui.search_results.len()
+                } else {
+                    app.ui.rich_search_results.len()
+                }, 
+                |raw_results: &RawSearchResult| -> usize 
+                {
+                    raw_results.lines.len()
+                }
+            );
 
         trace!("Calculated result count: {}", count);
         count
     }
 
+    #[allow(clippy::cast_precision_loss)]
     /// Performance monitoring - track event processing times
     fn update_performance_metrics(&mut self, processing_time: std::time::Duration) {
         self.event_count += 1;
-        let time_ms = processing_time.as_millis() as f64;
+        let time_ms: f64 = processing_time.as_millis() as f64;
 
         // Update running average
         if self.event_count == 1 {
             self.avg_response_time = time_ms;
         } else {
-            self.avg_response_time = (self.avg_response_time * 0.9) + (time_ms * 0.1);
+            self.avg_response_time = self
+                .avg_response_time
+                .mul_add(0.9, time_ms * 0.1);
         }
 
-        // Log performance warnings
+        // Log performance warnings with profiling data
         if time_ms > 16.0 {
-            // 60fps threshold
+            // 60fps threshold - collect profiling data for slow events
+            let profiling_data = crate::logging_opt::collect_profiling_data(None, processing_time);
+            
             info!(
+                marker = "PERF_SLOW_EVENT",
+                operation_type = "event_processing", 
+                duration_ns = profiling_data.operation_duration_ns.unwrap_or(0),
                 "Slow event processing: {:.2}ms (avg: {:.2}ms)",
                 time_ms, self.avg_response_time
             );
@@ -221,7 +239,7 @@ impl EventLoop {
                 // Auto-dismiss notifications on any key
                 if has_notification {
                     debug!("Auto-dismissing notification on key press");
-                    let mut app = self.app.lock().await;
+                    let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
                     app.ui.dismiss_notification();
                     app.ui.request_redraw(RedrawFlag::All);
                     // Continue processing the key event
@@ -294,6 +312,8 @@ impl EventLoop {
 
                     app.ui.request_redraw(RedrawFlag::All);
 
+                    drop(app);
+
                     return Action::NoOp;
                 }
             }
@@ -310,6 +330,9 @@ impl EventLoop {
             let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
             app.ui.dismiss_notification();
             app.ui.request_redraw(RedrawFlag::All);
+            
+            drop(app);
+
             return Action::NoOp;
         }
 
@@ -320,14 +343,20 @@ impl EventLoop {
 
         if mode == UIMode::Command {
             debug!("Escape: checking command completions");
-            let mut app = self.app.lock().await;
+            let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
+            
             if app.ui.command_palette.show_completions {
                 debug!("Escape: hiding command completions");
                 app.ui.command_palette.hide_completions();
                 app.ui.request_redraw(RedrawFlag::All);
+
+                drop(app);
+
                 return Action::NoOp;
             }
+
             debug!("Escape: exiting command mode");
+            
             return Action::ExitCommandMode;
         }
 
@@ -335,6 +364,7 @@ impl EventLoop {
         Action::Quit
     }
 
+    #[allow(clippy::cognitive_complexity, reason="Will probably refactor later")]
     /// Enhanced command mode with improved auto-completion
     async fn handle_command_mode_keys(&self, key: crossterm::event::KeyEvent) -> Action {
         trace!("Command mode key: {:?}", key.code);
@@ -346,10 +376,14 @@ impl EventLoop {
                 app.ui.command_palette.input.push(c);
                 app.ui.command_palette.update_filter();
                 app.ui.command_palette.show_completions_if_available();
+                
                 trace!(
                     "Command input: '{}', completions available: {}",
                     app.ui.command_palette.input, app.ui.command_palette.show_completions
                 );
+
+                drop(app);
+
                 Action::NoOp
             }
 
@@ -363,6 +397,9 @@ impl EventLoop {
                     "Command input: '{}' (after backspace)",
                     app.ui.command_palette.input
                 );
+
+                drop(app);
+
                 Action::NoOp
             }
 
@@ -380,6 +417,9 @@ impl EventLoop {
                         app.ui.command_palette.selected
                     );
                 }
+
+                drop(app);
+
                 Action::NoOp
             }
 
@@ -402,6 +442,9 @@ impl EventLoop {
                         app.ui.command_palette.selected
                     );
                 }
+
+                drop(app);
+                
                 Action::NoOp
             }
 
@@ -412,36 +455,18 @@ impl EventLoop {
                     let before = app.ui.command_palette.input.clone();
                     app.ui.command_palette.apply_completion();
                     let after = app.ui.command_palette.input.clone();
+
+                    drop(app);
+
                     info!("Applied completion: '{}' -> '{}'", before, after);
                 } else {
                     trace!("Tab pressed but no completions available");
                 }
+
                 Action::NoOp
             }
 
-            KeyCode::Enter => {
-                debug!("Command mode: executing command");
-                let app = self.app.lock().await;
-                let input = app.ui.command_palette.input.trim();
-                info!("Executing command: '{}'", input);
-
-                // Try parsing user input first
-                if let Some(parsed_action) = app.ui.command_palette.parse_command() {
-                    debug!("Command parsed successfully: {:?}", parsed_action);
-                    self.map_command_action_to_action(parsed_action)
-                } else if let Some(cmd) = app
-                    .ui
-                    .command_palette
-                    .filtered
-                    .get(app.ui.command_palette.selected)
-                {
-                    debug!("Using selected command from list: {:?}", cmd.action);
-                    self.map_command_action_to_action(cmd.action.clone())
-                } else {
-                    info!("No valid command to execute, exiting command mode");
-                    Action::ExitCommandMode
-                }
-            }
+            KeyCode::Enter => self.handle_command_enter_key().await,
 
             _ => {
                 trace!("Command mode: ignoring key {:?}", key.code);
@@ -450,6 +475,32 @@ impl EventLoop {
         }
     }
 
+    async fn handle_command_enter_key(&self) -> Action {
+        debug!("Command mode: executing command");
+        let app: MutexGuard<'_, AppState> = self.app.lock().await;
+        let input: &str = app.ui.command_palette.input.trim();
+        info!("Executing command: '{}'", input);
+
+        // Try parsing user input first
+        app.ui.command_palette.parse_command().map_or_else(|| app
+            .ui
+            .command_palette
+            .filtered
+            .get(app.ui.command_palette.selected).map_or_else(|| {
+            info!("No valid command to execute, exiting command mode");
+            Action::ExitCommandMode
+        }, |cmd| {
+            debug!("Using selected command from list: {:?}", cmd.action);
+
+            Self::map_command_action_to_action(cmd.action.clone())
+        }), |parsed_action| {
+            debug!("Command parsed successfully: {:?}", parsed_action);
+
+            Self::map_command_action_to_action(parsed_action)
+        })
+    }
+
+    #[allow(clippy::unused_async)]
     /// Enhanced navigation with improved responsiveness
     async fn handle_navigation_mode_keys(&self, key: crossterm::event::KeyEvent) -> Action {
         trace!(
@@ -538,6 +589,9 @@ impl EventLoop {
                 app.ui.input.push(c);
 
                 let pattern: String = app.ui.input.clone();
+
+                drop(app);
+
                 trace!("Filename search pattern: '{}'", pattern);
                 Action::FileNameSearch(pattern)
             }
@@ -549,6 +603,9 @@ impl EventLoop {
 
                 let pattern = app.ui.input.clone();
                 trace!("Filename search pattern: '{}' (after backspace)", pattern);
+
+                drop(app);
+
                 Action::FileNameSearch(pattern)
             }
 
@@ -566,12 +623,13 @@ impl EventLoop {
                 }
 
                 // Fallback to triggering search
-                if !app.ui.input.trim().is_empty() {
-                    debug!("Triggering filename search for: '{}'", app.ui.input);
-                    Action::FileNameSearch(app.ui.input.clone())
-                } else {
+                if app.ui.input.trim().is_empty() {
+                    drop(app);
                     debug!("Closing filename search (empty input)");
                     Action::CloseOverlay
+                } else {
+                    debug!("Triggering filename search for: '{}'", app.ui.input);
+                    Action::FileNameSearch(app.ui.input.clone())
                 }
             }
 
@@ -586,6 +644,8 @@ impl EventLoop {
                     trace!("Filename search selection: {:?}", app.ui.selected);
                 }
 
+                drop(app);
+
                 Action::NoOp
             }
 
@@ -599,6 +659,8 @@ impl EventLoop {
                     app.ui.selected = Some((current + 1).min(result_count.saturating_sub(1)));
                     trace!("Filename search selection: {:?}", app.ui.selected);
                 }
+
+                drop(app);
 
                 Action::NoOp
             }
@@ -621,79 +683,47 @@ impl EventLoop {
                 app.ui.input.push(c);
 
                 // Clear previous results for real-time search
-                self.clear_search_results(&mut app);
+                Self::clear_search_results(&mut app);
                 app.ui.request_redraw(RedrawFlag::All);
                 trace!("Content search input: '{}' (results cleared)", app.ui.input);
+                
+                drop(app);
+
                 Action::NoOp
             }
 
             KeyCode::Backspace => {
                 debug!("Content search: backspace");
                 let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
+
                 app.ui.input.pop();
-                self.clear_search_results(&mut app);
+                Self::clear_search_results(&mut app);
+
                 app.ui.request_redraw(RedrawFlag::All);
                 trace!("Content search input: '{}' (after backspace)", app.ui.input);
+
+                drop(app);
+
                 Action::NoOp
             }
 
-            KeyCode::Enter => {
-                debug!("Content search: enter pressed");
-                let app: MutexGuard<'_, AppState> = self.app.lock().await;
-
-                // Try to open selected result first
-                if let Some(selected_idx) = app.ui.selected {
-                    debug!("Processing selection at index {}", selected_idx);
-
-                    // Priority: Raw -> Rich -> Simple results
-                    if let Some(ref raw_results) = app.ui.raw_search_results {
-                        debug!("Processing raw search results");
-                        if selected_idx < raw_results.lines.len() {
-                            return self
-                                .process_raw_search_line(raw_results, selected_idx)
-                                .await;
-                        }
-                    }
-
-                    if !app.ui.rich_search_results.is_empty()
-                        && selected_idx < app.ui.rich_search_results.len()
-                    {
-                        debug!("Processing rich search results");
-                        return self
-                            .process_rich_search_line(
-                                &app.ui.rich_search_results,
-                                selected_idx,
-                                &app.fs.active_pane().cwd,
-                            )
-                            .await;
-                    }
-
-                    if !app.ui.search_results.is_empty()
-                        && selected_idx < app.ui.search_results.len()
-                    {
-                        debug!("Processing simple search results");
-                        let result = &app.ui.search_results[selected_idx];
-                        info!("Opening file: {:?}", result.path);
-                        return Action::OpenFile(result.path.clone(), None);
-                    }
-                }
-
-                // No valid selection, start new search
-                let pattern = app.ui.input.clone();
-                info!("Starting content search for: '{}'", pattern);
-                Action::ContentSearch(pattern)
-            }
+            KeyCode::Enter => self.handle_content_search_enter_key().await,
 
             KeyCode::Up => {
                 debug!("Content search: navigate up");
                 let mut app = self.app.lock().await;
                 let result_count = Self::current_result_count(&app);
+                
                 if result_count > 0 {
                     let new_idx = app.ui.selected.unwrap_or(0).saturating_sub(1);
                     app.ui.selected = Some(new_idx);
                     app.ui.request_redraw(RedrawFlag::All);
+                    
+                    drop(app);
+
                     trace!("Content search selection: {}", new_idx);
                 }
+                
                 Action::NoOp
             }
 
@@ -706,6 +736,9 @@ impl EventLoop {
                     let new_idx = (current + 1).min(result_count.saturating_sub(1));
                     app.ui.selected = Some(new_idx);
                     app.ui.request_redraw(RedrawFlag::All);
+                    
+                    drop(app);
+
                     trace!("Content search selection: {}", new_idx);
                 }
                 Action::NoOp
@@ -718,8 +751,56 @@ impl EventLoop {
         }
     }
 
+    async fn handle_content_search_enter_key(&self) -> Action {
+        debug!("Content search: enter pressed");
+        let app: MutexGuard<'_, AppState> = self.app.lock().await;
+
+        // Try to open selected result first
+        if let Some(selected_idx) = app.ui.selected {
+            debug!("Processing selection at index {}", selected_idx);
+
+            // Priority: Raw -> Rich -> Simple results
+            if let Some(ref raw_results) = app.ui.raw_search_results {
+                debug!("Processing raw search results");
+                if selected_idx < raw_results.lines.len() {
+                    return self
+                        .process_raw_search_line(raw_results, selected_idx)
+                        .await;
+                }
+            }
+
+            if !app.ui.rich_search_results.is_empty()
+                && selected_idx < app.ui.rich_search_results.len()
+            {
+                debug!("Processing rich search results");
+                return self
+                    .process_rich_search_line(
+                        &app.ui.rich_search_results,
+                        selected_idx,
+                        &app.fs.active_pane().cwd,
+                    )
+                    .await;
+            }
+
+            if !app.ui.search_results.is_empty() && selected_idx < app.ui.search_results.len() {
+                debug!("Processing simple search results");
+                let result = &app.ui.search_results[selected_idx];
+                info!("Opening file: {:?}", result.path);
+                return Action::OpenFile(result.path.clone(), None);
+            }
+        }
+
+        // No valid selection, start new search
+        let pattern = app.ui.input.clone();
+        
+        drop(app);
+        
+        info!("Starting content search for: '{}'", pattern);
+        Action::ContentSearch(pattern)
+    }
+
     /// Helper to clear search results
-    fn clear_search_results(&self, app: &mut AppState) {
+    fn clear_search_results(app: &mut AppState) {
         app.ui.search_results.clear();
         app.ui.rich_search_results.clear();
         app.ui.raw_search_results = None;
@@ -727,6 +808,7 @@ impl EventLoop {
         app.ui.selected = None;
     }
 
+    #[allow(clippy::unused_async)]
     /// Enhanced raw search result processing
     async fn process_raw_search_line(
         &self,
@@ -754,6 +836,7 @@ impl EventLoop {
         Action::NoOp
     }
 
+    #[allow(clippy::unused_async)]
     /// Enhanced rich search result processing
     async fn process_rich_search_line(
         &self,
@@ -795,6 +878,9 @@ impl EventLoop {
                 debug!("Prompt: adding character '{}'", c);
                 let mut app = self.app.lock().await;
                 app.ui.input.push(c);
+                
+                drop(app);
+
                 Action::NoOp
             }
 
@@ -802,6 +888,9 @@ impl EventLoop {
                 debug!("Prompt: backspace");
                 let mut app = self.app.lock().await;
                 app.ui.input.pop();
+                
+                drop(app);
+
                 Action::NoOp
             }
 
@@ -810,12 +899,14 @@ impl EventLoop {
                 let app = self.app.lock().await;
                 let input = app.ui.input.trim().to_string();
 
-                if !input.is_empty() {
-                    info!("Submitting prompt input: '{}'", input);
-                    Action::SubmitInputPrompt(input)
-                } else {
+                drop(app);
+
+                if input.is_empty() {
                     debug!("Closing prompt (empty input)");
                     Action::CloseOverlay
+                } else {
+                    info!("Submitting prompt input: '{}'", input);
+                    Action::SubmitInputPrompt(input)
                 }
             }
 
@@ -844,9 +935,11 @@ impl EventLoop {
                     && let Some(result) = app.ui.search_results.get(selected_idx)
                 {
                     info!("Opening search result: {:?}", result.path);
-
+                    
                     return Action::OpenFile(result.path.clone(), None);
                 }
+
+                drop(app);
 
                 Action::NoOp
             }
@@ -885,7 +978,7 @@ impl EventLoop {
     }
 
     /// Enhanced command action mapping
-    fn map_command_action_to_action(&self, cmd_action: CommandAction) -> Action {
+    fn map_command_action_to_action(cmd_action: CommandAction) -> Action {
         debug!("Mapping command action: {:?}", cmd_action);
 
         let action: Action = match cmd_action {
@@ -943,13 +1036,102 @@ impl EventLoop {
     /// Enhanced action dispatcher with comprehensive error handling
     pub async fn dispatch_action(&self, action: Action) {
         let start_time = Instant::now();
-        info!("Dispatching action: {:?}", action);
 
         match action {
+            // UI actions
+            Action::ToggleHelp
+            | Action::EnterCommandMode
+            | Action::ExitCommandMode
+            | Action::ToggleFileNameSearch
+            | Action::ToggleContentSearch
+            | Action::CloseOverlay
+            | Action::ToggleShowHidden
+            | Action::SimulateLoading => self.dispatch_ui_action(action).await,
+
+            // Navigation
+            Action::MoveSelectionUp
+            | Action::MoveSelectionDown
+            | Action::PageUp
+            | Action::PageDown
+            | Action::SelectFirst
+            | Action::SelectLast
+            | Action::EnterSelected
+            | Action::GoToParent => self.dispatch_navigation_action(action).await,
+
+            // Command-driven actions
+            Action::CreateFile
+            | Action::CreateDirectory
+            | Action::CreateFileWithName(_)
+            | Action::CreateDirectoryWithName(_)
+            | Action::ReloadDirectory
+            | Action::Delete
+            | Action::RenameEntry(_)
+            | Action::GoToPath(_) => self.dispatch_command_action(action).await,
+
+            // Search
+            Action::FileNameSearch(_)
+            | Action::ContentSearch(_)
+            | Action::DirectContentSearch(_)
+            | Action::ShowSearchResults(_)
+            | Action::ShowFilenameSearchResults(_)
+            | Action::ShowRichSearchResults(_)
+            | Action::ShowRawSearchResults(_)
+            | Action::OpenFile(_, _) => self.dispatch_search_action(action).await,
+
+            // Task/Update results
+            Action::TaskResult(_)
+            | Action::DirectoryScanUpdate { .. }
+            | Action::UpdateObjectInfo { .. } => self.dispatch_task_update_action(action).await,
+
+            // Input prompts
+            Action::ShowInputPrompt(_) | Action::SubmitInputPrompt(_) => {
+                self.dispatch_prompt_action(action).await;
+            }
+
+            // File operation tasks
+            Action::Copy { .. }
+            | Action::Move { .. }
+            | Action::Rename { .. }
+            | Action::CancelFileOperation { .. } => self.dispatch_file_op_action(action).await,
+
+            // Legacy/Misc
+            Action::Sort(_) | Action::Filter(_) => {
+                self.dispatch_legacy_action(action).await;
+            }
+
             Action::Quit => {
                 info!("Quit action - handled in main loop");
             }
+            Action::Tick => {
+                // Quiet tick processing with performance monitoring
+                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
+                let redraw_needed: bool = app.ui.update_notification();
 
+                // Periodic cleanup and optimization
+                if self.event_count.is_multiple_of(1000) {
+                    trace!("Performing periodic cleanup (event #{}))", self.event_count);
+                    // Could add memory cleanup, cache pruning, etc. here
+                }
+
+                if redraw_needed {
+                    app.ui.request_redraw(RedrawFlag::All);
+                }
+            }
+            Action::Key(_) | Action::Mouse(_) | Action::Resize(..) | Action::NoOp => {
+                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
+                app.ui.request_redraw(RedrawFlag::All);
+            }
+        }
+
+        let execution_time: Duration = start_time.elapsed();
+        if execution_time.as_millis() > 10 {
+            debug!("Action dispatch took {:.2}ms", execution_time.as_millis());
+        }
+    }
+
+    #[expect(clippy::cognitive_complexity, reason = "Probably refactor later")]
+    async fn dispatch_ui_action(&self, action: Action) {
+        match action {
             Action::ToggleHelp => {
                 debug!("Toggling help overlay");
                 let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
@@ -957,8 +1139,10 @@ impl EventLoop {
                 app.ui.request_redraw(RedrawFlag::All);
 
                 info!("Help overlay toggled to: {:?}", app.ui.overlay);
+                
+                drop(app);
             }
-
+            
             Action::EnterCommandMode => {
                 debug!("Entering command mode");
                 let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
@@ -966,6 +1150,8 @@ impl EventLoop {
                 app.ui.request_redraw(RedrawFlag::All);
 
                 info!("Command mode activated");
+                
+                drop(app);
             }
 
             Action::ExitCommandMode => {
@@ -973,7 +1159,10 @@ impl EventLoop {
                 let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
                 app.ui.exit_command_mode();
                 app.ui.request_redraw(RedrawFlag::All);
+            
                 info!("Command mode deactivated");
+                
+                drop(app);
             }
 
             Action::ToggleFileNameSearch => {
@@ -983,6 +1172,8 @@ impl EventLoop {
                 app.ui.request_redraw(RedrawFlag::All);
 
                 info!("Filename search overlay toggled to: {:?}", app.ui.overlay);
+                
+                drop(app);
             }
 
             Action::ToggleContentSearch => {
@@ -998,266 +1189,8 @@ impl EventLoop {
                 }
 
                 app.ui.request_redraw(RedrawFlag::All);
-            }
-
-            Action::FileNameSearch(pattern) => {
-                info!("Starting filename search for pattern: '{}'", pattern);
-                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-                app.filename_search(pattern);
-                app.ui.request_redraw(RedrawFlag::All);
-            }
-
-            Action::ContentSearch(pattern) => {
-                info!("Starting content search for pattern: '{}'", pattern);
-                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-                app.start_content_search(pattern);
-                app.ui.request_redraw(RedrawFlag::All);
-            }
-
-            Action::DirectContentSearch(pattern) => {
-                info!("Starting direct content search for pattern: '{}'", pattern);
-                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-                app.ui.overlay = UIOverlay::ContentSearch;
-                app.ui.input.clear();
-                app.start_content_search(pattern);
-                app.ui.exit_command_mode();
-                app.ui.request_redraw(RedrawFlag::All);
-            }
-
-            // Navigation actions - optimized for performance
-            Action::MoveSelectionUp => {
-                debug!("Moving selection up");
-                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-                app.fs.active_pane_mut().move_selection_up();
-                app.ui.selected = app.fs.active_pane().selected;
-                app.ui.request_redraw(RedrawFlag::All);
-            }
-
-            Action::MoveSelectionDown => {
-                debug!("Moving selection down");
-                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-                app.fs.active_pane_mut().move_selection_down();
-                app.ui.selected = app.fs.active_pane().selected;
-                app.ui.request_redraw(RedrawFlag::All);
-            }
-
-            Action::PageUp => {
-                debug!("Page up");
-                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-                app.fs.active_pane_mut().page_up();
-                app.ui.selected = app.fs.active_pane().selected;
-                app.ui.request_redraw(RedrawFlag::All);
-            }
-
-            Action::PageDown => {
-                debug!("Page down");
-                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-                app.fs.active_pane_mut().page_down();
-                app.ui.selected = app.fs.active_pane().selected;
-                app.ui.request_redraw(RedrawFlag::All);
-            }
-
-            Action::SelectFirst => {
-                debug!("Selecting first entry");
-                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-                app.fs.active_pane_mut().select_first();
-                app.ui.selected = app.fs.active_pane().selected;
-                app.ui.request_redraw(RedrawFlag::All);
-            }
-
-            Action::SelectLast => {
-                debug!("Selecting last entry");
-                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-                app.fs.active_pane_mut().select_last();
-                app.ui.selected = app.fs.active_pane().selected;
-                app.ui.request_redraw(RedrawFlag::All);
-            }
-
-            Action::EnterSelected => {
-                debug!("Entering selected item");
-                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-                app.enter_selected_directory().await;
-                app.ui.request_redraw(RedrawFlag::All);
-            }
-
-            Action::GoToParent => {
-                info!("Going to parent directory");
-                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-                app.go_to_parent_directory().await;
-                app.ui.request_redraw(RedrawFlag::All);
-            }
-
-            // File operations with enhanced error handling
-            Action::CreateFile => {
-                info!("Creating new file (command-driven)");
-                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-                app.create_file().await;
-
-                if app.ui.is_in_command_mode() {
-                    app.ui.exit_command_mode();
-                }
-
-                app.ui.request_redraw(RedrawFlag::All);
-            }
-
-            Action::CreateDirectory => {
-                info!("Creating new directory (command-driven)");
-                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-                app.create_directory().await;
-
-                if app.ui.is_in_command_mode() {
-                    app.ui.exit_command_mode();
-                }
-
-                app.ui.request_redraw(RedrawFlag::All);
-            }
-
-            Action::CreateFileWithName(name) => {
-                info!("Creating new file '{}' (command-driven)", name);
-                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-                app.create_file_with_name(name).await;
-
-                if app.ui.is_in_command_mode() {
-                    app.ui.exit_command_mode();
-                }
-
-                app.ui.request_redraw(RedrawFlag::All);
-            }
-
-            Action::CreateDirectoryWithName(name) => {
-                info!("Creating new directory '{}' (command-driven)", name);
-                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-                app.create_directory_with_name(name).await;
-
-                if app.ui.is_in_command_mode() {
-                    app.ui.exit_command_mode();
-                }
-
-                app.ui.request_redraw(RedrawFlag::All);
-            }
-
-            Action::ReloadDirectory => {
-                info!("Reloading directory (command-driven)");
-                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-                app.reload_directory().await;
-
-                if app.ui.is_in_command_mode() {
-                    app.ui.exit_command_mode();
-                }
-
-                app.ui.request_redraw(RedrawFlag::All);
-            }
-
-            Action::Delete => {
-                info!("Delete action triggered - this should now be command-driven");
-                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-                app.delete_entry().await;
-                app.ui.request_redraw(RedrawFlag::All);
-            }
-
-            // NEW IMPLEMENTATIONS - Complete TODO sections
-            Action::RenameEntry(new_name) => {
-                info!("Renaming selected entry to '{}'", new_name);
-                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-                app.rename_selected_entry(new_name).await;
-
-                if app.ui.is_in_command_mode() {
-                    app.ui.exit_command_mode();
-                }
-
-                app.ui.request_redraw(RedrawFlag::All);
-            }
-
-            Action::GoToPath(path_str) => {
-                info!("Navigating to path: '{}'", path_str);
-                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-                app.navigate_to_path(path_str).await;
-
-                if app.ui.is_in_command_mode() {
-                    app.ui.exit_command_mode();
-                }
-
-                app.ui.request_redraw(RedrawFlag::All);
-            }
-
-            // Search result handling with enhanced performance
-            Action::ShowSearchResults(results) => {
-                info!("Showing {} search results", results.len());
-                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-                app.ui.search_results = results;
-
-                if app.ui.overlay != UIOverlay::ContentSearch {
-                    app.ui.set_overlay(UIOverlay::SearchResults);
-                } else if !app.ui.search_results.is_empty() {
-                    app.ui.selected = Some(0);
-                }
-
-                app.ui.request_redraw(RedrawFlag::All);
-            }
-
-            Action::ShowFilenameSearchResults(results) => {
-                info!("Showing {} filename search results", results.len());
-                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-                app.ui.filename_search_results = results;
-                app.ui.request_redraw(RedrawFlag::All);
-            }
-
-            Action::ShowRichSearchResults(results) => {
-                info!("Showing {} rich search results", results.len());
-                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-                app.ui.rich_search_results = results;
-
-                if app.ui.overlay == UIOverlay::ContentSearch
-                    && !app.ui.rich_search_results.is_empty()
-                {
-                    app.ui.selected = Some(0);
-                }
-
-                app.ui.request_redraw(RedrawFlag::All);
-            }
-
-            Action::ShowRawSearchResults(results) => {
-                info!("Showing {} raw search results", results.lines.len());
-                let mut app = self.app.lock().await;
-                app.ui.raw_search_results = Some(results);
-                app.ui.raw_search_selected = 0;
-
-                if app.ui.overlay == UIOverlay::ContentSearch {
-                    app.ui.selected = Some(0);
-                }
-
-                app.ui.request_redraw(RedrawFlag::All);
-            }
-
-            Action::OpenFile(path, line_number) => {
-                info!("Opening file {:?} at line {:?}", path, line_number);
-                let path_str: String = path.to_string_lossy().to_string();
-
-                let mut cmd: Command = Command::new("code");
-
-                if let Some(line) = line_number {
-                    let goto_arg = format!("{path_str}:{line}");
-                    debug!("Using VS Code --goto argument: '{}'", goto_arg);
-                    cmd.arg("--goto").arg(goto_arg);
-                } else {
-                    debug!("Opening file without line number");
-                    cmd.arg(&path_str);
-                }
-
-                match cmd.spawn() {
-                    Ok(_) => {
-                        info!("Successfully launched VS Code for file: {}", path_str);
-                        let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-                        app.ui.close_all_overlays();
-                        app.ui.request_redraw(RedrawFlag::All);
-                    }
-                    Err(e) => {
-                        warn!("Failed to open file with VS Code: {}", e);
-                        let mut app = self.app.lock().await;
-                        app.ui.show_error(format!("Failed to open file: {e}"));
-                        app.ui.request_redraw(RedrawFlag::All);
-                    }
-                }
+                
+                drop(app);
             }
 
             Action::CloseOverlay => {
@@ -1266,227 +1199,18 @@ impl EventLoop {
                 let previous_overlay = app.ui.overlay;
                 app.ui.close_all_overlays();
                 app.ui.request_redraw(RedrawFlag::All);
+                
+                drop(app);
+
                 info!("Closed overlay: {:?}", previous_overlay);
             }
-
-            // Enhanced task result processing
-            Action::TaskResult(task_result) => {
-                debug!("Processing task result: {:?}", task_result);
-                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-
-                match task_result {
-                    TaskResult::Legacy {
-                        task_id,
-                        result,
-                        progress,
-                        current_item,
-                        completed,
-                        ..
-                    } => {
-                        // Update loading state with enhanced progress tracking
-                        if let Some(ref mut loading) = app.ui.loading {
-                            if let Some(progress) = progress {
-                                loading.progress = Some(progress);
-                            }
-
-                            if let Some(current) = &current_item {
-                                loading.current_item = Some(current.clone());
-                            }
-
-                            if let Some(completed) = completed {
-                                loading.completed = Some(completed);
-                            }
-
-                            loading.spinner_frame = loading.spinner_frame.wrapping_add(1);
-                        }
-
-                        // Complete task on 100% progress
-                        if let Some(p) = progress
-                            && (p - 1.0).abs() < f64::EPSILON
-                        {
-                            app.ui.loading = None;
-                            if app.ui.overlay == UIOverlay::Loading {
-                                app.ui.overlay = UIOverlay::None;
-                                app.ui
-                                    .show_info("Loading complete. All files scanned.".to_string());
-                            }
-                        }
-
-                        app.complete_task(
-                            task_id,
-                            Some(match &result {
-                                Ok(s) => s.clone(),
-                                Err(e) => format!("Error: {e}"),
-                            }),
-                        );
-                    }
-
-                    TaskResult::FileOperationComplete {
-                        operation_id,
-                        result,
-                    } => {
-                        {
-                            let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-
-                            // Remove from tracking regardless of sucess/failure
-                            app.ui.remove_operation(&operation_id);
-                        }
-
-                        match result {
-                            Ok(()) => {
-                                info!("File operation {} completed successfully", operation_id);
-                                app.ui.show_info("File operation completed".to_string());
-                            }
-
-                            Err(e) => {
-                                if e.to_string().contains("Cancelled") {
-                                    // Don't show error for user-initiated cancellation.
-                                    debug!("Operation {operation_id} was cancelled by user.")
-                                } else {
-                                    warn!("File operation {} failed: {}", operation_id, e);
-                                    app.ui.show_error(format!("File operation failed: {e}"));
-                                }
-                            }
-                        }
-                    }
-
-                    TaskResult::FileOperationProgress {
-                        operation_id,
-                        operation_type,
-                        current_bytes,
-                        total_bytes,
-                        current_file,
-                        files_completed,
-                        total_files,
-                        start_time,
-                        throughput_bps,
-                    } => {
-                        debug!(
-                            "File operation progress: {operation_id} - {current_bytes}/{total_bytes} bytes ({files_completed}/{total_files} files)"
-                        );
-
-                        // Update active file operations progress tracking
-                        if let Some(existing_progress) =
-                            app.ui.active_file_operations.get_mut(&operation_id)
-                        {
-                            // Update active file operations progress tracking
-                            existing_progress.update(
-                                current_bytes,
-                                current_file.clone(),
-                                files_completed,
-                            );
-
-                            // Update throughput if provided
-                            if let Some(bps) = throughput_bps {
-                                existing_progress.throughput_bps = Some(bps);
-                            }
-                        } else {
-                            // Create new progress entry
-                            use crate::model::ui_state::FileOperationProgress;
-
-                            let mut progress: FileOperationProgress = FileOperationProgress::new(
-                                operation_type,
-                                total_bytes,
-                                total_files,
-                            );
-
-                            progress.start_time = start_time;
-                            progress.update(current_bytes, current_file.clone(), files_completed);
-
-                            if let Some(bps) = throughput_bps {
-                                progress.throughput_bps = Some(bps);
-                            }
-
-                            app.ui
-                                .active_file_operations
-                                .insert(operation_id.clone(), progress);
-                        }
-
-                        if let Some(ref mut loading) = app.ui.loading {
-                            if total_bytes > 0 {
-                                loading.progress = Some(current_bytes as f64 / total_bytes as f64);
-                            }
-
-                            loading.current_item = Some(
-                                current_file
-                                    .file_name()
-                                    .unwrap_or_default()
-                                    .to_string_lossy()
-                                    .to_string(),
-                            );
-
-                            loading.completed = Some(files_completed as u64);
-                            loading.total = Some(total_files as u64);
-                        }
-                    }
-                }
-
-                app.ui.request_redraw(RedrawFlag::All);
-            }
-
-            // Enhanced directory scan processing
-            Action::DirectoryScanUpdate { path, update } => {
-                debug!("Directory scan update for path: {:?}", path);
-                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-
-                if app.fs.active_pane().cwd == path {
-                    match update {
-                        ScanUpdate::Entry(entry) => {
-                            trace!("Adding incremental entry: {:?}", entry.name);
-                            app.fs.active_pane_mut().add_incremental_entry(entry);
-                            app.ui.request_redraw(RedrawFlag::All);
-                        }
-
-                        ScanUpdate::Completed(count) => {
-                            info!("Directory scan completed with {} entries", count);
-                            let entries: Vec<ObjectInfo> = app.fs.active_pane().entries.clone();
-
-                            app.fs
-                                .active_pane_mut()
-                                .complete_incremental_loading(entries);
-                            app.fs.add_recent_dir(path.clone());
-
-                            // Start background size calculation tasks
-                            let action_tx: UnboundedSender<Action> = app.action_tx.clone();
-                            let entries_for_size: Vec<ObjectInfo> =
-                                app.fs.active_pane().entries.clone();
-
-                            for entry in entries_for_size {
-                                if entry.is_dir {
-                                    crate::tasks::size_task::calculate_size_task(
-                                        path.clone(),
-                                        entry,
-                                        action_tx.clone(),
-                                    );
-                                }
-                            }
-
-                            app.ui.request_redraw(RedrawFlag::All);
-                        }
-
-                        ScanUpdate::Error(e) => {
-                            warn!("Directory scan error: {}", e);
-                            let current_pane: &mut PaneState = app.fs.active_pane_mut();
-                            current_pane.is_loading = false;
-                            current_pane.is_incremental_loading = false;
-
-                            let err_msg: String = format!("Error scanning directory: {e}");
-                            current_pane.last_error = Some(err_msg.clone());
-                            app.set_error(err_msg);
-                            app.ui.request_redraw(RedrawFlag::All);
-                        }
-                    }
-                }
-            }
-
-            // Development/debug actions
+            
             Action::ToggleShowHidden => {
                 debug!("Toggling hidden files visibility");
                 let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
                 app.ui.toggle_show_hidden();
                 app.ui.request_redraw(RedrawFlag::All);
             }
-
             Action::SimulateLoading => {
                 debug!("Simulating loading state");
                 let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
@@ -1503,8 +1227,849 @@ impl EventLoop {
                 app.ui.overlay = UIOverlay::Loading;
                 app.ui.request_redraw(RedrawFlag::All);
             }
+            _ => unreachable!(),
+        }
+    }
 
-            // Legacy actions - maintained for compatibility
+    async fn dispatch_navigation_action(&self, action: Action) {
+        let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
+        match action {
+            Action::MoveSelectionUp => {
+                debug!("Moving selection up");
+                app.fs.active_pane_mut().move_selection_up();
+                app.ui.selected = app.fs.active_pane().selected;
+            }
+            Action::MoveSelectionDown => {
+                debug!("Moving selection down");
+                app.fs.active_pane_mut().move_selection_down();
+                app.ui.selected = app.fs.active_pane().selected;
+            }
+            Action::PageUp => {
+                debug!("Page up");
+                app.fs.active_pane_mut().page_up();
+                app.ui.selected = app.fs.active_pane().selected;
+            }
+            Action::PageDown => {
+                debug!("Page down");
+                app.fs.active_pane_mut().page_down();
+                app.ui.selected = app.fs.active_pane().selected;
+            }
+            Action::SelectFirst => {
+                debug!("Selecting first entry");
+                app.fs.active_pane_mut().select_first();
+                app.ui.selected = app.fs.active_pane().selected;
+            }
+            Action::SelectLast => {
+                debug!("Selecting last entry");
+                app.fs.active_pane_mut().select_last();
+                app.ui.selected = app.fs.active_pane().selected;
+            }
+            Action::EnterSelected => {
+                debug!("Entering selected item");
+                app.enter_selected_directory().await;
+            }
+            Action::GoToParent => {
+                info!("Going to parent directory");
+                app.go_to_parent_directory().await;
+            }
+            _ => unreachable!(),
+        }
+        app.ui.request_redraw(RedrawFlag::All);
+    }
+
+    async fn dispatch_command_action(&self, action: Action) {
+        let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
+        match action {
+            Action::CreateFile => {
+                info!("Creating new file (command-driven)");
+                app.create_file().await;
+            }
+            Action::CreateDirectory => {
+                info!("Creating new directory (command-driven)");
+                app.create_directory().await;
+            }
+            Action::CreateFileWithName(name) => {
+                info!("Creating new file '{}' (command-driven)", name);
+                app.create_file_with_name(name).await;
+            }
+            Action::CreateDirectoryWithName(name) => {
+                info!("Creating new directory '{}' (command-driven)", name);
+                app.create_directory_with_name(name).await;
+            }
+            Action::ReloadDirectory => {
+                info!("Reloading directory (command-driven)");
+                app.reload_directory().await;
+            }
+            Action::Delete => {
+                info!("Delete action triggered - this should now be command-driven");
+                app.delete_entry().await;
+            }
+            Action::RenameEntry(new_name) => {
+                info!("Renaming selected entry to '{}'", new_name);
+                app.rename_selected_entry(new_name).await;
+            }
+            Action::GoToPath(path_str) => {
+                info!("Navigating to path: '{}'", path_str);
+                app.navigate_to_path(path_str).await;
+            }
+            _ => unreachable!(),
+        }
+
+        if app.ui.is_in_command_mode() {
+            app.ui.exit_command_mode();
+        }
+        app.ui.request_redraw(RedrawFlag::All);
+    }
+
+    async fn dispatch_search_action(&self, action: Action) {
+        match action {
+            Action::FileNameSearch(pattern) => {
+                info!("Starting filename search for pattern: '{}'", pattern);
+                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
+                app.filename_search(&pattern);
+                app.ui.request_redraw(RedrawFlag::All);
+            }
+            Action::ContentSearch(pattern) => {
+                info!("Starting content search for pattern: '{}'", pattern);
+                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
+                app.start_content_search(pattern);
+                app.ui.request_redraw(RedrawFlag::All);
+            }
+            Action::DirectContentSearch(pattern) => {
+                info!("Starting direct content search for pattern: '{}'", pattern);
+                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
+                app.ui.overlay = UIOverlay::ContentSearch;
+                app.ui.input.clear();
+                app.start_content_search(pattern);
+                app.ui.exit_command_mode();
+                app.ui.request_redraw(RedrawFlag::All);
+            }
+            Action::ShowSearchResults(results) => {
+                self.handle_show_search_results(results).await;
+            }
+            Action::ShowFilenameSearchResults(results) => {
+                info!("Showing {} filename search results", results.len());
+                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
+                app.ui.filename_search_results.clone_from(&results);
+                app.ui.request_redraw(RedrawFlag::All);
+            }
+            Action::ShowRichSearchResults(results) => {
+                self.handle_show_rich_search_results(results).await;
+            }
+            Action::ShowRawSearchResults(results) => {
+                self.handle_show_raw_search_results(results).await;
+            }
+            Action::OpenFile(path, line_number) => {
+                self.handle_open_file(path, line_number).await;
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    async fn handle_show_search_results(&self, results: Vec<ObjectInfo>) {
+        info!("Showing {} search results", results.len());
+        let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
+        app.ui.search_results = results;
+
+        if app.ui.overlay != UIOverlay::ContentSearch {
+            app.ui.set_overlay(UIOverlay::SearchResults);
+        } else if !app.ui.search_results.is_empty() {
+            app.ui.selected = Some(0);
+        }
+
+        app.ui.request_redraw(RedrawFlag::All);
+    }
+
+    async fn handle_show_rich_search_results(&self, results: Vec<String>) {
+        info!("Showing {} rich search results", results.len());
+        let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
+        app.ui.rich_search_results = results;
+
+        if app.ui.overlay == UIOverlay::ContentSearch && !app.ui.rich_search_results.is_empty() {
+            app.ui.selected = Some(0);
+        }
+
+        app.ui.request_redraw(RedrawFlag::All);
+    }
+
+    async fn handle_show_raw_search_results(&self, results: RawSearchResult) {
+        info!("Showing {} raw search results", results.lines.len());
+        let mut app = self.app.lock().await;
+        app.ui.raw_search_results = Some(results);
+        app.ui.raw_search_selected = 0;
+
+        if app.ui.overlay == UIOverlay::ContentSearch {
+            app.ui.selected = Some(0);
+        }
+
+        app.ui.request_redraw(RedrawFlag::All);
+    }
+
+    async fn handle_open_file(&self, path: PathBuf, line_number: Option<usize>) {
+        info!("Opening file {:?} at line {:?}", path, line_number);
+        let path_str: String = path.to_string_lossy().to_string();
+
+        let mut cmd: Command = Command::new("code");
+
+        if let Some(line) = line_number {
+            let goto_arg = format!("{path_str}:{line}");
+            debug!("Using VS Code --goto argument: '{}'", goto_arg);
+            cmd.arg("--goto").arg(goto_arg);
+        } else {
+            debug!("Opening file without line number");
+            cmd.arg(&path_str);
+        }
+
+        match cmd.spawn() {
+            Ok(_) => {
+                info!("Successfully launched VS Code for file: {}", path_str);
+                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
+                app.ui.close_all_overlays();
+                app.ui.request_redraw(RedrawFlag::All);
+            }
+            Err(e) => {
+                warn!("Failed to open file with VS Code: {}", e);
+                let mut app = self.app.lock().await;
+                app.ui.show_error(format!("Failed to open file: {e}"));
+                app.ui.request_redraw(RedrawFlag::All);
+            }
+        }
+    }
+
+    async fn dispatch_task_update_action(&self, action: Action) {
+        match action {
+            Action::TaskResult(task_result) => {
+                self.handle_task_result(task_result).await;
+            }
+            Action::DirectoryScanUpdate { path, update } => {
+                self.handle_directory_scan_update(path, update).await;
+            }
+            Action::UpdateObjectInfo { parent_dir, info } => {
+                trace!("Updating object info for {:?}", info.path);
+                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
+                app.update_object_info(&parent_dir, &info);
+                app.ui.request_redraw(RedrawFlag::All);
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    async fn handle_task_result(&self, task_result: TaskResult) {
+        debug!("Processing task result: {:?}", task_result);
+        let mut app = self.app.lock().await;
+
+        match task_result {
+            TaskResult::Legacy {
+                task_id,
+                result,
+                progress,
+                current_item,
+                completed,
+                ..
+            } => {
+                self.handle_legacy_task(
+                    &mut app,
+                    task_id,
+                    result,
+                    progress,
+                    current_item,
+                    completed,
+                )
+                .await;
+            }
+            TaskResult::FileOperationComplete {
+                operation_id,
+                result,
+            } => {
+                self.handle_file_op_complete(&mut app, operation_id, result)
+                    .await;
+            }
+            TaskResult::FileOperationProgress {
+                operation_id,
+                operation_type,
+                current_bytes,
+                total_bytes,
+                current_file,
+                files_completed,
+                total_files,
+                start_time,
+                throughput_bps,
+            } => {
+                self.handle_file_op_progress(
+                    &mut app,
+                    operation_id,
+                    operation_type,
+                    current_bytes,
+                    total_bytes,
+                    current_file,
+                    files_completed,
+                    total_files,
+                    start_time,
+                    throughput_bps,
+                )
+                .await;
+            }
+        }
+
+        app.ui.request_redraw(RedrawFlag::All);
+    }
+
+    #[allow(clippy::unused_async)]
+    async fn handle_legacy_task(
+        &self,
+        app: &mut AppState,
+        task_id: u64,
+        result: Result<String, String>,
+        progress: Option<f64>,
+        current_item: Option<String>,
+        completed: Option<u64>,
+    ) {
+        if let Some(ref mut loading) = app.ui.loading {
+            if let Some(progress) = progress {
+                loading.progress = Some(progress);
+            }
+            if let Some(current) = &current_item {
+                loading.current_item = Some(current.clone());
+            }
+            if let Some(completed) = completed {
+                loading.completed = Some(completed);
+            }
+            loading.spinner_frame = loading.spinner_frame.wrapping_add(1);
+        }
+
+        if let Some(p) = progress
+            && (p - 1.0).abs() < f64::EPSILON
+        {
+            app.ui.loading = None;
+            if app.ui.overlay == UIOverlay::Loading {
+                app.ui.overlay = UIOverlay::None;
+                app.ui
+                    .show_info("Loading complete. All files scanned.".to_string());
+            }
+        }
+
+        app.complete_task(
+            task_id,
+            Some(match &result {
+                Ok(s) => s.clone(),
+                Err(e) => format!("Error: {e}"),
+            }),
+        );
+    }
+
+    #[allow(clippy::unused_async)]
+    async fn handle_file_op_complete(
+        &self,
+        app: &mut AppState,
+        operation_id: String,
+        result: Result<(), crate::error::AppError>,
+    ) {
+        app.ui.remove_operation(&operation_id);
+
+        match result {
+            Ok(()) => {
+                info!("File operation {} completed successfully", operation_id);
+                app.ui.show_info("File operation completed".to_string());
+            }
+            Err(e) => {
+                if e.to_string().contains("Cancelled") {
+                    debug!("Operation {operation_id} was cancelled by user.");
+                } else {
+                    warn!("File operation {} failed: {}", operation_id, e);
+                    app.ui.show_error(format!("File operation failed: {e}"));
+                }
+            }
+        }
+    }
+
+    #[allow(
+        clippy::unused_async,
+        clippy::cast_precision_loss,
+        clippy::too_many_arguments
+    )]
+    async fn handle_file_op_progress(
+        &self,
+        app: &mut AppState,
+        operation_id: String,
+        operation_type: String,
+        current_bytes: u64,
+        total_bytes: u64,
+        current_file: PathBuf,
+        files_completed: u32,
+        total_files: u32,
+        start_time: Instant,
+        throughput_bps: Option<u64>,
+    ) {
+        if let Some(existing_progress) = app.ui.active_file_operations.get_mut(&operation_id) {
+            existing_progress.update(current_bytes, current_file.clone(), files_completed);
+            if let Some(bps) = throughput_bps {
+                existing_progress.throughput_bps = Some(bps);
+            }
+        } else {
+            use crate::model::ui_state::FileOperationProgress;
+            let mut progress: FileOperationProgress =
+                FileOperationProgress::new(operation_type, total_bytes, total_files);
+            progress.start_time = start_time;
+            progress.update(current_bytes, current_file.clone(), files_completed);
+            if let Some(bps) = throughput_bps {
+                progress.throughput_bps = Some(bps);
+            }
+            app.ui
+                .active_file_operations
+                .insert(operation_id.clone(), progress);
+        }
+
+        if let Some(ref mut loading) = app.ui.loading {
+            if total_bytes > 0 {
+                loading.progress = Some(current_bytes as f64 / total_bytes as f64);
+            }
+            loading.current_item = Some(
+                current_file
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string(),
+            );
+            loading.completed = Some(u64::from(files_completed));
+            loading.total = Some(u64::from(total_files));
+        }
+    }
+
+    async fn handle_directory_scan_update(&self, path: PathBuf, update: ScanUpdate) {
+        debug!("Directory scan update for path: {:?}", path);
+        let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
+
+        if app.fs.active_pane().cwd == path {
+            match update {
+                ScanUpdate::Entry(entry) => {
+                    trace!("Adding incremental entry: {:?}", entry.name);
+                    app.fs.active_pane_mut().add_incremental_entry(entry);
+                    app.ui.request_redraw(RedrawFlag::All);
+                }
+                ScanUpdate::Completed(count) => {
+                    self.handle_scan_completed(&mut app, path, count).await;
+                }
+                ScanUpdate::Error(e) => {
+                    warn!("Directory scan error: {}", e);
+                    let current_pane: &mut PaneState = app.fs.active_pane_mut();
+                    current_pane.is_loading = false;
+                    current_pane.is_incremental_loading = false;
+                    let err_msg: String = format!("Error scanning directory: {e}");
+                    current_pane.last_error = Some(err_msg.clone());
+                    app.set_error(err_msg);
+                    app.ui.request_redraw(RedrawFlag::All);
+                }
+            }
+        }
+    }
+
+    async fn dispatch_prompt_action(&self, action: Action) {
+        match action {
+            Action::ShowInputPrompt(prompt_type) => {
+                self.handle_show_input_prompt(prompt_type).await;
+            }
+            Action::SubmitInputPrompt(input) => {
+                self.handle_submit_input_prompt(input).await;
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    async fn handle_show_input_prompt(&self, prompt_type: InputPromptType) {
+        info!("Showing input prompt: {:?}", prompt_type);
+        let mut app = self.app.lock().await;
+        app.ui.show_input_prompt(prompt_type);
+        app.ui.request_redraw(RedrawFlag::All);
+    }
+
+    #[allow(clippy::unused_async)]
+    async fn handle_scan_completed(&self, app: &mut AppState, path: PathBuf, count: usize) {
+        info!("Directory scan completed with {} entries", count);
+        let entries: Vec<ObjectInfo> = app.fs.active_pane().entries.clone();
+
+        app.fs
+            .active_pane_mut()
+            .complete_incremental_loading(entries);
+        app.fs.add_recent_dir(path.clone());
+
+        let action_tx: UnboundedSender<Action> = app.action_tx.clone();
+        let entries_for_size: Vec<ObjectInfo> = app.fs.active_pane().entries.clone();
+
+        for entry in entries_for_size {
+            if entry.is_dir {
+                crate::tasks::size_task::calculate_size_task(
+                    path.clone(),
+                    entry,
+                    action_tx.clone(),
+                );
+            }
+        }
+
+        app.ui.request_redraw(RedrawFlag::All);
+    }
+
+    #[expect(clippy::significant_drop_tightening, reason = "False warning")]
+    async fn handle_submit_input_prompt(&self, input: String) {
+        info!("Submitting input prompt: '{}'", input);
+
+        let mut app = self.app.lock().await;
+        let prompt_type = app.ui.input_prompt_type.clone();
+        app.ui.hide_input_prompt();
+
+        match prompt_type {
+            Some(InputPromptType::CreateFile) => {
+                self.dispatch_create_file_action(app, input).await;
+            }
+
+            Some(InputPromptType::CreateDirectory) => {
+                self.dispatch_create_directory_action(app, input).await;
+            }
+            
+            Some(InputPromptType::Rename) => {
+                self.dispatch_rename_entry_action(app, input).await;
+            }
+            
+            Some(InputPromptType::Search) => {
+                self.dispatch_search_action_content(app, input).await;
+            }
+            
+            Some(InputPromptType::GoToPath) => {
+                self.dispatch_go_to_path_action(app, input).await;
+            }
+            
+            Some(InputPromptType::Custom(prompt_msg)) => {
+                self.process_custom_prompt_notification(app, prompt_msg, input)
+                    .await;
+            }
+            
+            Some(InputPromptType::CopyDestination) => {
+                self.process_copy_destination_prompt(app, input).await;
+            }
+            
+            Some(InputPromptType::MoveDestination) => {
+                self.process_move_destination_prompt(app, input).await;
+            }
+            
+            Some(InputPromptType::RenameFile) => {
+                self.process_rename_file_prompt(app, input).await;
+            }
+            
+            None => {
+                self.handle_missing_prompt_type(app).await;   
+            }
+        }
+    }
+
+    async fn dispatch_create_file_action(&self, app: MutexGuard<'_, AppState>, input: String) {
+        drop(app);
+        Box::pin(self.dispatch_action(Action::CreateFileWithName(input))).await;
+    }
+
+    async fn dispatch_create_directory_action(&self, app: MutexGuard<'_, AppState>, input: String) {
+        drop(app);
+        Box::pin(self.dispatch_action(Action::CreateDirectoryWithName(input))).await;
+    }
+
+    async fn dispatch_rename_entry_action(&self, app: MutexGuard<'_, AppState>, input: String) {
+        info!("Processing rename prompt with input: '{}'", input);
+        drop(app);
+        Box::pin(self.dispatch_action(Action::RenameEntry(input))).await;
+    }
+
+    async fn dispatch_search_action_content(&self, app: MutexGuard<'_, AppState>, input: String) {
+        info!("Processing search prompt with input: '{}'", input);
+
+        drop(app);
+
+        Box::pin(self.dispatch_action(Action::DirectContentSearch(input))).await;
+    }
+
+    async fn dispatch_go_to_path_action(&self, app: MutexGuard<'_, AppState>, input: String) {
+        info!("Processing go-to-path prompt with input: '{}'", input);
+        drop(app);
+        Box::pin(self.dispatch_action(Action::GoToPath(input))).await;
+    }
+
+    #[allow(clippy::unused_async)]
+    async fn process_custom_prompt_notification(
+        &self,
+        mut app: MutexGuard<'_, AppState>,
+        prompt_msg: String,
+        input: String,
+    ) {
+        info!(
+            "Processing custom prompt '{}' with input: '{}'",
+            prompt_msg, input
+        );
+
+        app.ui.show_notification(
+            format!("Custom prompt '{prompt_msg}': {input}"),
+            NotificationLevel::Info,
+            Some(3000),
+        );
+
+        app.ui.request_redraw(RedrawFlag::All);
+    }
+
+    async fn process_copy_destination_prompt(&self, app: MutexGuard<'_, AppState>, input: String) {
+        info!("Processing copy destination prompt with input: '{}'", input);
+
+        if let Some(source_path) = Self::extract_selected_file_path(&app) {
+            self.execute_copy_operation(app, source_path, input).await;
+        } else {
+            self.show_copy_error(app).await;
+        }
+    }
+
+    async fn process_move_destination_prompt(&self, app: MutexGuard<'_, AppState>, input: String) {
+        info!("Processing move destination prompt with input: '{}'", input);
+
+        if let Some(source_path) = Self::extract_selected_file_path(&app) {
+            self.execute_move_operation(app, source_path, input).await;
+        } else {
+            self.show_move_error(app).await;
+        }
+    }
+
+    async fn process_rename_file_prompt(&self, app: MutexGuard<'_, AppState>, input: String) {
+        info!("Processing rename file prompt with input: '{}'", input);
+
+        if let Some(source_path) = Self::extract_selected_file_path(&app) {
+            self.execute_rename_operation(app, source_path, input).await;
+        } else {
+            self.show_rename_error(app).await;
+        }
+    }
+
+    fn extract_selected_file_path(app: &MutexGuard<'_, AppState>) -> Option<PathBuf> {
+        app.fs.active_pane().selected.and_then(|selected_idx| {
+            app.fs
+                .active_pane()
+                .entries
+                .get(selected_idx)
+                .map(|entry| entry.path.clone())
+        })
+    }
+
+    async fn execute_copy_operation(
+        &self,
+        app: MutexGuard<'_, AppState>,
+        source_path: PathBuf,
+        input: String,
+    ) {
+        let dest_path = PathBuf::from(input);
+        drop(app);
+        Box::pin(self.dispatch_action(Action::Copy {
+            source: source_path,
+            dest: dest_path,
+        }))
+        .await;
+    }
+
+    async fn execute_move_operation(
+        &self,
+        app: MutexGuard<'_, AppState>,
+        source_path: PathBuf,
+        input: String,
+    ) {
+        let dest_path = PathBuf::from(input);
+        drop(app);
+        Box::pin(self.dispatch_action(Action::Move {
+            source: source_path,
+            dest: dest_path,
+        }))
+        .await;
+    }
+
+    async fn execute_rename_operation(
+        &self,
+        app: MutexGuard<'_, AppState>,
+        source_path: PathBuf,
+        input: String,
+    ) {
+        drop(app);
+        Box::pin(self.dispatch_action(Action::Rename {
+            source: source_path,
+            new_name: input,
+        }))
+        .await;
+    }
+
+    #[allow(clippy::unused_async)]
+    async fn show_copy_error(&self, mut app: MutexGuard<'_, AppState>) {
+        app.ui
+            .show_error("No file selected for copy operation".to_string());
+        app.ui.request_redraw(RedrawFlag::All);
+    }
+
+    #[allow(clippy::unused_async)]
+    async fn show_move_error(&self, mut app: MutexGuard<'_, AppState>) {
+        app.ui
+            .show_error("No file selected for move operation".to_string());
+        app.ui.request_redraw(RedrawFlag::All);
+    }
+
+    #[allow(clippy::unused_async)]
+    async fn show_rename_error(&self, mut app: MutexGuard<'_, AppState>) {
+        app.ui
+            .show_error("No file selected for rename operation".to_string());
+        app.ui.request_redraw(RedrawFlag::All);
+    }
+
+    #[allow(clippy::unused_async)]
+    async fn handle_missing_prompt_type(&self, mut app: MutexGuard<'_, AppState>) {
+        info!("No prompt type set when submitting input");
+        app.ui.request_redraw(RedrawFlag::All);
+    }
+
+    async fn dispatch_file_op_action(&self, action: Action) {
+        match action {
+            Action::Copy { source, dest } => {
+                self.handle_copy_operation(source, dest).await;
+            }
+            Action::Move { source, dest } => {
+                self.handle_move_operation(source, dest).await;
+            }
+            Action::Rename { source, new_name } => {
+                self.handle_rename_operation(source, new_name).await;
+            }
+            Action::CancelFileOperation { operation_id } => {
+                self.handle_cancel_file_operation(operation_id).await;
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    async fn handle_copy_operation(&self, source: PathBuf, dest: PathBuf) {
+        info!("Starting copy operation: {:?} -> {:?}", source, dest);
+
+        let operation = FileOperation::Copy {
+            source: source.clone(),
+            dest: dest.clone(),
+        };
+
+        let task = self.create_and_spawn_file_operation_task(operation).await;
+
+        let message = format!(
+            "Copying {} to {}",
+            source.file_name().unwrap_or_default().to_string_lossy(),
+            dest.display()
+        );
+
+        self.show_operation_info(message).await;
+
+        self.spawn_file_operation_task(task, "Copy").await;
+    }
+
+    async fn handle_move_operation(&self, source: PathBuf, dest: PathBuf) {
+        info!("Starting move operation: {:?} -> {:?}", source, dest);
+
+        let operation = FileOperation::Move {
+            source: source.clone(),
+            dest: dest.clone(),
+        };
+
+        let task = self.create_and_spawn_file_operation_task(operation).await;
+
+        let message = format!(
+            "Moving {} to {}",
+            source.file_name().unwrap_or_default().to_string_lossy(),
+            dest.display()
+        );
+
+        self.show_operation_info(message).await;
+
+        self.spawn_file_operation_task(task, "Move").await;
+    }
+
+    async fn handle_rename_operation(&self, source: PathBuf, new_name: String) {
+        info!("Starting rename operation: {:?} -> {}", source, new_name);
+
+        let operation = FileOperation::Rename {
+            source: source.clone(),
+            new_name: new_name.clone(),
+        };
+
+        let task = self.create_and_spawn_file_operation_task(operation).await;
+
+        let message = format!(
+            "Renaming {} to {}",
+            source.file_name().unwrap_or_default().to_string_lossy(),
+            new_name
+        );
+
+        self.show_operation_info(message).await;
+
+        self.spawn_file_operation_task(task, "Rename").await;
+    }
+
+    async fn handle_cancel_file_operation(&self, operation_id: String) {
+        info!("Cancelling file operation: {operation_id}");
+
+        // TODO: Implement actual cancellation logic in phase 2.4
+        let mut app = self.app.lock().await;
+        app.ui
+            .show_info(format!("Cancellation operations {operation_id}"));
+        app.ui.request_redraw(RedrawFlag::All);
+    }
+
+    async fn create_and_spawn_file_operation_task(
+        &self,
+        operation: FileOperation,
+    ) -> FileOperationTask {
+        let task_dependencies = self.get_task_dependencies().await;
+        let cancel_token = CancellationToken::new();
+
+        let task = FileOperationTask::new(
+            operation,
+            task_dependencies.task_tx,
+            cancel_token.clone(),
+            task_dependencies.app_handle,
+        );
+
+        self.store_cancellation_token(&task.operation_id, cancel_token)
+            .await;
+
+        task
+    }
+
+    async fn get_task_dependencies(&self) -> TaskDependencies {
+        let app = self.app.lock().await;
+        let task_tx = app.task_tx.clone();
+        let app_handle = self.app.clone();
+        drop(app);
+
+        TaskDependencies {
+            task_tx,
+            app_handle,
+        }
+    }
+
+    async fn store_cancellation_token(&self, operation_id: &str, cancel_token: CancellationToken) {
+        let mut app = self.app.lock().await;
+        app.ui
+            .store_cancel_token(operation_id.to_string(), cancel_token);
+    }
+
+    async fn show_operation_info(&self, message: String) {
+        let mut app = self.app.lock().await;
+        app.ui.show_info(message);
+        app.ui.request_redraw(RedrawFlag::All);
+    }
+
+    #[allow(clippy::unused_async)]
+    async fn spawn_file_operation_task(&self, task: FileOperationTask, operation_name: &str) {
+        let operation_name = operation_name.to_string();
+
+        tokio::spawn(async move {
+            if let Err(e) = task.execute().await {
+                eprintln!("{operation_name} operation failed: {e}");
+            }
+        });
+    }
+
+    async fn dispatch_legacy_action(&self, action: Action) {
+        match action {
             Action::Sort(_) => {
                 info!("Sort action should now be command-driven (:sort)");
                 let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
@@ -1547,356 +2112,13 @@ impl EventLoop {
                 app.filter_entries(&filter_criteria);
                 app.ui.request_redraw(RedrawFlag::All);
             }
-
-            Action::UpdateObjectInfo { parent_dir, info } => {
-                trace!("Updating object info for {:?}", info.path);
-                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-                app.update_object_info(parent_dir, info);
-                app.ui.request_redraw(RedrawFlag::All);
-            }
-
-            Action::ShowInputPrompt(prompt_type) => {
-                info!("Showing input prompt: {:?}", prompt_type);
-                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-                app.ui.show_input_prompt(prompt_type);
-                app.ui.request_redraw(RedrawFlag::All);
-            }
-
-            // ENHANCED INPUT PROMPT HANDLING - All TODOs implemented
-            Action::SubmitInputPrompt(input) => {
-                info!("Submitting input prompt: '{}'", input);
-                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-                let prompt_type: Option<InputPromptType> = app.ui.input_prompt_type.clone();
-                app.ui.hide_input_prompt();
-
-                match prompt_type {
-                    Some(InputPromptType::CreateFile) => {
-                        drop(app);
-                        Box::pin(self.dispatch_action(Action::CreateFileWithName(input))).await;
-                    }
-
-                    Some(InputPromptType::CreateDirectory) => {
-                        drop(app);
-                        Box::pin(self.dispatch_action(Action::CreateDirectoryWithName(input)))
-                            .await;
-                    }
-
-                    Some(InputPromptType::Rename) => {
-                        info!("Processing rename prompt with input: '{}'", input);
-                        drop(app);
-                        Box::pin(self.dispatch_action(Action::RenameEntry(input))).await;
-                    }
-
-                    Some(InputPromptType::Search) => {
-                        info!("Processing search prompt with input: '{}'", input);
-                        drop(app);
-                        Box::pin(self.dispatch_action(Action::DirectContentSearch(input))).await;
-                    }
-
-                    Some(InputPromptType::GoToPath) => {
-                        info!("Processing go-to-path prompt with input: '{}'", input);
-                        drop(app);
-                        Box::pin(self.dispatch_action(Action::GoToPath(input))).await;
-                    }
-
-                    Some(InputPromptType::Custom(prompt_msg)) => {
-                        info!(
-                            "Processing custom prompt '{}' with input: '{}'",
-                            prompt_msg, input
-                        );
-
-                        // Show notification with custom prompt result
-                        app.ui.show_notification(
-                            format!("Custom prompt '{prompt_msg}': {input}"),
-                            NotificationLevel::Info,
-                            Some(3000), // 3 second auto-dismiss
-                        );
-
-                        app.ui.request_redraw(RedrawFlag::All);
-                    }
-
-                    // File operation input prompts
-                    Some(InputPromptType::CopyDestination) => {
-                        info!("Processing copy destination prompt with input: '{}'", input);
-
-                        // Get current selected file path
-                        let selected_path: Option<PathBuf> = {
-                            let app: MutexGuard<'_, AppState> = self.app.lock().await;
-
-                            app.fs
-                                .active_pane()
-                                .selected
-                                .and_then(|selected_idx: usize| {
-                                    app.fs
-                                        .active_pane()
-                                        .entries
-                                        .get(selected_idx)
-                                        .map(|entry: &ObjectInfo| entry.path.clone())
-                                })
-                        };
-
-                        if let Some(source_path) = selected_path {
-                            let dest_path: PathBuf = std::path::PathBuf::from(input);
-                            drop(app);
-
-                            Box::pin(self.dispatch_action(Action::Copy {
-                                source: source_path,
-                                dest: dest_path,
-                            }))
-                            .await;
-                        } else {
-                            app.ui
-                                .show_error("No file selected for copy operation".to_string());
-                            app.ui.request_redraw(RedrawFlag::All);
-                        }
-                    }
-
-                    Some(InputPromptType::MoveDestination) => {
-                        info!("Processing move destination prompt with input: '{}'", input);
-                        // Get current selected file path
-                        let selected_path: Option<PathBuf> = {
-                            let app: MutexGuard<'_, AppState> = self.app.lock().await;
-
-                            app.fs
-                                .active_pane()
-                                .selected
-                                .and_then(|selected_idx: usize| {
-                                    app.fs
-                                        .active_pane()
-                                        .entries
-                                        .get(selected_idx)
-                                        .map(|entry: &ObjectInfo| entry.path.clone())
-                                })
-                        };
-
-                        if let Some(source_path) = selected_path {
-                            let dest_path: PathBuf = std::path::PathBuf::from(input);
-                            drop(app);
-                            Box::pin(self.dispatch_action(Action::Move {
-                                source: source_path,
-                                dest: dest_path,
-                            }))
-                            .await;
-                        } else {
-                            app.ui
-                                .show_error("No file selected for move operation".to_string());
-
-                            app.ui.request_redraw(RedrawFlag::All);
-                        }
-                    }
-                    Some(InputPromptType::RenameFile) => {
-                        info!("Processing rename file prompt with input: '{}'", input);
-                        // Get current selected file path
-                        let selected_path: Option<PathBuf> = {
-                            let app: MutexGuard<'_, AppState> = self.app.lock().await;
-
-                            app.fs
-                                .active_pane()
-                                .selected
-                                .and_then(|selected_idx: usize| {
-                                    app.fs
-                                        .active_pane()
-                                        .entries
-                                        .get(selected_idx)
-                                        .map(|entry: &ObjectInfo| entry.path.clone())
-                                })
-                        };
-
-                        if let Some(source_path) = selected_path {
-                            drop(app);
-                            Box::pin(self.dispatch_action(Action::Rename {
-                                source: source_path,
-                                new_name: input,
-                            }))
-                            .await;
-                        } else {
-                            app.ui
-                                .show_error("No file selected for rename operation".to_string());
-
-                            app.ui.request_redraw(RedrawFlag::All);
-                        }
-                    }
-                    None => {
-                        info!("No prompt type set when submitting input");
-                        app.ui.request_redraw(RedrawFlag::All);
-                    }
-                }
-            }
-
-            Action::Tick => {
-                // Quiet tick processing with performance monitoring
-                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-                let redraw_needed: bool = app.ui.update_notification();
-
-                // Periodic cleanup and optimization
-                if self.event_count.is_multiple_of(1000) {
-                    trace!("Performing periodic cleanup (event #{}))", self.event_count);
-                    // Could add memory cleanup, cache pruning, etc. here
-                }
-
-                if redraw_needed {
-                    app.ui.request_redraw(RedrawFlag::All);
-                }
-            }
-
-            // NEW FILE OPERATIONS - Core functionality implementation
-            Action::Copy { source, dest } => {
-                info!("Starting copy operation: {:?} -> {:?}", source, dest);
-                let app: MutexGuard<'_, AppState> = self.app.lock().await;
-                let task_tx: UnboundedSender<TaskResult> = app.task_tx.clone();
-                let app_handle: Arc<Mutex<AppState>> = self.app.clone();
-                drop(app);
-
-                // Create and spawn file operation task
-                let cancel_token: CancellationToken = CancellationToken::new();
-
-                let task: FileOperationTask = FileOperationTask::new(
-                    FileOperation::Copy {
-                        source: source.clone(),
-                        dest: dest.clone(),
-                    },
-                    task_tx,
-                    cancel_token.clone(),
-                    app_handle,
-                );
-
-                // Store cancellation token in UI state for ESC key access
-                {
-                    let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-
-                    app.ui
-                        .store_cancel_token(task.operation_id.clone(), cancel_token);
-                }
-
-                tokio::spawn(async move {
-                    if let Err(e) = task.execute().await {
-                        eprintln!("Copy operation failed: {e}");
-                    }
-                });
-
-                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-                app.ui.show_info(format!(
-                    "Copying {} to {}",
-                    source.file_name().unwrap_or_default().to_string_lossy(),
-                    dest.display()
-                ));
-
-                app.ui.request_redraw(RedrawFlag::All);
-            }
-
-            Action::Move { source, dest } => {
-                info!("Starting move operation: {:?} -> {:?}", source, dest);
-                let app: MutexGuard<'_, AppState> = self.app.lock().await;
-                let task_tx: UnboundedSender<TaskResult> = app.task_tx.clone();
-                let app_handle: Arc<Mutex<AppState>> = self.app.clone();
-                drop(app);
-
-                // Create and spawn file operation task
-                let cancel_token: CancellationToken = CancellationToken::new();
-
-                let task: FileOperationTask = FileOperationTask::new(
-                    FileOperation::Move {
-                        source: source.clone(),
-                        dest: dest.clone(),
-                    },
-                    task_tx,
-                    cancel_token.clone(),
-                    app_handle,
-                );
-
-                // Store cancellation token in UI state for ESC key access
-                {
-                    let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-
-                    app.ui
-                        .store_cancel_token(task.operation_id.clone(), cancel_token);
-                }
-
-                tokio::spawn(async move {
-                    if let Err(e) = task.execute().await {
-                        eprintln!("Move operation failed: {e}");
-                    }
-                });
-
-                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-
-                app.ui.show_info(format!(
-                    "Moving {} to {}",
-                    source.file_name().unwrap_or_default().to_string_lossy(),
-                    dest.display()
-                ));
-
-                app.ui.request_redraw(RedrawFlag::All);
-            }
-
-            Action::Rename { source, new_name } => {
-                info!("Starting rename operation: {:?} -> {}", source, new_name);
-                let app: MutexGuard<'_, AppState> = self.app.lock().await;
-                let task_tx: UnboundedSender<TaskResult> = app.task_tx.clone();
-                let app_handle: Arc<Mutex<AppState>> = self.app.clone();
-                drop(app);
-
-                // Create and spawn file operation task
-                let cancel_token: CancellationToken = CancellationToken::new();
-
-                let task: FileOperationTask = FileOperationTask::new(
-                    FileOperation::Rename {
-                        source: source.clone(),
-                        new_name: new_name.clone(),
-                    },
-                    task_tx,
-                    cancel_token.clone(),
-                    app_handle,
-                );
-
-                // Store cancellation token in UI state for ESC key access
-                {
-                    let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-
-                    app.ui
-                        .store_cancel_token(task.operation_id.clone(), cancel_token);
-                }
-
-                tokio::spawn(async move {
-                    if let Err(e) = task.execute().await {
-                        eprintln!("Rename operation failed: {e}");
-                    }
-                });
-
-                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-
-                app.ui.show_info(format!(
-                    "Renaming {} to {}",
-                    source.file_name().unwrap_or_default().to_string_lossy(),
-                    new_name
-                ));
-
-                app.ui.request_redraw(RedrawFlag::All);
-            }
-
-            Action::CancelFileOperation { operation_id } => {
-                info!("Cancelling file operation: {operation_id}");
-
-                // TODO: Implement actual cancellation logic in phase 2.4
-                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-
-                app.ui
-                    .show_info(format!("Cancellation operations {operation_id}"));
-
-                app.ui.request_redraw(RedrawFlag::All);
-            }
-
-            // Pass-through actions
-            Action::Key(_) | Action::Mouse(_) | Action::Resize(..) | Action::NoOp => {
-                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-                app.ui.request_redraw(RedrawFlag::All);
-            }
-        }
-
-        let execution_time: Duration = start_time.elapsed();
-
-        if execution_time.as_millis() > 10 {
-            debug!("Action dispatch took {:.2}ms", execution_time.as_millis());
+            _ => unreachable!(),
         }
     }
+}
+
+// Helper struct to group task dependencies
+struct TaskDependencies {
+    task_tx: UnboundedSender<TaskResult>,
+    app_handle: Arc<Mutex<AppState>>,
 }

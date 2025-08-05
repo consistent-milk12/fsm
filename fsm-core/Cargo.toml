@@ -11,7 +11,7 @@ categories = ["command-line-utilities", "filesystem"]
 
 [dependencies]
 # Local workspace dependencies
-clipr = { path = "../clipr" }
+# clipr = { path = "../clipr" }
 
 # Core async and UI dependencies
 tokio = { workspace = true }
@@ -32,9 +32,10 @@ thiserror = { workspace = true }
 anyhow = { workspace = true }
 
 # Utilities and system info
+nanoid = { workspace = true }
 uuid = { workspace = true }
 bytesize = { workspace = true }
-sys-info = { workspace = true }
+sysinfo = { workspace = true }
 directories = { workspace = true }
 walkdir = { workspace = true }
 
@@ -53,6 +54,8 @@ dashmap = { workspace = true, features = ["inline", "serde", "typesize"] }
 compact_str = { workspace = true }
 smallvec = { workspace = true }
 once_cell = { workspace = true }
+itoa = { workspace = true }
+regex = { workspace = true }
 
 # Additional utilities
 ansi-to-tui = { workspace = true }
@@ -65,17 +68,15 @@ criterion = { workspace = true, features = [
     "csv_output",
 ] }
 
+# Memory
+memchr = { workspace = true }
+memmap2 = { workspace = true }
+simd-json = { workspace = true, features = ["serde"] }
+
+# Parallel Processing
+rayon = { workspace = true }
+sys-info.workspace = true
+
 [[bin]]
 name = "fsm"
 path = "src/main.rs"
-
-[features]
-default = ["file-operations", "search", "plugins"]
-file-operations = []
-search = []
-plugins = []
-debug-logging = []
-
-[[bench]]
-name = "logging_benchmark"
-harness = false

@@ -4,7 +4,6 @@
 //!
 //! This module defines the color constants for the Catppuccin Mocha theme.
 //! Colors are from the official Catppuccin theme specification:
-//! https://github.com/catppuccin/catppuccin
 
 use ratatui::style::Color;
 

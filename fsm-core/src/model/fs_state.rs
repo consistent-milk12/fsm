@@ -1,6 +1,6 @@
-//! src/model/fs_state.rs
+//! ``src/model/fs_state.rs``
 //! ============================================================================
-//! # FSState: Advanced Filesystem State for Power Users
+//! # `FSState`: Advanced Filesystem State for Power Users
 //!
 //! Manages current working directories (multi-pane), directory entries, filters/sorts,
 //! scan/loading/error state, batch op status, and history for the session.
@@ -26,14 +26,21 @@ pub enum EntrySort {
 impl std::fmt::Display for EntrySort {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let s = match self {
-            EntrySort::NameAsc => "name_asc",
-            EntrySort::NameDesc => "name_desc",
-            EntrySort::SizeAsc => "size_asc",
-            EntrySort::SizeDesc => "size_desc",
-            EntrySort::ModifiedAsc => "modified_asc",
-            EntrySort::ModifiedDesc => "modified_desc",
-            EntrySort::Custom(s) => s,
+            Self::NameAsc => "name_asc",
+            
+            Self::NameDesc => "name_desc",
+            
+            Self::SizeAsc => "size_asc",
+            
+            Self::SizeDesc => "size_desc",
+            
+            Self::ModifiedAsc => "modified_asc",
+            
+            Self::ModifiedDesc => "modified_desc",
+            
+            Self::Custom(s) => s,
         };
+
         write!(f, "{s}")
     }
 }
@@ -51,13 +58,17 @@ pub enum EntryFilter {
 impl std::fmt::Display for EntryFilter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let s = match self {
-            EntryFilter::All => "all",
-            EntryFilter::FilesOnly => "files_only",
-            EntryFilter::DirsOnly => "dirs_only",
-            EntryFilter::Extension(s) => s,
-            EntryFilter::Pattern(s) => s,
-            EntryFilter::Custom(s) => s,
+            Self::All => "all",
+            
+            Self::FilesOnly => "files_only",
+            
+            Self::DirsOnly => "dirs_only",
+            
+            Self::Extension(s) 
+            | Self::Pattern(s) 
+            | Self::Custom(s) => s,
         };
+
         write!(f, "{s}")
     }
 }
@@ -68,7 +79,7 @@ pub struct PaneState {
     /// The working directory for this pane.
     pub cwd: PathBuf,
 
-    /// The directory contents as ObjectInfo snapshot.
+    /// The directory contents as `ObjectInfo` snapshot.
     pub entries: Vec<ObjectInfo>,
 
     /// Selected index in entries.
@@ -109,6 +120,7 @@ pub struct PaneState {
 }
 
 impl PaneState {
+    #[must_use]
     pub fn new(cwd: PathBuf) -> Self {
         Self {
             cwd,
@@ -135,17 +147,19 @@ impl PaneState {
         self.table_state.select(Some(0));
     }
 
+    #[must_use]
     /// Get currently selected entry (if any).
     pub fn selected_entry(&self) -> Option<&ObjectInfo> {
         self.selected.and_then(|idx: usize| self.entries.get(idx))
     }
 
     /// Update viewport height when terminal size changes
-    pub fn set_viewport_height(&mut self, height: usize) {
+    pub const fn set_viewport_height(&mut self, height: usize) {
         self.viewport_height = height.saturating_sub(3); // Account for header and border
         self.adjust_scroll();
     }
 
+    #[must_use]
     /// Get visible entries for virtual scrolling
     pub fn visible_entries(&self) -> &[ObjectInfo] {
         let start: usize = self.scroll_offset;
@@ -183,7 +197,7 @@ impl PaneState {
     }
 
     /// Adjust scroll offset to keep selection visible
-    fn adjust_scroll(&mut self) {
+    const fn adjust_scroll(&mut self) {
         if let Some(selected) = self.selected {
             // If selection is above viewport, scroll up
             if selected < self.scroll_offset {
@@ -329,43 +343,9 @@ pub struct FSState {
     pub favorite_dirs: HashSet<PathBuf>,
 }
 
-/// The type of the filesystem object.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ObjectType {
-    Dir,
-    File,
-    Symlink,
-    // Extendable: Add Archive, Image, Video, Custom, etc.
-    Other(String),
-}
-
-impl std::fmt::Display for ObjectType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ObjectType::Dir => write!(f, "Dir"),
-            ObjectType::File => write!(f, "File"),
-            ObjectType::Symlink => write!(f, "Symlink"),
-            ObjectType::Other(ext) => write!(f, "{ext}"),
-        }
-    }
-}
-
-impl ObjectType {
-    // You may want to move this logic to ObjectInfo itself, but shown here for clarity.
-    pub fn from_object_info(obj: &crate::fs::object_info::ObjectInfo) -> ObjectType {
-        if obj.is_dir {
-            ObjectType::Dir
-        } else if obj.is_symlink {
-            ObjectType::Symlink
-        } else if let Some(ext) = obj.extension.as_deref() {
-            ObjectType::Other(ext.to_ascii_uppercase())
-        } else {
-            ObjectType::File
-        }
-    }
-}
 
 impl FSState {
+    #[must_use]
     /// Construct FS state with one pane in the given directory.
     pub fn new(cwd: PathBuf) -> Self {
         Self {
@@ -382,13 +362,14 @@ impl FSState {
         &mut self.panes[self.active_pane]
     }
 
+    #[must_use]
     /// Get the currently active pane as immutable.
     pub fn active_pane(&self) -> &PaneState {
         &self.panes[self.active_pane]
     }
 
     /// Switch focus to a different pane.
-    pub fn set_active_pane(&mut self, idx: usize) {
+    pub const fn set_active_pane(&mut self, idx: usize) {
         if idx < self.panes.len() {
             self.active_pane = idx;
         }
@@ -413,6 +394,6 @@ impl FSState {
 
 impl Default for FSState {
     fn default() -> Self {
-        FSState::new(PathBuf::from("."))
+        Self::new(PathBuf::from("."))
     }
 }

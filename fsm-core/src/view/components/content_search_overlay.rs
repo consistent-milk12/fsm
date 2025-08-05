@@ -1,6 +1,6 @@
-//! src/view/components/content_search_overlay.rs
-//! ============================================================================
-//! # ContentSearchOverlay: Production-quality content search with ripgrep
+//! ``src/view/components/content_search_overlay.rs``
+//!
+//! # `ContentSearchOverlay`: Production-quality content search with ripgrep
 //!
 //! Enhanced search interface with real-time feedback, syntax highlighting,
 //! and comprehensive search result display with context and navigation.
@@ -59,6 +59,7 @@ impl ContentSearchOverlay {
         }
     }
 
+    #[allow(clippy::cast_possible_truncation)]
     /// Render enhanced search input with visual feedback
     fn render_search_input(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
         // Determine input state for visual feedback
@@ -219,8 +220,7 @@ impl ContentSearchOverlay {
                 let dir_path = entry
                     .path
                     .parent()
-                    .map(|p| p.to_string_lossy().to_string())
-                    .unwrap_or_else(|| ".".to_string());
+                    .map_or_else(|| ".".to_string(), |p| p.to_string_lossy().to_string());
 
                 let display_text = format!("{} {} ({})", icons::FILE_ICON, file_name, dir_path);
 

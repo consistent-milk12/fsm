@@ -1,4 +1,4 @@
-//! src/tasks/size_task.rs
+//! ``src/tasks/size_task.rs``
 //! ============================================================================
 //! # Size Task: Background Directory Size Calculation
 //!
@@ -13,6 +13,7 @@ use tracing::{info, warn};
 use walkdir::WalkDir;
 
 /// Spawns a Tokio task to calculate the recursive size and direct item count for a directory.
+///
 /// Size is calculated recursively (all files in subdirectories), but item count only
 /// includes direct children (files + folders in the immediate directory).
 ///
@@ -37,13 +38,13 @@ pub fn calculate_size_task(
     let m_path: PathBuf = path.clone();
 
     tokio::spawn(async move {
-        let result = tokio::task::spawn_blocking(move || {
+        let result = tokio::task::spawn_blocking(
+            move || -> (u64, usize) {
             let mut total_size: u64 = 0;
             let mut items_count: usize = 0;
 
-            let tmp: PathBuf = path.clone();
             // Calculate recursive size for files, but only count direct children
-            for entry in WalkDir::new(&tmp)
+            for entry in WalkDir::new(&path)
                 .min_depth(1)
                 .into_iter()
                 .filter_map(Result::ok)
@@ -56,7 +57,7 @@ pub fn calculate_size_task(
             }
 
             // Count only direct children (files + directories)
-            if let Ok(entries) = std::fs::read_dir(&tmp) {
+            if let Ok(entries) = std::fs::read_dir(&path) {
                 for _entry in entries.filter_map(Result::ok) {
                     items_count += 1;
                 }
@@ -70,7 +71,7 @@ pub fn calculate_size_task(
             Ok((total_size, items_count)) => {
                 if total_size > 0 || items_count > 0 {
                     object_info.size = total_size;
-                    object_info.items_count = items_count;
+                    object_info.items_count = items_count as u64;
 
                     let action = Action::UpdateObjectInfo {
                         parent_dir,

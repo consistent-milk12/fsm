@@ -1,8 +1,8 @@
-//! src/view/components/object_table.rs
-//! ============================================================================
-//! # ObjectTable: Advanced Filesystem Table Component
+//! ``src/view/components/object_table.rs``
 //!
-//! Renders a live directory table using PaneState entries.
+//! # `ObjectTable`: Advanced Filesystem Table Component
+//!
+//! Renders a live directory table using `PaneState` entries.
 //! - Fully async-updatable, selection-aware
 //! - Handles directories, symlinks, files, and custom types
 //! - Shows keymap in the footer, all using ratatui v0.25+
@@ -110,7 +110,7 @@ impl ObjectTable {
                 Cell::from(type_str.to_string()),
                 Cell::from(items_str),
                 Cell::from(size_str),
-                Cell::from(obj.modified.format("%d/%m/%Y %I:%M:%S %p").to_string()),
+                Cell::from(obj.format_date("%d/%m/%Y %I:%M:%S %p")),
             ])
             .style(style)
         });
@@ -201,7 +201,7 @@ impl ObjectTable {
 
             // Key in bold purple
             spans.push(Span::styled(
-                key.to_string(),
+                (*key).to_string(),
                 Style::default()
                     .fg(theme::PURPLE)
                     .add_modifier(Modifier::BOLD),

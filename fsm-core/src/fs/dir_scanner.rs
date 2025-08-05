@@ -1,6 +1,6 @@
-//! src/fs/dir_scanner.rs
-//! ============================================================================
-//! # Directory Scanner: Asynchronous Filesystem Listing
+//! ``src/fs/dir_scanner.rs``
+//!
+//! # `Directory Scanner`: Asynchronous Filesystem Listing
 //!
 //! Provides an asynchronous function to scan a directory and return a sorted
 //! list of `ObjectInfo` entries. Designed for non-blocking UI updates.
@@ -8,6 +8,7 @@
 use crate::error::AppError;
 use crate::fs::object_info::{LightObjectInfo, ObjectInfo};
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 use tokio::fs;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -29,7 +30,7 @@ pub async fn scan_dir(path: &Path, show_hidden: bool) -> Result<Vec<ObjectInfo>,
             .and_then(|s: &std::ffi::OsStr| s.to_str())
             .unwrap_or("");
 
-        if !show_hidden && file_name.starts_with(".") {
+        if !show_hidden && file_name.starts_with('.') {
             continue;
         }
 
@@ -58,7 +59,7 @@ pub async fn scan_dir(path: &Path, show_hidden: bool) -> Result<Vec<ObjectInfo>,
 }
 
 /// Represents a scanning progress update
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScanUpdate {
     /// A new entry was discovered
     Entry(ObjectInfo),
@@ -68,6 +69,7 @@ pub enum ScanUpdate {
     Error(String),
 }
 
+#[allow(clippy::unused_async)]
 /// Scans directory with streaming updates and two-phase metadata loading
 ///
 /// # Arguments
@@ -91,170 +93,172 @@ pub async fn scan_dir_streaming_with_background_metadata(
     let (tx, rx) = mpsc::unbounded_channel();
 
     let handle = tokio::spawn(async move {
-        let mut entries: Vec<ObjectInfo> = Vec::new();
-        let mut light_entries: Vec<LightObjectInfo> = Vec::new();
-        let mut processed: u64 = 0;
-
-        let read_dir_result = fs::read_dir(&path).await;
-        let mut read_dir = match read_dir_result {
-            Ok(rd) => rd,
-            Err(e) => {
-                let app_error = AppError::from(e);
-                let _ = tx.send(ScanUpdate::Error(app_error.to_string()));
-                return Err(app_error);
-            }
-        };
-
-        // Phase 1: Quick scan for basic info
-        while let Some(entry_result) = read_dir.next_entry().await.transpose() {
-            let entry = match entry_result {
-                Ok(e) => e,
-                Err(e) => {
-                    let app_error = AppError::from(e);
-                    let _ = tx.send(ScanUpdate::Error(app_error.to_string()));
-                    continue;
-                }
-            };
-
-            let entry_path = entry.path();
-            let file_name = entry_path
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or("");
-
-            if !show_hidden && file_name.starts_with(".") {
-                continue;
-            }
-
-            match ObjectInfo::from_path_light(&entry_path).await {
-                Ok(light_info) => {
-                    // Create ObjectInfo with placeholder metadata for immediate display
-                    let placeholder_info =
-                        ObjectInfo::with_placeholder_metadata(light_info.clone());
-
-                    // Send streaming update immediately
-                    if tx
-                        .send(ScanUpdate::Entry(placeholder_info.clone()))
-                        .is_err()
-                    {
-                        // Receiver dropped, stop scanning
-                        break;
-                    }
-
-                    entries.push(placeholder_info);
-                    light_entries.push(light_info);
-                    processed += 1;
-
-                    // Yield control periodically for responsiveness
-                    if processed.is_multiple_of(batch_size as u64) {
-                        tokio::task::yield_now().await;
-                    }
-                }
-                Err(e) => {
-                    tracing::info!("Failed to get basic info for {:?}: {}", entry_path, e);
-                    let _ = tx.send(ScanUpdate::Error(e.to_string()));
-                }
-            }
-        }
-
-        // Sort entries: directories first, then alphabetically by name
-        entries.sort_by(|a, b| {
-            if a.is_dir && !b.is_dir {
-                std::cmp::Ordering::Less
-            } else if !a.is_dir && b.is_dir {
-                std::cmp::Ordering::Greater
-            } else {
-                a.name.cmp(&b.name)
-            }
-        });
-
-        // Send completion notification
-        let _ = tx.send(ScanUpdate::Completed(entries.len()));
-
-        // Phase 2: Start background metadata loading
-        if !light_entries.is_empty() {
-            crate::tasks::metadata_task::batch_load_metadata_task(
-                path.clone(),
-                light_entries,
-                action_tx,
-                5, // Metadata batch size
-            );
-        }
-
-        Ok(entries)
+        let scanner = DirectoryScanner::new(path, show_hidden, batch_size, action_tx, tx);
+        scanner.scan().await
     });
 
     (rx, handle)
 }
 
-/// Original streaming scanner (kept for compatibility)
-pub async fn scan_dir_streaming(
+struct DirectoryScanner {
     path: PathBuf,
     show_hidden: bool,
     batch_size: usize,
-) -> (
-    mpsc::UnboundedReceiver<ScanUpdate>,
-    tokio::task::JoinHandle<Result<Vec<ObjectInfo>, AppError>>,
-) {
-    let (tx, rx) = mpsc::unbounded_channel();
+    action_tx: mpsc::UnboundedSender<crate::controller::actions::Action>,
+    tx: mpsc::UnboundedSender<ScanUpdate>,
+}
 
-    let handle = tokio::spawn(async move {
-        let mut entries: Vec<ObjectInfo> = Vec::new();
-        let mut processed: u64 = 0;
+impl DirectoryScanner {
+    const fn new(
+        path: PathBuf,
+        show_hidden: bool,
+        batch_size: usize,
+        action_tx: mpsc::UnboundedSender<crate::controller::actions::Action>,
+        tx: mpsc::UnboundedSender<ScanUpdate>,
+    ) -> Self {
+        Self {
+            path,
+            show_hidden,
+            batch_size,
+            action_tx,
+            tx,
+        }
+    }
 
-        let read_dir_result = fs::read_dir(&path).await;
-        let mut read_dir = match read_dir_result {
-            Ok(rd) => rd,
-            Err(e) => {
-                let app_error = AppError::from(e);
-                let _ = tx.send(ScanUpdate::Error(app_error.to_string()));
-                return Err(app_error);
-            }
-        };
+    async fn scan(self) -> Result<Vec<ObjectInfo>, AppError> {
+        let mut entries = Vec::new();
+        let mut light_entries = Vec::new();
+
+        // Phase 1: Quick scan for basic info
+        self.perform_quick_scan(&mut entries, &mut light_entries)
+            .await?;
+
+        // Sort entries by directory first, then alphabetically
+        Self::sort_entries(&mut entries);
+
+        // Send completion notification
+        let _ = self.tx.send(ScanUpdate::Completed(entries.len()));
+
+        // Phase 2: Start background metadata loading
+        self.start_background_metadata_loading(light_entries);
+
+        Ok(entries)
+    }
+
+    async fn perform_quick_scan(
+        &self,
+        entries: &mut Vec<ObjectInfo>,
+        light_entries: &mut Vec<LightObjectInfo>,
+    ) -> Result<(), AppError> {
+        let mut read_dir = self.initialize_directory_reader().await?;
+        let mut processed = 0u64;
 
         while let Some(entry_result) = read_dir.next_entry().await.transpose() {
             let entry = match entry_result {
                 Ok(e) => e,
+
                 Err(e) => {
                     let app_error = AppError::from(e);
-                    let _ = tx.send(ScanUpdate::Error(app_error.to_string()));
+                    let _ = self.tx.send(ScanUpdate::Error(app_error.to_string()));
                     continue;
                 }
             };
 
-            let entry_path = entry.path();
-            let file_name = entry_path
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or("");
-
-            if !show_hidden && file_name.starts_with(".") {
+            if self.should_skip_entry(&entry) {
                 continue;
             }
 
-            match ObjectInfo::from_path(&entry_path).await {
-                Ok(info) => {
-                    // Send streaming update
-                    if tx.send(ScanUpdate::Entry(info.clone())).is_err() {
-                        // Receiver dropped, stop scanning
-                        break;
-                    }
-                    entries.push(info);
-                    processed += 1;
+            if self
+                .process_directory_entry(entry, entries, light_entries)
+                .await
+            {
+                processed += 1;
 
-                    // Yield control periodically for responsiveness
-                    if processed.is_multiple_of(batch_size as u64) {
-                        tokio::task::yield_now().await;
-                    }
+                // Yield control periodically for responsiveness
+                if processed.is_multiple_of(self.batch_size as u64) {
+                    tokio::task::yield_now().await;
                 }
-                Err(e) => {
-                    tracing::info!("Failed to get ObjectInfo for {:?}: {}", entry_path, e);
-                    let _ = tx.send(ScanUpdate::Error(e.to_string()));
-                }
+            } else {
+                // Receiver dropped, stop scanning
+                break;
             }
         }
 
-        // Sort entries: directories first, then alphabetically by name
+        Ok(())
+    }
+
+    async fn initialize_directory_reader(&self) -> Result<fs::ReadDir, AppError> {
+        match fs::read_dir(&self.path).await {
+            Ok(read_dir) => Ok(read_dir),
+            Err(e) => {
+                let app_error = AppError::from(e);
+                let _ = self.tx.send(ScanUpdate::Error(app_error.to_string()));
+                Err(app_error)
+            }
+        }
+    }
+
+    fn should_skip_entry(&self, entry: &fs::DirEntry) -> bool {
+        if self.show_hidden {
+            return false;
+        }
+
+        let entry_path = entry.path();
+        let file_name = entry_path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
+
+        file_name.starts_with('.')
+    }
+
+    async fn process_directory_entry(
+        &self,
+        entry: fs::DirEntry,
+        entries: &mut Vec<ObjectInfo>,
+        light_entries: &mut Vec<LightObjectInfo>,
+    ) -> bool {
+        let entry_path = entry.path();
+
+        match LightObjectInfo::from_path(&entry_path).await {
+            Ok(light_info) => {
+                let placeholder_info = ObjectInfo {
+                    path: light_info.path.clone(),
+                    modified: SystemTime::UNIX_EPOCH, // Placeholder
+                    name: light_info.name.clone(),
+                    extension: light_info.extension.clone(),
+                    size: 0,
+                    items_count: 0,
+                    is_dir: light_info.is_dir,
+                    is_symlink: light_info.is_symlink,
+                    metadata_loaded: false,
+                };
+
+                // Send streaming update immediately
+                if self
+                    .tx
+                    .send(ScanUpdate::Entry(placeholder_info.clone()))
+                    .is_err()
+                {
+                    return false; // Receiver dropped
+                }
+
+                entries.push(placeholder_info);
+                light_entries.push(light_info);
+
+                true
+            }
+            Err(e) => {
+                tracing::info!("Failed to get basic info for {:?}: {}", entry_path, e);
+                
+                let _ = self.tx.send(ScanUpdate::Error(e.to_string()));
+                
+                true
+            }
+        }
+    }
+
+    fn sort_entries(entries: &mut [ObjectInfo]) {
         entries.sort_by(|a, b| {
             if a.is_dir && !b.is_dir {
                 std::cmp::Ordering::Less
@@ -264,12 +268,16 @@ pub async fn scan_dir_streaming(
                 a.name.cmp(&b.name)
             }
         });
+    }
 
-        // Send completion notification
-        let _ = tx.send(ScanUpdate::Completed(entries.len()));
-
-        Ok(entries)
-    });
-
-    (rx, handle)
+    fn start_background_metadata_loading(&self, light_entries: Vec<LightObjectInfo>) {
+        if !light_entries.is_empty() {
+            crate::tasks::metadata_task::batch_load_metadata_task(
+                self.path.clone(),
+                light_entries,
+                self.action_tx.clone(),
+                5, // Metadata batch size
+            );
+        }
+    }
 }

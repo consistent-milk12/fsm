@@ -1,4 +1,4 @@
-//! src/tasks/file_ops_task.rs
+//! ``src/tasks/file_ops_task.rs``
 //! ============================================================================
 //! # File Operations Task: Background file operations with progress tracking
 //!
@@ -53,7 +53,7 @@ pub enum FileOperation {
 
 impl std::fmt::Display for FileOperation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        use super::file_ops_task::FileOperation::*;
+        use super::file_ops_task::FileOperation::{Copy, Move, Rename};
 
         let ret_str: &'static str = match *self {
             Copy { source: _, dest: _ } => "Copy",
@@ -89,7 +89,7 @@ impl FileOperationTask {
 
     /// Execute file operation with full progress reporting
     pub async fn execute(&self) -> Result<(), AppError> {
-        use FileOperation::*;
+        use FileOperation::{Copy, Move, Rename};
 
         // Check for cancellation before starting
         if self.cancel_token.is_cancelled() {
@@ -118,7 +118,7 @@ impl FileOperationTask {
             0,
             total_bytes,
             initial_file,
-            &mut files_completed,
+            &files_completed,
             total_files,
         )
         .await?;
@@ -232,13 +232,14 @@ impl FileOperationTask {
         }
     }
 
+    #[allow(clippy::unused_async)]
     /// Report progress to UI
     async fn report_progress(
         &self,
         current_bytes: u64,
         total_bytes: u64,
         current_file: &Path,
-        files_completed: &mut u32,
+        files_completed: &u32,
         total_files: u32,
     ) -> Result<(), AppError> {
         let throughput = if current_bytes > 0 {
@@ -435,48 +436,42 @@ impl FileOperationTask {
         }
 
         // Try efficient rename first (same filesystem)
-        match TokioFs::rename(source, &final_dst).await {
-            Ok(()) => {
-                // Rename sucessful - update progress instantly
-                *current_bytes += file_size;
+        if matches!(TokioFs::rename(source, &final_dst).await, Ok(())) {
+            // Rename sucessful - update progress instantly
+            *current_bytes += file_size;
 
-                *files_completed += 1;
+            *files_completed += 1;
 
-                // Report completion for this file
-                self.report_progress(
-                    *current_bytes,
-                    total_bytes,
-                    source,
-                    files_completed,
-                    total_files,
-                )
-                .await?;
+            // Report completion for this file
+            self.report_progress(
+                *current_bytes,
+                total_bytes,
+                source,
+                files_completed,
+                total_files,
+            )
+            .await?;
+        } else {
+            // Rename failed, fall back to copy with progress + delete
+            self.copy_file_with_progress(
+                source,
+                &final_dst,
+                current_bytes,
+                total_bytes,
+                files_completed,
+                total_files,
+            )
+            .await?;
 
-                Ok(())
-            }
-
-            Err(_) => {
-                // Rename failed, fall back to copy with progress + delete
-                self.copy_file_with_progress(
-                    source,
-                    &final_dst,
-                    current_bytes,
-                    total_bytes,
-                    files_completed,
-                    total_files,
-                )
-                .await?;
-
-                // Delete source after sucessfuly copy
-                if source.is_file() {
-                    TokioFs::remove_file(source).await?;
-                } else if source.is_dir() {
-                    TokioFs::remove_dir_all(source).await?;
-                }
-
-                Ok(())
+            // Delete source after sucessfuly copy
+            if source.is_file() {
+                TokioFs::remove_file(source).await?;
+            } else if source.is_dir() {
+                TokioFs::remove_dir_all(source).await?;
             }
         }
+
+        Ok(())
     }
 
     /// Rename file or directory with progress reporting
@@ -554,7 +549,7 @@ impl FileOperationTask {
         Ok(())
     }
 
-    #[inline(always)]
+    #[inline]
     fn error(err_kind: ErrorKind, err_msg: &'static str) -> AppError {
         let err: Error = Error::new(err_kind, err_msg);
         let app_err: AppError = AppError::Io(err);

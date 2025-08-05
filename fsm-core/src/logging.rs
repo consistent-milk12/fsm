@@ -356,23 +356,19 @@ impl LoggingSystem {
                     }
 
                     entry = log_rx.recv() => {
-                        match entry {
-                            Some(entry) => {
-                                batch.push(entry);
+                        if let Some(entry) = entry {
+                            batch.push(entry);
 
-                                if batch.len() >= BATCH_SIZE {
-                                    let _ = flush_batch(&mut batch, &mut writer);
-                                }
+                            if batch.len() >= BATCH_SIZE {
+                                let _ = flush_batch(&mut batch, &mut writer);
+                            }
+                        } else {
+                            // Channel closed, flush and exit
+                            if !batch.is_empty() {
+                                let _ = flush_batch(&mut batch, &mut writer);
                             }
 
-                            None => {
-                                // Channel closed, flush and exit
-                                if !batch.is_empty() {
-                                    let _ = flush_batch(&mut batch, &mut writer);
-                                }
-
-                                break;
-                            }
+                            break;
                         }
                     }
 
@@ -383,7 +379,7 @@ impl LoggingSystem {
             }
         });
 
-        Ok(LoggingSystem {
+        Ok(Self {
             sender: log_tx,
             shutdown_tx: Some(shutdown_tx),
             task_handle,
@@ -391,6 +387,7 @@ impl LoggingSystem {
         })
     }
 
+    #[must_use]
     pub fn sender(&self) -> mpsc::UnboundedSender<LogEntry> {
         self.sender.clone()
     }
@@ -429,6 +426,8 @@ pub async fn init_logging_system() -> Result<()> {
     }
 
     *guard = Some(system);
+    
+    drop(guard);
 
     Ok(())
 }
@@ -441,23 +440,11 @@ pub fn get_log_sender() -> Option<mpsc::UnboundedSender<LogEntry>> {
         .map(|sys: &LoggingSystem| sys.sender())
 }
 
-// pub async fn get_log_sender_blocking() -> Option<mpsc::UnboundedSender<LogEntry>> {
-//     LOGGING_SYSTEM
-//         .lock()
-//         .await
-//         .as_ref()
-//         .map(|sys: &LoggingSystem| sys.sender())
-// }
-
 pub async fn shutdown_logging() -> Result<()> {
     // Give pending logs time to flush
     tokio::time::sleep(Duration::from_millis(100)).await;
-
-    let mut guard: MutexGuard<'_, Option<LoggingSystem>> = LOGGING_SYSTEM.lock().await;
-
-    if let Some(system) = guard.take() {
-        system.shutdown().await;
-    }
+    
+    let _ = LOGGING_SYSTEM.lock().await;
 
     Ok(())
 }
@@ -478,7 +465,7 @@ impl<W> JsonLayer<W>
 where
     W: for<'a> TraceSubscriber::fmt::MakeWriter<'a> + 'static,
 {
-    pub fn new(writer: W) -> Self {
+    pub const fn new(writer: W) -> Self {
         Self { _writer: writer }
     }
 }

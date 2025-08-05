@@ -1,5 +1,5 @@
 //!
-//! Filepath: src/view/components/file_extension_overlay.rs
+//! Filepath: `src/view/components/file_extension_overlay.rs`
 //! Caller File: [src/view/ui.rs]
 //!
 use crate::model::ui_state::FileOperationProgress;
@@ -34,6 +34,8 @@ impl FileOperationsOverlay {
         Self::render_cancel_instruction(f, &areas);
     }
 
+    #[allow(clippy::cast_sign_loss)]
+    #[allow(clippy::cast_possible_truncation)]
     fn render_single_operation(f: &mut Frame, area: Rect, progress: &FileOperationProgress) {
         let FileOperationProgress {
             operation_type,
@@ -73,6 +75,7 @@ impl FileOperationsOverlay {
         f.render_widget(gauge, area);
     }
 
+    #[allow(clippy::cast_possible_truncation)]
     /// Calculate dynamic layout based on operation count
     fn calculate_layout(area: Rect, operation_count: usize) -> Vec<Rect> {
         let available_height: u16 = area.height.saturating_sub(1);
@@ -104,35 +107,36 @@ impl FileOperationsOverlay {
     }
 
     fn format_throughput(bps: Option<u64>) -> String {
-        match bps {
-            Some(bytes) => {
+        bps
+            .map_or_else(|| -> String { "Calculating...".to_string() }, 
+            |bytes: u64| -> String 
+            {
                 let (size, unit) = Self::scale_bytes(bytes);
 
                 format!("{size:.1}{unit}/s")
-            }
-
-            None => "Calculating...".to_string(),
-        }
+            })
     }
 
     fn format_eta(eta: Option<Instant>) -> String {
-        match eta {
-            Some(time) => {
-                let now: Instant = Instant::now();
+        eta
+            .map_or_else(
+                || -> String { "Calculating...".to_string() }, 
+                |time: Instant| -> String 
+                {
+                    let now: Instant = Instant::now();
 
-                if time > now {
-                    let remaining: u64 = time.duration_since(now).as_secs();
+                    if time > now {
+                        let remaining: u64 = time.duration_since(now).as_secs();
 
-                    format!("{remaining}s remaining")
-                } else {
-                    "Finishing...".to_string()
+                        format!("{remaining}s remaining")
+                    } else {
+                        "Finishing...".to_string()
+                    }
                 }
-            }
-
-            None => "Calculating...".to_string(),
-        }
+            )
     }
 
+    #[allow(clippy::cast_precision_loss)]
     fn scale_bytes(bytes: u64) -> (f64, &'static str) {
         let mut size: f64 = bytes as f64;
         let mut unit_idx: usize = 0;

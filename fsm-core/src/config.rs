@@ -24,15 +24,21 @@ use std::path::PathBuf;
 use std::time::Duration;
 use tracing::info;
 
+use tokio::fs as TokioFs;
+
 /// App theme (color scheme) selector.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Theme {
     #[default]
     Default,
+    
     Light,
+    
     Dark,
+    
     Solarized,
+    
     Custom(String),
 }
 
@@ -41,10 +47,44 @@ pub enum Theme {
 #[serde(rename_all = "lowercase")]
 pub enum Keymap {
     Vim,
+    
     Emacs,
+    
     #[default]
     Standard,
+    
     Custom(String),
+}
+
+/// Profiling configuration for performance monitoring
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProfilingConfig {
+    /// Enable profiling data collection
+    pub enabled: bool,
+    
+    /// Sample rate for profiling (0.0 to 1.0, where 1.0 = 100%)
+    pub sample_rate: f32,
+    
+    /// Enable memory tracking (may have performance impact)
+    pub memory_tracking: bool,
+    
+    /// Enable CPU usage tracking (may have performance impact)
+    pub cpu_tracking: bool,
+    
+    /// Minimum duration (ms) to trigger profiling for an operation
+    pub min_duration_ms: u64,
+}
+
+impl Default for ProfilingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false, // Disabled by default for performance
+            sample_rate: 0.1, // 10% sampling
+            memory_tracking: false,
+            cpu_tracking: false,
+            min_duration_ms: 5, // Only profile operations taking >5ms
+        }
+    }
 }
 
 /// Cache configuration with sensible defaults - embedded in main Config
@@ -52,16 +92,21 @@ pub enum Keymap {
 pub struct CacheConfig {
     /// Maximum number of entries
     pub max_capacity: u64,
+    
     /// Time-to-live for entries
     #[serde(with = "humantime_serde")]
     pub ttl: Duration,
+    
     /// Time-to-idle (evict if not accessed)
     #[serde(with = "humantime_serde")]
     pub tti: Duration,
+    
     /// Maximum memory usage estimate (MB)
     pub max_memory_mb: u64,
+    
     /// Enable cache statistics
     pub enable_stats: bool,
+    
     /// Number of shards for concurrent access (power of 2)
     pub num_shards: usize,
 }
@@ -83,19 +128,25 @@ impl Default for CacheConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub theme: Theme,
+    
     pub keymap: Keymap,
+    
     pub cache: CacheConfig, // Centralized cache configuration
+    
+    pub profiling: ProfilingConfig, // Performance profiling configuration
+    
     pub show_hidden: bool,
+    
     pub editor_cmd: String,
-    // Add more config fields here as needed
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Config {
+        Self {
             theme: Theme::Default,
             keymap: Keymap::Standard,
             cache: CacheConfig::default(), // Use centralized cache config
+            profiling: ProfilingConfig::default(), // Default profiling config (disabled)
             show_hidden: false,
             editor_cmd: "nvim".to_string(),
         }
@@ -111,16 +162,19 @@ impl Config {
         let path = Self::config_path()?;
         if path.exists() {
             info!("Loading config from {}", path.display());
-            let text = tokio::fs::read_to_string(&path).await?;
-            let cfg: Config = toml::from_str(&text)?;
+            let text = TokioFs::read_to_string(&path).await?;
+            let cfg: Self = toml::from_str(&text)?;
+        
             Ok(cfg)
         } else {
             info!(
                 "No config file found at {}, using default configuration. Creating it now.",
                 path.display()
             );
-            let default_config = Config::default();
+        
+            let default_config = Self::default();
             default_config.save().await?;
+
             Ok(default_config)
         }
     }
@@ -128,12 +182,16 @@ impl Config {
     /// Saves config to TOML file at the XDG-compliant app config dir.
     pub async fn save(&self) -> anyhow::Result<()> {
         let path = Self::config_path()?;
+        
         info!("Saving config to {}", path.display());
+        
         if let Some(parent) = path.parent() {
-            tokio::fs::create_dir_all(parent).await?;
+            TokioFs::create_dir_all(parent).await?;
         }
+        
         let toml_str = toml::to_string_pretty(self)?;
-        tokio::fs::write(&path, toml_str).await?;
+        TokioFs::write(&path, toml_str).await?;
+        
         Ok(())
     }
 

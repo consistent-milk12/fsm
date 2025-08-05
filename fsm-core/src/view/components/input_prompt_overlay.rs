@@ -1,6 +1,6 @@
-//! src/view/components/input_prompt_overlay.rs
+//! ``src/view/components/input_prompt_overlay.rs``
 //! ============================================================================
-//! # InputPromptOverlay: Stylized Input Prompt for File/Folder Creation
+//! # `InputPromptOverlay`: Stylized Input Prompt for File/Folder Creation
 
 use crate::model::app_state::AppState;
 use crate::view::theme;
@@ -14,6 +14,7 @@ use ratatui::{
 pub struct InputPromptOverlay;
 
 impl InputPromptOverlay {
+    #[allow(clippy::cast_possible_truncation)]
     pub fn render(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
         let overlay_area = Self::centered_rect(50, 10, area);
         frame.render_widget(Clear, overlay_area);

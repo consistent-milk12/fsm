@@ -1,4 +1,4 @@
-//! src/view/components/notification_overlay.rs
+//! ``src/view/components/notification_overlay.rs``
 //! ============================================================================
 //! # Notification Overlay: User-Friendly Error and Info Messages
 //!
