@@ -5,22 +5,33 @@
 //! Provides an asynchronous function to scan a directory and return a sorted
 //! list of `ObjectInfo` entries. Designed for non-blocking UI updates.
 
+use crate::{config::ProfilingConfig, controller::actions::Action, logging_opt::ProfilingData, tasks::metadata_task::batch_load_metadata_task};
 use crate::error::AppError;
 use crate::fs::object_info::{LightObjectInfo, ObjectInfo};
-use std::path::{Path, PathBuf};
-use std::time::SystemTime;
-use tokio::fs;
+use crate::logging_opt::{collect_profiling_data_conditional, get_current_memory_kb};
+use std::{cmp::Ordering, ffi::OsStr, path::{Path, PathBuf}, time::Duration};
+use std::time::{Instant, SystemTime};
+use tokio::{fs::{self, DirEntry, ReadDir}, sync::mpsc::{UnboundedReceiver, UnboundedSender}};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+use tracing::info;
 
 /// Scans the given directory asynchronously and returns a sorted list of `ObjectInfo`.
 ///
 /// # Arguments
 /// * `path` - The path to the directory to scan.
 /// * `show_hidden` - Whether to include hidden files/directories (starting with '.').
-pub async fn scan_dir(path: &Path, show_hidden: bool) -> Result<Vec<ObjectInfo>, AppError> {
+/// * `profiling_config` - The configuration for performance profiling.
+pub async fn scan_dir(
+    path: &Path,
+    show_hidden: bool,
+    profiling_config: &ProfilingConfig,
+) -> Result<Vec<ObjectInfo>, AppError> {
+    let start_time = Instant::now();
+    let start_mem = get_current_memory_kb();
+
     let mut entries: Vec<ObjectInfo> = Vec::new();
-    let mut read_dir: fs::ReadDir = fs::read_dir(path).await?;
+    let mut read_dir: ReadDir = fs::read_dir(path).await?;
 
     while let Some(entry) = read_dir.next_entry().await? {
         let entry_path: PathBuf = entry.path();
@@ -47,13 +58,27 @@ pub async fn scan_dir(path: &Path, show_hidden: bool) -> Result<Vec<ObjectInfo>,
     // Sort entries: directories first, then alphabetically by name
     entries.sort_by(|a: &ObjectInfo, b: &ObjectInfo| {
         if a.is_dir && !b.is_dir {
-            std::cmp::Ordering::Less
+            Ordering::Less
         } else if !a.is_dir && b.is_dir {
-            std::cmp::Ordering::Greater
+            Ordering::Greater
         } else {
             a.name.cmp(&b.name)
         }
     });
+
+    let duration = start_time.elapsed();
+    let profiling_data =
+        collect_profiling_data_conditional(profiling_config, start_mem, duration);
+    if let Some(duration_ns) = profiling_data.operation_duration_ns {
+        info!(
+            marker = "PERF_DIRECTORY_SCAN",
+            operation_type = "scan_dir",
+            duration_ns = duration_ns,
+            memory_delta_kb = profiling_data.memory_delta_kb.unwrap_or(0),
+            "Directory scan completed in {:?}",
+            duration
+        );
+    }
 
     Ok(entries)
 }
@@ -69,33 +94,49 @@ pub enum ScanUpdate {
     Error(String),
 }
 
-#[allow(clippy::unused_async)]
 /// Scans directory with streaming updates and two-phase metadata loading
 ///
 /// # Arguments
 /// * `path` - The path to the directory to scan
-/// * `show_hidden` - Whether to include hidden files/directories  
+/// * `show_hidden` - Whether to include hidden files/directories
 /// * `batch_size` - Number of entries to process before yielding (for responsiveness)
 /// * `action_tx` - Channel to send metadata loading tasks
+/// * `profiling_config` - The configuration for performance profiling.
 ///
 /// # Returns
 /// * A receiver channel that will receive `ScanUpdate` messages
 /// * A sender for the final sorted results
+#[allow(clippy::unused_async, reason = "async move occurs inside tokio::spawn")]
 pub async fn scan_dir_streaming_with_background_metadata(
     path: PathBuf,
     show_hidden: bool,
     batch_size: usize,
-    action_tx: mpsc::UnboundedSender<crate::controller::actions::Action>,
+    action_tx: UnboundedSender<Action>,
+    profiling_config: ProfilingConfig,
 ) -> (
-    mpsc::UnboundedReceiver<ScanUpdate>,
+    UnboundedReceiver<ScanUpdate>,
     JoinHandle<Result<Vec<ObjectInfo>, AppError>>,
 ) {
-    let (tx, rx) = mpsc::unbounded_channel();
+    let (
+        tx, 
+        rx
+    ): (UnboundedSender<ScanUpdate>, UnboundedReceiver<ScanUpdate>) = mpsc::unbounded_channel();
 
-    let handle = tokio::spawn(async move {
-        let scanner = DirectoryScanner::new(path, show_hidden, batch_size, action_tx, tx);
-        scanner.scan().await
-    });
+    let handle: JoinHandle<Result<Vec<ObjectInfo>, AppError>> = tokio::spawn(
+        async move 
+        {
+            let scanner: DirectoryScanner = DirectoryScanner::new(
+                path, 
+                show_hidden, 
+                batch_size, 
+                action_tx, 
+                tx, 
+                profiling_config
+            );
+            
+            scanner.scan().await
+        }
+    );
 
     (rx, handle)
 }
@@ -104,8 +145,9 @@ struct DirectoryScanner {
     path: PathBuf,
     show_hidden: bool,
     batch_size: usize,
-    action_tx: mpsc::UnboundedSender<crate::controller::actions::Action>,
-    tx: mpsc::UnboundedSender<ScanUpdate>,
+    action_tx: UnboundedSender<Action>,
+    tx: UnboundedSender<ScanUpdate>,
+    profiling_config: ProfilingConfig,
 }
 
 impl DirectoryScanner {
@@ -113,8 +155,9 @@ impl DirectoryScanner {
         path: PathBuf,
         show_hidden: bool,
         batch_size: usize,
-        action_tx: mpsc::UnboundedSender<crate::controller::actions::Action>,
-        tx: mpsc::UnboundedSender<ScanUpdate>,
+        action_tx: UnboundedSender<Action>,
+        tx: UnboundedSender<ScanUpdate>,
+        profiling_config: ProfilingConfig,
     ) -> Self {
         Self {
             path,
@@ -122,12 +165,16 @@ impl DirectoryScanner {
             batch_size,
             action_tx,
             tx,
+            profiling_config,
         }
     }
 
     async fn scan(self) -> Result<Vec<ObjectInfo>, AppError> {
-        let mut entries = Vec::new();
-        let mut light_entries = Vec::new();
+        let start_time: Instant = Instant::now();
+        let start_mem: Option<i64> = get_current_memory_kb();
+
+        let mut entries: Vec<ObjectInfo> = Vec::new();
+        let mut light_entries: Vec<LightObjectInfo> = Vec::new();
 
         // Phase 1: Quick scan for basic info
         self.perform_quick_scan(&mut entries, &mut light_entries)
@@ -142,6 +189,24 @@ impl DirectoryScanner {
         // Phase 2: Start background metadata loading
         self.start_background_metadata_loading(light_entries);
 
+        let duration: Duration = start_time.elapsed();
+        let profiling_data: ProfilingData = collect_profiling_data_conditional(
+            &self.profiling_config,
+            start_mem,
+            duration,
+        );
+
+        if let Some(duration_ns) = profiling_data.operation_duration_ns {
+            info!(
+                marker = "PERF_DIRECTORY_SCAN",
+                operation_type = "scan_dir_streaming",
+                duration_ns = duration_ns,
+                memory_delta_kb = profiling_data.memory_delta_kb.unwrap_or(0),
+                "Streaming directory scan completed in {:?}",
+                duration
+            );
+        }
+
         Ok(entries)
     }
 
@@ -150,16 +215,18 @@ impl DirectoryScanner {
         entries: &mut Vec<ObjectInfo>,
         light_entries: &mut Vec<LightObjectInfo>,
     ) -> Result<(), AppError> {
-        let mut read_dir = self.initialize_directory_reader().await?;
-        let mut processed = 0u64;
+        let mut read_dir: ReadDir = self.initialize_directory_reader().await?;
+        let mut processed: u64 = 0u64;
 
         while let Some(entry_result) = read_dir.next_entry().await.transpose() {
-            let entry = match entry_result {
+            let entry: DirEntry = match entry_result {
                 Ok(e) => e,
 
                 Err(e) => {
-                    let app_error = AppError::from(e);
+                    let app_error: AppError = AppError::from(e);
+                    
                     let _ = self.tx.send(ScanUpdate::Error(app_error.to_string()));
+                    
                     continue;
                 }
             };
@@ -169,7 +236,11 @@ impl DirectoryScanner {
             }
 
             if self
-                .process_directory_entry(entry, entries, light_entries)
+                .process_directory_entry(
+                    entry,
+                    entries,
+                    light_entries
+                )
                 .await
             {
                 processed += 1;
@@ -187,26 +258,33 @@ impl DirectoryScanner {
         Ok(())
     }
 
-    async fn initialize_directory_reader(&self) -> Result<fs::ReadDir, AppError> {
+    async fn initialize_directory_reader(&self) -> Result<ReadDir, AppError> {
         match fs::read_dir(&self.path).await {
             Ok(read_dir) => Ok(read_dir),
+            
             Err(e) => {
-                let app_error = AppError::from(e);
+                let app_error: AppError = AppError::from(e);
+                
                 let _ = self.tx.send(ScanUpdate::Error(app_error.to_string()));
+                
                 Err(app_error)
             }
         }
     }
 
-    fn should_skip_entry(&self, entry: &fs::DirEntry) -> bool {
+    fn should_skip_entry(&self, entry: &DirEntry) -> bool {
         if self.show_hidden {
             return false;
         }
 
-        let entry_path = entry.path();
-        let file_name = entry_path
+        let entry_path: PathBuf = entry.path();
+        let file_name: &str = entry_path
             .file_name()
-            .and_then(|s| s.to_str())
+            .and_then(|s: &OsStr| -> Option<&str> 
+                {
+                    s.to_str()
+                }
+            )
             .unwrap_or("");
 
         file_name.starts_with('.')
@@ -214,15 +292,15 @@ impl DirectoryScanner {
 
     async fn process_directory_entry(
         &self,
-        entry: fs::DirEntry,
+        entry: DirEntry,
         entries: &mut Vec<ObjectInfo>,
         light_entries: &mut Vec<LightObjectInfo>,
     ) -> bool {
-        let entry_path = entry.path();
+        let entry_path: PathBuf = entry.path();
 
         match LightObjectInfo::from_path(&entry_path).await {
             Ok(light_info) => {
-                let placeholder_info = ObjectInfo {
+                let placeholder_info: ObjectInfo = ObjectInfo {
                     path: light_info.path.clone(),
                     modified: SystemTime::UNIX_EPOCH, // Placeholder
                     name: light_info.name.clone(),
@@ -237,7 +315,9 @@ impl DirectoryScanner {
                 // Send streaming update immediately
                 if self
                     .tx
-                    .send(ScanUpdate::Entry(placeholder_info.clone()))
+                    .send(
+                        ScanUpdate::Entry(placeholder_info.clone())
+                    )
                     .is_err()
                 {
                     return false; // Receiver dropped
@@ -250,29 +330,33 @@ impl DirectoryScanner {
             }
             Err(e) => {
                 tracing::info!("Failed to get basic info for {:?}: {}", entry_path, e);
-                
+
                 let _ = self.tx.send(ScanUpdate::Error(e.to_string()));
-                
+
                 true
             }
         }
     }
 
     fn sort_entries(entries: &mut [ObjectInfo]) {
-        entries.sort_by(|a, b| {
-            if a.is_dir && !b.is_dir {
-                std::cmp::Ordering::Less
-            } else if !a.is_dir && b.is_dir {
-                std::cmp::Ordering::Greater
-            } else {
-                a.name.cmp(&b.name)
-            }
-        });
+        entries
+            .sort_by(
+                |a: &ObjectInfo, b: &ObjectInfo| -> Ordering 
+                {
+                    if a.is_dir && !b.is_dir {
+                        Ordering::Less
+                    } else if !a.is_dir && b.is_dir {
+                        Ordering::Greater
+                    } else {
+                        a.name.cmp(&b.name)
+                    }
+                }
+            );
     }
 
     fn start_background_metadata_loading(&self, light_entries: Vec<LightObjectInfo>) {
         if !light_entries.is_empty() {
-            crate::tasks::metadata_task::batch_load_metadata_task(
+            batch_load_metadata_task(
                 self.path.clone(),
                 light_entries,
                 self.action_tx.clone(),

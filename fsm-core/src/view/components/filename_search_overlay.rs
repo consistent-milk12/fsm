@@ -41,6 +41,7 @@ const CACHE_TTL_SECONDS: u64 = 30; // Cache results for 30 seconds
 pub struct FileNameSearchOverlay;
 
 impl FileNameSearchOverlay {
+    #[expect(clippy::cast_possible_truncation, reason = "Expected accuracy")]
     /// Main render function with enhanced logging and error handling
     pub fn render(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
         let render_start = Instant::now();
@@ -204,6 +205,7 @@ impl FileNameSearchOverlay {
     }
 
     /// Enhanced search results rendering with pagination and improved feedback
+    #[expect(clippy::too_many_lines, reason = "Marked for refactor")]
     fn render_search_results(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
         let search_start = Instant::now();
         trace!("render_search_results started");

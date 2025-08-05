@@ -8,12 +8,13 @@
 //! - Shows keymap in the footer, all using ratatui v0.25+
 //! - Visual cues for type, selection, and focus
 
+use std::rc::Rc;
+
 use crate::{
-    model::app_state::AppState,
-    view::{
+    fs::object_info::ObjectInfo, model::{app_state::AppState, PaneState}, view::{
         components::command_completion::{CommandCompletion, CompletionConfig},
         icons, theme,
-    },
+    }
 };
 use ratatui::{
     Frame,
@@ -26,12 +27,13 @@ use ratatui::{
 pub struct ObjectTable;
 
 impl ObjectTable {
+    #[expect(clippy::too_many_lines, reason = "Marked for refactor")]
     pub fn render(frame: &mut Frame<'_>, app: &mut AppState, area: Rect) {
         // Split the area into table, command line (if active), and footer
-        let constraints = if app.ui.is_in_command_mode() {
+        let constraints: Vec<Constraint> = if app.ui.is_in_command_mode() {
             // Use new completion system to calculate required height
-            let config = CompletionConfig::default();
-            let command_area_height =
+            let config: CompletionConfig = CompletionConfig::default();
+            let command_area_height: u16 =
                 CommandCompletion::calculate_required_height(&app.ui.command_palette, &config);
 
             vec![
@@ -46,31 +48,31 @@ impl ObjectTable {
             ]
         };
 
-        let layout = Layout::default()
+        let layout: Rc<[Rect]> = Layout::default()
             .direction(Direction::Vertical)
             .constraints(constraints)
             .split(area);
 
-        let table_area = layout[0];
+        let table_area: Rect = layout[0];
         let (command_area, footer_area) = if app.ui.is_in_command_mode() {
             (Some(layout[1]), layout[2])
         } else {
             (None, layout[1])
         };
 
-        let pane = &mut app.fs.panes[app.fs.active_pane];
+        let pane: &mut PaneState = &mut app.fs.panes[app.fs.active_pane];
 
         // Update viewport height based on available area (account for borders, header, and footer)
-        let content_height = table_area.height.saturating_sub(3); // Account for borders and header
+        let content_height: u16 = table_area.height.saturating_sub(3); // Account for borders and header
         pane.set_viewport_height(content_height as usize);
 
-        let header = Row::new(vec!["Name", "Type", "Items", "Size", "Modified"])
+        let header: Row<'_> = Row::new(vec!["Name", "Type", "Items", "Size", "Modified"])
             .style(Style::default().fg(theme::YELLOW).bold())
             .bottom_margin(1);
 
         // Use virtual scrolling - only render visible entries
-        let visible_entries = pane.visible_entries();
-        let total_entries = pane.entries.len();
+        let visible_entries: &[ObjectInfo] = pane.visible_entries();
+        let total_entries: usize = pane.entries.len();
 
         let rows = visible_entries.iter().map(|obj| {
             let (icon, style, type_str) = if obj.is_dir {
@@ -89,7 +91,7 @@ impl ObjectTable {
                 )
             };
 
-            let items_str = if obj.is_dir {
+            let items_str: String = if obj.is_dir {
                 if obj.items_count > 0 {
                     obj.items_count.to_string()
                 } else {
@@ -99,7 +101,7 @@ impl ObjectTable {
                 String::new()
             };
 
-            let size_str = if obj.is_dir {
+            let size_str: String = if obj.is_dir {
                 String::new()
             } else {
                 obj.size_human()
@@ -115,7 +117,7 @@ impl ObjectTable {
             .style(style)
         });
 
-        let widths = [
+        let widths: [Constraint; 5] = [
             Constraint::Fill(1),
             Constraint::Length(10),
             Constraint::Length(8),

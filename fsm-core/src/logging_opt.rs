@@ -1,11 +1,7 @@
 use std::{
-    collections::{HashMap, VecDeque},
-    path::{Path, PathBuf},
-    sync::{
-        Arc, LazyLock,
-        atomic::{AtomicU64, Ordering},
-    },
-    time::{Duration, Instant},
+    collections::{HashMap, VecDeque}, hash::{DefaultHasher, Hash, Hasher}, path::{Path, PathBuf}, sync::{
+        atomic::{AtomicU64, Ordering}, Arc, LazyLock
+    }, time::{Duration, Instant}
 };
 
 use anyhow::{Context, Result};
@@ -1397,7 +1393,7 @@ impl LogEntry {
     }
 
     #[must_use]
-    pub fn with_profiling_data(mut self, cpu_percent: Option<f32>, memory_delta: Option<i64>, duration_ns: Option<u64>) -> Self {
+    pub const fn with_profiling_data(mut self, cpu_percent: Option<f32>, memory_delta: Option<i64>, duration_ns: Option<u64>) -> Self {
         self.cpu_usage_percent = cpu_percent;
         self.memory_delta_kb = memory_delta;
         self.operation_duration_ns = duration_ns;
@@ -1413,7 +1409,8 @@ pub struct ProfilingData {
 }
 
 impl ProfilingData {
-    pub fn empty() -> Self {
+    #[must_use] 
+    pub const fn empty() -> Self {
         Self {
             cpu_usage_percent: None,
             memory_delta_kb: None,
@@ -1421,7 +1418,9 @@ impl ProfilingData {
         }
     }
 
-    pub fn with_duration(duration: Duration) -> Self {
+    #[must_use]
+    #[expect(clippy::cast_possible_truncation, reason = "Expected accuracy loss")]
+    pub const fn with_duration(duration: Duration) -> Self {
         Self {
             cpu_usage_percent: None,
             memory_delta_kb: None,
@@ -1432,7 +1431,9 @@ impl ProfilingData {
 
 /// Lightweight performance monitoring helper
 /// Collects CPU and memory metrics without blocking
-pub fn collect_profiling_data(start_memory_kb: Option<i64>, duration: Duration) -> ProfilingData {
+#[must_use]
+#[expect(clippy::cast_possible_truncation, reason = "Expected accuracy loss")] 
+pub const fn collect_profiling_data(start_memory_kb: Option<i64>, duration: Duration) -> ProfilingData {
     // Get current memory usage (simplified - in production would use more sophisticated metrics)
     let current_memory_kb = get_current_memory_kb();
     
@@ -1451,6 +1452,13 @@ pub fn collect_profiling_data(start_memory_kb: Option<i64>, duration: Duration) 
 
 /// Conditional profiling data collection based on configuration
 /// Only collects data if profiling is enabled and meets sampling/duration criteria
+#[must_use]
+#[expect(
+    clippy::cast_possible_truncation, 
+    clippy::cast_sign_loss, 
+    clippy::cast_precision_loss,
+    reason = "Expected accuracy loss"
+)] 
 pub fn collect_profiling_data_conditional(
     config: &crate::config::ProfilingConfig,
     start_memory_kb: Option<i64>, 
@@ -1462,14 +1470,12 @@ pub fn collect_profiling_data_conditional(
     }
     
     // Check minimum duration threshold
-    if duration.as_millis() < config.min_duration_ms as u128 {
+    if duration.as_millis() < u128::from(config.min_duration_ms) {
         return ProfilingData::empty();
     }
     
     // Apply sampling rate
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    
+       
     let mut hasher = DefaultHasher::new();
     std::thread::current().id().hash(&mut hasher);
     let thread_hash = hasher.finish();
@@ -1492,7 +1498,7 @@ pub fn collect_profiling_data_conditional(
     };
     
     ProfilingData {
-        cpu_usage_percent: if config.cpu_tracking { None } else { None }, // CPU tracking not yet implemented
+        cpu_usage_percent: None, // CPU tracking not yet implemented
         memory_delta_kb: memory_delta,
         operation_duration_ns: Some(duration.as_nanos() as u64),
     }
@@ -1500,7 +1506,8 @@ pub fn collect_profiling_data_conditional(
 
 /// Get current memory usage in KB (simplified implementation)
 /// In production, this would use platform-specific APIs for accuracy
-fn get_current_memory_kb() -> Option<i64> {
+#[must_use] 
+pub const fn get_current_memory_kb() -> Option<i64> {
     // Simplified memory tracking - returns None for now
     // Real implementation would use:
     // - Linux: /proc/self/status VmRSS

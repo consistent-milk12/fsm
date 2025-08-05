@@ -34,6 +34,7 @@ anyhow = { workspace = true }
 # Utilities and system info
 nanoid = { workspace = true }
 uuid = { workspace = true }
+
 bytesize = { workspace = true }
 sysinfo = { workspace = true }
 directories = { workspace = true }

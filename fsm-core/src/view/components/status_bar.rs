@@ -6,6 +6,8 @@
 //! - Uses `AppState`'s `last_error` and `last_status` fields
 //! - Themed, immediate-mode, power-user friendly
 
+use std::rc::Rc;
+
 use crate::AppState;
 use crate::view::theme;
 use ratatui::{
@@ -20,33 +22,49 @@ pub struct StatusBar;
 
 impl StatusBar {
     pub fn render(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
-        let status_block = Block::default()
+        let status_block: Block<'_> = Block::default()
             .borders(Borders::TOP)
             .border_style(Style::default().fg(theme::COMMENT));
         frame.render_widget(status_block, area);
 
-        let (msg, style) = if let Some(ref err) = app.last_error {
-            (
-                format!("🔥 Error: {err}"),
-                Style::default().fg(theme::RED).bold(),
-            )
-        } else if let Some(ref status) = app.ui.last_status {
-            (status.clone(), Style::default().fg(theme::GREEN))
-        } else {
-            ("Ready".to_string(), Style::default().fg(theme::COMMENT))
-        };
+        let (msg, style) = app
+            .last_error
+            .as_ref()
+            .map_or_else(
+                || 
+                app
+                    .ui
+                    .last_status
+                    .as_ref()
+                    .map_or_else(
+                        || 
+                        ("Ready".to_string(), Style::default().fg(theme::COMMENT)),
+                            |status: &String| -> (String, Style) 
+                            {(status.clone(), Style::default().fg(theme::GREEN))}), 
+                            |err: &String| -> (String, Style) 
+                            {(    
+                                format!("🔥 Error: {err}"),
+                                Style::default().fg(theme::RED).bold(),
+                            )}
+            );
 
-        let chunks = Layout::default()
+        let chunks: Rc<[Rect]> = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
             .margin(0)
             .split(area);
 
-        let left_para = Paragraph::new(Line::from(Span::styled(format!(" {msg} "), style)))
+        let left_para: Paragraph<'_> = Paragraph::new(
+            Line::from(
+                    Span::styled(
+                        format!(" {msg} "), style
+                    )
+                )
+            )
             .alignment(Alignment::Left);
 
-        let right_text = format!("{} items ", app.fs.active_pane().entries.len());
-        let right_para = Paragraph::new(Line::from(Span::styled(
+        let right_text: String = format!("{} items ", app.fs.active_pane().entries.len());
+        let right_para: Paragraph<'_> = Paragraph::new(Line::from(Span::styled(
             right_text,
             Style::default().fg(theme::PURPLE),
         )))

@@ -1,3 +1,4 @@
+
 //! ``src/view/components/search_results_overlay.rs``
 //! # `SearchResultsOverlay`: Displays Search Results
 
@@ -98,7 +99,7 @@ impl SearchResultsOverlay {
         horizontal[1]
     }
 
-    fn inset_rect(area: Rect, margin_x: u16, margin_y: u16) -> Rect {
+    const fn inset_rect(area: Rect, margin_x: u16, margin_y: u16) -> Rect {
         Rect {
             x: area.x + margin_x,
             y: area.y + margin_y,
