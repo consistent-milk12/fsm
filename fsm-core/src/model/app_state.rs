@@ -309,6 +309,7 @@ impl AppState {
             10, // Batch size for yielding
             self.action_tx.clone(),
             self.config.profiling.clone(),
+            self.cache.clone()
         )
         .await;
 
@@ -609,6 +610,7 @@ impl AppState {
             current_dir,
             self.task_tx.clone(),
             self.action_tx.clone(),
+            self.cache.clone(),
         );
 
         self.ui.request_redraw(RedrawFlag::All);

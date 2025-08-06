@@ -22,7 +22,7 @@ use std::{
 use moka::future::Cache;
 // Serde traits now imported via config module
 use thiserror::Error;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, warn, instrument};
 
 use crate::{config::CacheConfig, error::AppError, fs::object_info::ObjectInfo};
 
@@ -216,10 +216,10 @@ impl ObjectInfoCache {
     /// Convert path to cache key efficiently
     pub fn path_to_key<P: AsRef<Path>>(path: P) -> ObjectKey {
         // Normalize path for consistent keys
-        let path = path.as_ref();
+        let path: &Path = path.as_ref();
 
         // Use to_string_lossy for better Unicode handling
-        let key_str = if cfg!(windows) {
+        let key_str: String = if cfg!(windows) {
             // Windows: normalize separators
             path.to_string_lossy().replace('\\', "/")
         } else {
@@ -229,14 +229,44 @@ impl ObjectInfoCache {
         Arc::from(key_str)
     }
 
-    /// Get entry if present in cache (non-blocking)
+    /// Get entry if present in cache (non-blocking) with operational tracing
+    #[instrument(skip(self), fields(cache_key = %key))]
     pub async fn get(&self, key: &ObjectKey) -> Option<ObjectInfo> {
+        let lookup_start = Instant::now();
         let result: Option<CacheEntry> = self.inner.get(key).await;
+        let lookup_duration = lookup_start.elapsed();
 
         if self.config.enable_stats {
             match &result {
-                Some(CacheEntry::Success(_)) => self.stats.record_hit(),
-                Some(CacheEntry::Failed) | None => self.stats.record_miss(),
+                Some(CacheEntry::Success(_)) => {
+                    self.stats.record_hit();
+                    info!(
+                        marker = "CACHE_OPERATION",
+                        operation_type = "cache_hit",
+                        cache_key = %key,
+                        lookup_time_us = lookup_duration.as_micros(),
+                        "Cache hit - fast retrieval"
+                    );
+                }
+                Some(CacheEntry::Failed) => {
+                    self.stats.record_miss();
+                    warn!(
+                        marker = "CACHE_OPERATION", 
+                        operation_type = "cache_failed_entry",
+                        cache_key = %key,
+                        "Cache contained failed entry"
+                    );
+                }
+                None => {
+                    self.stats.record_miss();
+                    debug!(
+                        marker = "CACHE_OPERATION",
+                        operation_type = "cache_miss", 
+                        cache_key = %key,
+                        lookup_time_us = lookup_duration.as_micros(),
+                        "Cache miss - key not found"
+                    );
+                }
             }
         }
 
@@ -246,13 +276,23 @@ impl ObjectInfoCache {
         }
     }
 
-    /// Get entry by path (convenience method)
+    /// Get entry by path (convenience method) with path normalization tracing
+    #[instrument(skip(self), fields(path = %path.as_ref().display()))]
     pub async fn get_by_path<P: AsRef<Path>>(&self, path: P) -> Option<ObjectInfo> {
-        let key = Self::path_to_key(path);
+        let key = Self::path_to_key(&path);
+        debug!(
+            marker = "CACHE_OPERATION",
+            operation_type = "path_to_key_conversion",
+            original_path = %path.as_ref().display(),
+            cache_key = %key,
+            "Converted path to cache key"
+        );
         self.get(&key).await
     }
 
-    /// Get entry or load if missing
+    /// Get entry or load if missing with comprehensive tracing
+    #[expect(clippy::too_many_lines, reason = "Expected due to logging")]
+    #[instrument(skip(self, loader), fields(cache_key = %key))]
     pub async fn get_or_load<F, Fut>(
         &self,
         key: ObjectKey,
@@ -263,10 +303,27 @@ impl ObjectInfoCache {
         Fut: std::future::Future<Output = Result<ObjectInfo, AppError>> + Send,
     {
         // Fast path: check if already cached
+        let fast_check_start = Instant::now();
         if let Some(entry) = self.inner.get(&key).await {
+            let fast_check_duration = fast_check_start.elapsed();
             match entry {
-                CacheEntry::Success(info) => return Ok(info),
+                CacheEntry::Success(info) => {
+                    info!(
+                        marker = "CACHE_OPERATION",
+                        operation_type = "fast_path_hit",
+                        cache_key = %key,
+                        fast_check_time_us = fast_check_duration.as_micros(),
+                        "Fast path cache hit in get_or_load"
+                    );
+                    return Ok(info);
+                }
                 CacheEntry::Failed => {
+                    warn!(
+                        marker = "CACHE_OPERATION",
+                        operation_type = "fast_path_failed_entry",
+                        cache_key = %key,
+                        "Fast path found failed entry"
+                    );
                     return Err(CacheError::LoaderFailed(format!(
                         "Previous load failed for key: {key}"
                     ))
@@ -275,26 +332,57 @@ impl ObjectInfoCache {
             }
         }
 
-        // Slow path: load with proper stats tracking
-        let load_start = Instant::now();
-        let key_clone = key.clone();
-        let stats = self.stats.clone();
-        let enable_stats = self.config.enable_stats;
+        info!(
+            marker = "CACHE_OPERATION",
+            operation_type = "slow_path_loading",
+            cache_key = %key,
+            fast_check_time_us = fast_check_start.elapsed().as_micros(),
+            "Taking slow path - loading with try_get_with"
+        );
 
-        let result = self
+        // Slow path: load with proper stats tracking
+        let load_start: Instant = Instant::now();
+        let key_clone: Arc<str> = key.clone();
+        let stats: Arc<CacheStats> = self.stats.clone();
+        let enable_stats: bool = self.config.enable_stats;
+
+        let result: Result<CacheEntry, Arc<AppError>> = self
             .inner
             .try_get_with(key.clone(), async move {
-                let load_result = loader().await;
-                let load_duration = load_start.elapsed();
+                info!(
+                    marker = "CACHE_OPERATION",
+                    operation_type = "loader_function_start",
+                    cache_key = %key_clone,
+                    "Starting loader function execution"
+                );
+                
+                let load_result: Result<ObjectInfo, AppError> = loader().await;
+                let load_duration: Duration = load_start.elapsed();
 
                 if enable_stats {
                     stats.record_load(load_duration, load_result.is_ok());
                 }
 
                 match load_result {
-                    Ok(info) => Ok(CacheEntry::Success(info)),
+                    Ok(info) => {
+                        info!(
+                            marker = "CACHE_OPERATION", 
+                            operation_type = "loader_success",
+                            cache_key = %key_clone,
+                            load_duration_ms = load_duration.as_millis(),
+                            "Loader function succeeded, caching result"
+                        );
+                        Ok(CacheEntry::Success(info))
+                    }
                     Err(e) => {
-                        warn!("Cache loader failed for key '{}': {}", key_clone, e);
+                        error!(
+                            marker = "CACHE_OPERATION",
+                            operation_type = "loader_failure", 
+                            cache_key = %key_clone,
+                            load_duration_ms = load_duration.as_millis(),
+                            error = %e,
+                            "Loader function failed, not caching failure"
+                        );
                         // Don't cache the failure - let it be retried
                         Err(e)
                     }
@@ -303,11 +391,35 @@ impl ObjectInfoCache {
             .await;
 
         match result {
-            Ok(CacheEntry::Success(info)) => Ok(info),
+            Ok(CacheEntry::Success(info)) => {
+                info!(
+                    marker = "CACHE_OPERATION",
+                    operation_type = "get_or_load_success",
+                    cache_key = %key,
+                    total_duration_ms = load_start.elapsed().as_millis(),
+                    "get_or_load completed successfully"
+                );
+                Ok(info)
+            }
             Ok(CacheEntry::Failed) => {
+                error!(
+                    marker = "CACHE_OPERATION", 
+                    operation_type = "get_or_load_failed_entry",
+                    cache_key = %key,
+                    "get_or_load returned failed entry"
+                );
                 Err(CacheError::LoaderFailed(format!("Load failed for key: {key}")).into())
             }
-            Err(e) => Err(AppError::Other(e.to_string())),
+            Err(e) => {
+                error!(
+                    marker = "CACHE_OPERATION",
+                    operation_type = "get_or_load_error", 
+                    cache_key = %key,
+                    error = %e,
+                    "get_or_load encountered error"
+                );
+                Err(AppError::Other(e.to_string()))
+            }
         }
     }
 
@@ -322,18 +434,38 @@ impl ObjectInfoCache {
         F: FnOnce() -> Fut + Send,
         Fut: std::future::Future<Output = Result<ObjectInfo, AppError>> + Send,
     {
-        let key = Self::path_to_key(path);
+        let key: Arc<str> = Self::path_to_key(path);
         self.get_or_load(key, loader).await
     }
 
-    /// Insert entry into cache
+    /// Insert entry into cache with operational tracing
+    #[instrument(skip(self, info), fields(cache_key = %key))]
     pub async fn insert(&self, key: ObjectKey, info: ObjectInfo) {
-        self.inner.insert(key, CacheEntry::Success(info)).await;
+        let insert_start: Instant = Instant::now();
+        self.inner.insert(key.clone(), CacheEntry::Success(info.clone())).await;
+        let insert_duration: Duration = insert_start.elapsed();
+        
+        info!(
+            marker = "CACHE_OPERATION",
+            operation_type = "cache_insert",
+            cache_key = %key,
+            insert_duration_us = insert_duration.as_micros(),
+            path = %info.path.display(),
+            "Inserted entry into cache"
+        );
     }
 
-    /// Insert entry by path (convenience method)
+    /// Insert entry by path with path conversion tracing
+    #[instrument(skip(self, info), fields(path = %path.as_ref().display()))]
     pub async fn insert_path<P: AsRef<Path>>(&self, path: P, info: ObjectInfo) {
-        let key = Self::path_to_key(path);
+        let key = Self::path_to_key(&path);
+        debug!(
+            marker = "CACHE_OPERATION",
+            operation_type = "insert_path_conversion",
+            original_path = %path.as_ref().display(),
+            cache_key = %key,
+            "Converting path to key for cache insertion"
+        );
         self.insert(key, info).await;
     }
 

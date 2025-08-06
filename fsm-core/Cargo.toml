@@ -59,6 +59,8 @@ itoa = { workspace = true }
 regex = { workspace = true }
 hashbrown = { workspace = true }
 slab = { workspace = true }
+lru = { workspace = true }
+rustc-hash = { workspace = true }
 
 # Additional utilities
 ansi-to-tui = { workspace = true }

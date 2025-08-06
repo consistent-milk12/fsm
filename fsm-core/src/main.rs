@@ -20,7 +20,7 @@ use std::{
     time::{Duration, Instant}
 };
 
-use fsm_core::logging::{ProfilingData};
+use fsm_core::logging::{init_logging_with_level, ProfilingData};
 
 use anyhow::{Context, Error, Result};
 use crossterm::{
@@ -40,7 +40,7 @@ use fsm_core::{
         actions::Action,
         event_loop::{EventLoop, TaskResult},
     },
-    logging::{init_default_logging, shutdown_logging},
+    logging::shutdown_logging,
     model::{
         app_state::AppState,
         fs_state::FSState,
@@ -84,7 +84,7 @@ struct App {
 impl App {
     /// Initialize the application with all necessary components
     async fn new() -> Result<Self> {
-        let tracer_guard: WorkerGuard = init_default_logging().await?;
+        let tracer_guard: WorkerGuard = init_logging_with_level("TRACE").await?;
 
         Tracer::info!("Starting File Manager TUI");
 

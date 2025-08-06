@@ -20,6 +20,7 @@ use crate::model::fs_state::{EntryFilter, EntrySort, PaneState};
 use crate::model::ui_state::{LoadingState, NotificationLevel, RedrawFlag, UIMode, UIOverlay};
 use crate::tasks::file_ops_task::{FileOperation, FileOperationTask};
 use crate::tasks::search_task::RawSearchResult;
+use crate::tasks::size_task as FileSizeOperator; 
 use crossterm::event::{Event as TermEvent, EventStream, KeyCode, KeyModifiers};
 use futures::StreamExt;
 use std::path::PathBuf;
@@ -1706,10 +1707,11 @@ impl EventLoop {
 
         for entry in entries_for_size {
             if entry.is_dir {
-                crate::tasks::size_task::calculate_size_task(
+                FileSizeOperator::calculate_size_task(
                     path.clone(),
                     entry,
                     action_tx.clone(),
+                    app.cache.clone(),
                 );
             }
         }

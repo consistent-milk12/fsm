@@ -3,11 +3,11 @@
 //! # Background Metadata Loading Task
 //!
 //! Loads expensive metadata (size, modification time, item count) in the background
-//! for better UI responsiveness.
+//! for better UI responsiveness with cache integration.
 
-use crate::controller::actions::Action;
+use crate::{cache::cache_manager::ObjectInfoCache, controller::actions::Action};
 use crate::fs::object_info::{LightObjectInfo};
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc};
 use tokio::sync::mpsc;
 use tracing::{debug, info};
 
@@ -16,21 +16,27 @@ pub fn load_metadata_task(
     parent_dir: PathBuf,
     light_info: LightObjectInfo,
     action_tx: mpsc::UnboundedSender<Action>,
+    cache: Arc<ObjectInfoCache>,
 ) {
     tokio::spawn(async move {
         debug!("Loading metadata for: {}", light_info.path.display());
 
-        match light_info.into_full_info().await {
-            Ok(full_info) => {
-                let _ = action_tx.send(Action::UpdateObjectInfo {
-                    parent_dir,
-                    info: full_info,
-                });
+            // Check cache first, then load if not present
+            match cache.get_or_load_path(
+                &light_info.path, 
+                ||light_info.clone().into_full_info()
+            ).await {
+                Ok(full_info) => {
+                    let _ = action_tx.send(Action::UpdateObjectInfo {
+                        parent_dir,
+                        info: full_info,
+                    });
+                }
+            
+                Err(e) => {
+                    info!("Failed to load metadata for {:?}: {}", parent_dir, e);
+                }
             }
-            Err(e) => {
-                info!("Failed to load metadata for {:?}: {}", parent_dir, e);
-            }
-        }
     });
 }
 
@@ -40,6 +46,7 @@ pub fn batch_load_metadata_task(
     light_entries: Vec<LightObjectInfo>,
     action_tx: mpsc::UnboundedSender<Action>,
     batch_size: usize,
+    cache: Arc<ObjectInfoCache>
 ) {
     tokio::spawn(async move {
         debug!(
@@ -52,10 +59,14 @@ pub fn batch_load_metadata_task(
         for light_info in light_entries {
             let light_info_path = light_info.path.clone();
             
-            match light_info.into_full_info().await {
+            match cache.get_or_load_path(
+                light_info_path.clone(), 
+                || 
+                light_info.into_full_info()).await 
+            {
                 Ok(full_info) => {
                     debug!(
-                        "Metadata task sending full_info for {}: modified = {}",
+                        "Metadata task sending cached full_info for {}: modified = {}",
                         full_info.path.display(),
                         full_info.format_date("%Y-%m-%d")
                     );

@@ -95,7 +95,7 @@ const TRACE_MARKER_UNKNOWN_STR: &str = "UNKNOWN_MARKER";
 
 const TRACE_OPERATION_TYPE: CompactString = CompactString::const_new("operation_type");
 const TRACE_OPERATION_UNKNOWN_COMPACT: CompactString = CompactString::const_new("UNKNOWN_OPERATION_TYPE");
-const TRACE_OPERATION_UNKNOWN_STR: &str = "UNKNWON_OPERATION_TYPE";
+const TRACE_OPERATION_UNKNOWN_STR: &str = "UNKNOWN_OPERATION_TYPE";
 
 const TRACE_ENTER_SPAN: CompactString = CompactString::const_new("ENTER_SPAN");
 const TRACE_EXIT_SPAN: CompactString = CompactString::const_new("EXIT_SPAN_COMPLETE");

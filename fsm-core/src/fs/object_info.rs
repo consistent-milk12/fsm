@@ -13,6 +13,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use tokio::fs::{self as TokioFs};
 
+use crate::AppError;
+
 /// Enum for object type, matching the table logic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ObjectType {
@@ -113,7 +115,7 @@ impl LightObjectInfo {
     }
 
     // CONVERSION TO FULL OBJECTINFO
-    pub async fn into_full_info(self) -> std::io::Result<ObjectInfo> {
+    pub async fn into_full_info(self) -> Result<ObjectInfo, AppError> {
         let metadata = TokioFs::symlink_metadata(&self.path).await?;
 
         let size = if self.is_dir { 0 } else { metadata.len() };
@@ -172,7 +174,7 @@ impl ObjectInfo {
       }
 
       // OPTIMIZED CONSTRUCTION - Zero-allocation where possible
-      pub async fn from_path(path: &Path) -> std::io::Result<Self> {
+      pub async fn from_path(path: &Path) -> Result<Self, AppError> {
           let metadata: Metadata = TokioFs::symlink_metadata(path).await?;
           let file_type: FileType = metadata.file_type();
 

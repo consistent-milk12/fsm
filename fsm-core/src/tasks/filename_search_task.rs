@@ -2,7 +2,7 @@
 //! 
 //! Spawns async find/fd process, converts hits to `ObjectInfo`, reports to UI.
 //! Expert-level implementation following all 20 MANDATORY RULES.
-use std::path::{Path, PathBuf};
+use std::{path::{Path, PathBuf}, sync::Arc};
 use std::process::{ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
@@ -19,7 +19,7 @@ use tokio::{
 use tracing::{Span, instrument, warn};
 use tracing::field::Empty as EmptyTraceField;
 
-use crate::error_core::{CoreError, CoreResult};
+use crate::{cache::cache_manager::ObjectInfoCache, error_core::{CoreError, CoreResult}};
 use crate::{
     controller::{actions::Action, event_loop::TaskResult},
     fs::object_info::ObjectInfo,
@@ -52,6 +52,7 @@ impl FilenameSearchTask {
         search_path: PathBuf,
         task_tx: UnboundedSender<TaskResult>,
         action_tx: UnboundedSender<Action>,
+        cache: Arc<ObjectInfoCache>
     ) {
         tokio::spawn(async move {
             let task_start = Instant::now();
@@ -99,6 +100,7 @@ impl FilenameSearchTask {
                         child,
                         &search_path,
                         &task_tx,
+                        cache.clone()
                     )
                     .await 
             {
@@ -287,6 +289,7 @@ impl FilenameSearchTask {
         mut child: Child,
         search_path: &Path,
         task_tx: &UnboundedSender<TaskResult>,
+        cache: Arc<ObjectInfoCache>,
     ) -> CoreResult<Vec<ObjectInfo>> {
         // RULE 8: Pre-allocated capacity for performance
         let mut results: Vec<ObjectInfo> = Vec::with_capacity(512);
@@ -327,7 +330,10 @@ impl FilenameSearchTask {
                         continue;
                     }
 
-                    match ObjectInfo::from_path(&file_path).await {
+                    match cache.get_or_load_path(
+                        &file_path, 
+                        || ObjectInfo::from_path(&file_path)).await 
+                    {
                         Ok(info) => {
                             results.push(info);
 

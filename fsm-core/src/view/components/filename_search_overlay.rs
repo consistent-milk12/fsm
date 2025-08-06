@@ -1,239 +1,355 @@
-//! ``src/view/components/filename_search_overlay.rs``
-//! ============================================================================
-//! # `FileNameSearchOverlay`: Enhanced Live file/folder name search
-//!
-//! Provides instant search results for file and folder names with improved responsiveness,
-//! debouncing, caching, and extensive logging for debugging and performance monitoring.
-//!
-//! ## Features:
-//! - Debounced search input to prevent excessive API calls
-//! - Smart caching with TTL for repeated searches
-//! - Progressive search feedback (local → recursive)
-//! - Extensive logging for debugging and performance tracking
-//! - Improved error handling and user feedback
-//! - Optimized rendering with pagination support
+//! High-performance filename search overlay — ratatui 0.29 + moka 0.12
 
-use crate::fs::object_info::ObjectInfo;
-use crate::model::app_state::AppState;
-use crate::view::theme;
-use compact_str::{CompactString, ToCompactString};
+use crate::{fs::object_info::ObjectInfo,
+model::app_state::AppState, view::theme};
+use moka::sync::Cache;
+use rustc_hash::{FxBuildHasher, FxHashSet};
 use ratatui::{
-    Frame,
-    layout::{Alignment, Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Direction, Layout, Rect, Alignment},
     style::{Modifier, Style},
-    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState,
+Paragraph, Wrap},
+    Frame,
 };
-use std::{path::{Path, PathBuf}, time::{Duration, Instant}};
-use tracing::{debug, info, instrument, trace};
+use tracing::{debug, info, instrument, trace, warn};
+use std::{borrow::Cow,
+    collections::HashSet,
+    path::{Path, PathBuf},
+    rc::Rc, sync::Arc,
+    time::{Duration, Instant}
+};
 
-/// Configuration constants for search behavior
-const MAX_DISPLAY_RESULTS: usize = 100; // Limit displayed results for performance
-const MIN_SEARCH_LENGTH: usize = 2; // Minimum characters before starting search
+// ---------- tuning knobs ----------
+const MAX_RESULTS: usize = 64;
+const MIN_LEN: usize = 2;
+const CACHE_CAP: u64 = 256;
+const POPUP_W: u16 = 75;
+const POPUP_H: u16 = 70;
+const SPIN_MS: u64 = 80;
 
-// Future enhancement constants (currently unused but ready for implementation)
-#[allow(dead_code)]
-const SEARCH_DEBOUNCE_MS: u64 = 300; // Wait 300ms after last keystroke
+// Performance monitoring thresholds
+const SLOW_RENDER_MS: u128 = 8;   // > 8ms is slow for UI
+const SLOW_BUILD_MS: u128= 5;    // > 5ms cache build is slow
 
-#[allow(dead_code)]
-const CACHE_TTL_SECONDS: u64 = 30; // Cache results for 30 seconds
-
-/// Enhanced filename search overlay with improved responsiveness and logging
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct FileNameSearchOverlay 
-{
-    cache: SearchResultCache,
+// ---------- cache payload ----------
+#[derive(Clone)]
+#[expect(dead_code)]
+struct CacheEntry {
+    // Pre-computed display strings (no ListItem storage due to lifetime issues)
+    items: Arc<Vec<String>>,
+    status: Arc<str>,
+    mode: Mode,
+    made: Instant,
+    build_time_us: u64,  // Track cache build performance
 }
 
-impl FileNameSearchOverlay {
-    #[must_use] 
-    pub fn new() -> Self
-    {
-        Self 
-        {
-            cache: SearchResultCache::default()
-        }
+// ---------- tiny helper enums ----------
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Mode {
+    Empty,
+    Local,
+    Recursive,
+    Mixed
+}
+
+// ---------- moka wrapper --------------
+struct SearchCache {
+    inner: Cache<String, Arc<CacheEntry>>
+}
+
+impl SearchCache {
+    #[instrument(
+        fields(
+            marker = "CACHE_INIT",
+            operation_type = "cache_init"
+        )
+    )]
+    fn new() -> Self {
+        trace!("Initializing search cache with capacity: {}", CACHE_CAP);
+        let inner: Cache<String, Arc<CacheEntry>> = Cache::builder()
+            .max_capacity(CACHE_CAP)
+            .time_to_live(Duration::from_secs(120))
+            .build();
+        
+        debug!("Search cache initialized successfully");
+
+        Self { inner }
     }
 
     #[instrument(
-        skip(overlay, frame, app, area),
+        skip(self, f),
         fields(
-            area_width = %area.width,
-            area_height = %area.height
+            marker = "CACHE_GET_OR_BUILD",
+            operation_type = "cache_operation",
+            cache_key = %k,
         )
     )]
-    #[expect(clippy::cast_possible_truncation, reason = "Expected accuracy")]
-    /// Main render function with enhanced logging and error handling
-    pub fn render(overlay: &mut Self, frame: &mut Frame<'_>, app: &AppState, area: Rect) {
-        let render_start = Instant::now();
-        trace!("FileNameSearchOverlay::render started");
+    fn get_or<F>(&self, k: &str, f: F) -> Arc<CacheEntry>
+    where F: FnOnce() -> CacheEntry {
+        let start: Instant = Instant::now();
 
-        // Log current search state
-        debug!(
-            "Rendering filename search overlay: input='{}', results_count={}, recursive_results={}",
-            app.ui.input,
-            app.ui.filename_search_results.len(),
-            !app.ui.filename_search_results.is_empty()
-        );
-        let overlay_area = Self::centered_rect(75, 70, area); // Slightly larger for better UX
-        frame.render_widget(Clear, overlay_area);
+        // Check if we have a cache hit first
+        if let Some(cached) = self.inner.get(k) {
+            trace!(
+                cache_key = %k,
+                build_time_us = %cached.build_time_us,
+                items_count = %cached.items.len(),
+                mode = ?cached.mode,
+                "Cache HIT - returning existing entry"
+            );
 
-        trace!("Overlay area calculated: {:?}", overlay_area);
-
-        // Enhanced layout with status bar
-        let layout = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(3), // Input box
-                Constraint::Length(1), // Status/info bar
-                Constraint::Fill(1),   // Results
-            ])
-            .split(overlay_area);
-
-        trace!(
-            "Layout split complete: input={:?}, status={:?}, results={:?}",
-            layout[0], layout[1], layout[2]
-        );
-
-        // Enhanced input box with search state indicator
-        let is_searching = Self::is_search_active(app);
-        let input_title = if is_searching {
-            " File Search (Searching...) "
-        } else if app.ui.input.len() < MIN_SEARCH_LENGTH && !app.ui.input.is_empty() {
-            " File Search (Type more...) "
-        } else {
-            " File Search "
-        };
-
-        let input_border_color = if is_searching {
-            theme::YELLOW // Use yellow to indicate active searching
-        } else {
-            theme::CYAN
-        };
-
-        let input_block = Block::default()
-            .borders(Borders::ALL)
-            .title(input_title)
-            .title_alignment(Alignment::Center)
-            .border_style(Style::default().fg(input_border_color))
-            .style(Style::default().bg(theme::BACKGROUND));
-
-        let input_paragraph = Paragraph::new(app.ui.input.as_str())
-            .block(input_block)
-            .style(Style::default().fg(theme::FOREGROUND))
-            .wrap(Wrap { trim: false });
-
-        frame.render_widget(input_paragraph, layout[0]);
-
-        debug!(
-            "Input box rendered: text='{}', is_searching={}",
-            app.ui.input, is_searching
-        );
-
-        // Enhanced cursor positioning with bounds checking
-        let cursor_x =
-            (layout[0].x + app.ui.input.len() as u16 + 1).min(layout[0].x + layout[0].width - 2);
-        let cursor_y = layout[0].y + 1;
-        frame.set_cursor_position((cursor_x, cursor_y));
-
-        trace!("Cursor positioned at ({}, {})", cursor_x, cursor_y);
-
-        // Render status bar
-        overlay.render_status_bar(frame, app, layout[1]);
-
-        // Render search results with enhanced features
-        Self::render_search_results(overlay, frame, app, layout[2]);
-
-        // Enhanced help text with keyboard shortcuts
-        let help_text = if app.ui.input.len() < MIN_SEARCH_LENGTH {
-            "Type at least 2 characters to search • Esc to close"
-        } else {
-            "↑↓ Navigate • Enter to open • Tab for details • Esc to close"
-        };
-
-        let help_paragraph = Paragraph::new(help_text)
-            .style(Style::default().fg(theme::COMMENT))
-            .alignment(Alignment::Center);
-
-        let help_area = Rect {
-            x: overlay_area.x,
-            y: overlay_area.y + overlay_area.height,
-            width: overlay_area.width,
-            height: 1,
-        };
-
-        if help_area.y < area.height {
-            frame.render_widget(help_paragraph, help_area);
-            trace!("Help text rendered: '{}'", help_text);
+            return cached;
         }
 
-        let render_duration = render_start.elapsed();
-        if render_duration > Duration::from_millis(16) {
-            // > 60fps threshold
-            info!(
-                "Filename search overlay render took {:?} (slow)",
-                render_duration
+        // Cache miss - need to build
+        trace!(cache_key = %k, "Cache MISS - building new entry");
+        let entry: Arc<CacheEntry> = self.inner.get_with(k.to_owned(), || Arc::new(f()));
+        let lookup_time: Duration = start.elapsed();
+
+        info!(
+            cache_key = %k,
+            lookup_time_us = %lookup_time.as_micros(),
+            build_time_us = %entry.build_time_us,
+            items_count = %entry.items.len(),
+            mode = ?entry.mode,
+            "Cache entry created and stored"
+        );
+
+        if lookup_time.as_millis() > SLOW_BUILD_MS {
+            warn!(
+                cache_key = %k,
+                lookup_time_ms = %lookup_time.as_millis(),
+                "Slow cache lookup detected (threshold: {}ms)",
+                SLOW_BUILD_MS
+            );
+        }
+
+        entry
+    }
+
+    #[instrument(
+        skip(self),
+        fields(
+            marker = "CACHE_INVALIDATE_ALL",
+            operation_type = "cache_operation"
+        )
+    )]
+    fn invalidate_all(&self) {
+        let estimated_size: u64 = self.inner.entry_count();
+
+        trace!(entries_invalidated = %estimated_size, "Invalidating entire cache");
+        
+        self.inner.invalidate_all();
+        debug!("Cache invalidated completely");
+    }
+}
+
+// ---------- main component -----------
+pub struct FileNameSearchOverlay {
+    cache: SearchCache,
+    last: String,
+    epoch: Instant,
+}
+
+impl Default for FileNameSearchOverlay {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl FileNameSearchOverlay {
+    #[must_use]
+    #[instrument(
+        fields(
+            marker = "OVERLAY_NEW", 
+            operation_type = "component_init"
+        )
+    )]
+    pub fn new() -> Self {
+        trace!("Creating new FileNameSearchOverlay");
+        Self {
+            cache: SearchCache::new(),
+            last: String::new(),
+            epoch: Instant::now()
+        }
+    }
+}
+
+// ---------- public API ---------------
+impl FileNameSearchOverlay {
+    #[instrument(
+        skip(self, f, app, all),
+        fields(
+            marker = "UI_RENDER_FILENAME_SEARCH",
+            operation_type = "ui_render",
+            input_len = %app.ui.input.len(),
+            area_width = %all.width,
+            area_height = %all.height
+        )
+    )]
+    pub fn render(&mut self, f: &mut Frame<'_>, app: &AppState, all: Rect) {
+        let render_start = Instant::now();
+
+        trace!(
+            input = %app.ui.input,
+            search_results_count = %app.ui.filename_search_results.len(),
+            is_searching = %is_searching(app),
+            "Starting filename search overlay render"
+        );
+
+        // Invalidate cache if input changed
+        if self.last != app.ui.input {
+            debug!(
+                old_input = %self.last,
+                new_input = %app.ui.input,
+                "Input changed - invalidating cache"
+            );
+            self.cache.invalidate_all();
+            self.last.clone_from(&app.ui.input);
+        }
+
+        let popup: Rect = centered(all);
+        f.render_widget(Clear, popup);
+
+        // Create layout areas
+        let chunks: Rc<[Rect]> = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3),  // input
+                Constraint::Length(1),  // status
+                Constraint::Min(0),     // list
+            ])
+            .split(popup);
+
+        trace!(
+            input_area = ?chunks[0],
+            status_area = ?chunks[1],
+            results_area = ?chunks[2],
+            "Layout areas calculated"
+        );
+
+        Self::draw_input(f, app, chunks[0]);
+        self.draw_results(f, app, chunks[1], chunks[2]);
+
+        let render_time: Duration = render_start.elapsed();
+        if render_time.as_millis() > SLOW_RENDER_MS {
+            warn!(
+                render_time_ms = %render_time.as_millis(),
+                input = %app.ui.input,
+                "Slow filename search render detected (threshold: {}ms)",
+                SLOW_RENDER_MS
             );
         } else {
             trace!(
-                "Filename search overlay render completed in {:?}",
-                render_duration
+                render_time_us = %render_time.as_micros(),
+                "Filename search overlay render completed"
             );
         }
     }
+}
 
-    /// Render status bar with search statistics and performance info
-    fn render_status_bar(&mut self, frame: &mut Frame<'_>, app: &AppState, area: Rect) {
-        let status_text = self.cache.get_status_text(app);
-        
-        let status_paragraph = Paragraph::new(status_text)
+// ---------- drawing helpers ----------
+impl FileNameSearchOverlay {
+    #[expect(clippy::cast_possible_truncation, reason = "Expected accuracy loss")]
+    #[instrument(
+        skip(f, app, r),
+        fields(
+            marker = "UI_DRAW_INPUT",
+            operation_type = "ui_draw",
+            input_len = %app.ui.input.len()
+        )
+    )]
+    fn draw_input(f: &mut Frame<'_>, app: &AppState, r: Rect) {
+        let (ttl, col) = match app.ui.input.len() {
+            0 => {
+                trace!("Drawing empty input state");
+                (" File Search ", theme::CYAN)
+            },
+            n if n < MIN_LEN => {
+                trace!(chars_needed = %(MIN_LEN - n), "Drawing 'type more' state");
+                (" File Search (type more) ", theme::COMMENT)
+            },
+            n => {
+                trace!(input_length = %n, "Drawing active search state");
+                (" File Search ", theme::YELLOW)
+            }
+        };
+
+        let block: Block<'_> = Block::default()
+            .borders(Borders::ALL)
+            .title(ttl)
+            .title_alignment(Alignment::Center)
+            .border_style(Style::default().fg(col))
+            .style(Style::default().bg(theme::BACKGROUND));
+
+        let p = Paragraph::new(app.ui.input.as_str())
+            .block(block)
+            .style(Style::default().fg(theme::FOREGROUND))
+            .wrap(Wrap { trim: false });
+
+        f.render_widget(p, r);
+
+        // Set cursor position
+        let cursor_x: u16 = (r.x + app.ui.input.len() as u16 + 1)
+            .min(r.x + r.width.saturating_sub(2));
+        f.set_cursor_position((cursor_x, r.y + 1));
+
+        trace!(cursor_x = %cursor_x, cursor_y = %(r.y + 1), "Input cursor positioned");
+    }
+
+    #[instrument(
+        skip(self, f, app, stat, lst),
+        fields(
+            marker = "UI_DRAW_RESULTS",
+            operation_type = "ui_draw",
+            input = %app.ui.input
+        )
+    )]
+    fn draw_results(&self, f: &mut Frame<'_>, app: &AppState, stat: Rect, lst: Rect) {
+        let cache_start: Instant = Instant::now();
+        let ce: Arc<CacheEntry> = self.cache.get_or(
+            &app.ui.input,
+            || -> CacheEntry
+            {Self::build(app)}
+        );
+        let cache_time: Duration = cache_start.elapsed();
+
+        trace!(
+            cache_lookup_us = %cache_time.as_micros(),
+            items_count = %ce.items.len(),
+            mode = ?ce.mode,
+            build_time_us = %ce.build_time_us,
+            "Cache lookup completed"
+        );
+
+        // status bar
+        let bar: Paragraph<'_> = Paragraph::new(ce.status.as_ref())
             .style(Style::default().fg(theme::COMMENT))
             .alignment(Alignment::Center);
 
-        frame.render_widget(status_paragraph, area);
-    }
+        f.render_widget(bar, stat);
 
-    #[instrument(skip(frame, app))]
-    fn render_search_results(
-        overlay: &mut Self,
-        frame: &mut Frame<'_>,
-        app: &AppState,
-        area: Rect
-    )
-    {
-        trace!("render_search_results started with cache optimization");
-
-        let is_searching = Self::is_search_active(app);
-
-        // Early return for searching state (no cache needed)
-        if is_searching {
-            Self::render_searching_state(frame, app, area);
+        // spinner or empty message
+        if is_searching(app) {
+            trace!("Rendering spinner (search in progress)");
+            self.spinner(f, app, lst);
             return;
         }
 
-        // Use cached display entries (eliminates 75ms+ overhead)
-        let (_, cached_list_items, search_mode) = overlay.cache.get_cached_data(app);
-    
-        // Enhanced empty state with helpful suggestions  
-        if cached_list_items.is_empty() {
-            Self::render_empty_state(frame, app, area);
+        if ce.items.is_empty() {
+            trace!("Rendering empty state (no results)");
+            Self::empty(f, app, lst);
             return;
         }
 
-        // Use cached computations for list rendering
-        let total_results = cached_list_items.len();
-        let display_entries = if total_results > MAX_DISPLAY_RESULTS {
-            &cached_list_items[..MAX_DISPLAY_RESULTS]
-        } else {
-            cached_list_items
-        };
+        let list_start: Instant = Instant::now();
 
-        // Create list items using cached strings
-        let list_items: Vec<ListItem> = display_entries
+        // Create list items from cached strings
+        let list_items: Vec<ListItem> = ce.items
             .iter()
-            .take(display_entries.len())
             .enumerate()
-            .map(|(idx, cached_string)| {
-                ListItem::new(cached_string.as_str())
+            .map(|(idx, text)| -> ListItem<'_> {
+                ListItem::new(text.as_str())
                     .style(if idx % 2 == 0 {
                         Style::default().fg(theme::FOREGROUND)
                     } else {
@@ -242,421 +358,321 @@ impl FileNameSearchOverlay {
             })
             .collect();
 
-        // Enhanced title with cached search mode
-        let title = Self::create_title(display_entries.len(), total_results, search_mode, app);
-
-        let results_block = Block::default()
+        let blk: Block<'_> = Block::default()
             .borders(Borders::ALL)
-            .title(title)
-            .border_style(Style::default().fg(theme::CYAN))
-            .style(Style::default().bg(theme::BACKGROUND));
+            .title(format!(" {} Files ", ce.items.len()))
+            .border_style(Style::default().fg(theme::CYAN));
 
-        // Enhanced list with better highlight styling
-        let list = List::new(list_items)
-            .block(results_block)
-            .highlight_symbol("▶ ")
-            .highlight_style(
-                Style::default()
-                    .bg(theme::CURRENT_LINE)
-                    .fg(theme::FOREGROUND)
-                    .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
-            );
+        let mut st: ListState = ListState::default();
+        let selection = app.ui.raw_search_selected.min(ce.items.len().saturating_sub(1));
+        st.select(Some(selection));
 
-        let mut list_state = ListState::default();
-        let adjusted_selection = app.ui.raw_search_selected
-            .min(display_entries.len().saturating_sub(1));
-        list_state.select(Some(adjusted_selection));
-
-        frame.render_stateful_widget(list, area, &mut list_state);
-
-        trace!("render_search_results completed with cache optimization");
-    }
-
-    // Helper functions for render_search_results
-    fn render_searching_state(frame: &mut Frame<'_>, app: &AppState, area: Rect)
-    {
-        let search_start = Instant::now();
-        let spinner_chars = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-        let spinner_frame = (search_start.elapsed().as_millis() / 80) %
-    spinner_chars.len() as u128;
-        let spinner = spinner_chars[spinner_frame as usize];
-
-        let loading_text = format!("{} Searching recursively for '{}'...",
-    spinner, app.ui.input);
-        let local_matches = Self::get_local_matches(app);
-        let subtitle = if local_matches.is_empty() {
-            "Scanning directories...".to_string()
-        } else {
-            format!("Found {} local matches, searching deeper...",
-    local_matches.len())
-        };
-
-        let loading_text_with_subtitle = format!("{loading_text}\n{subtitle}");
-        let loading = Paragraph::new(loading_text_with_subtitle)
-            .style(Style::default().fg(theme::CYAN))
-            .alignment(Alignment::Center)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(" Searching... ")
-                    .border_style(Style::default().fg(theme::CYAN))
-                    .style(Style::default().bg(theme::BACKGROUND)),
-            );
-        frame.render_widget(loading, area);
-    }
-
-    fn render_empty_state(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
-        let message = if app.ui.input.is_empty() {
-            "Type to search for files\n\nTip: Search works across all 
-    subdirectories".to_string()
-        } else if app.ui.input.len() < MIN_SEARCH_LENGTH {
-            format!("Type {} more character(s) to start searching",
-    MIN_SEARCH_LENGTH - app.ui.input.len())
-        } else {
-            format!(
-                "No file matches found for '{}'\n\nTip: Only files are shown 
-    (not folders)\n• Try different spelling\n• Use partial filename\n• Include 
-    file extension",
-                app.ui.input
-            )
-        };
-
-        let no_results = Paragraph::new(message)
-            .style(Style::default().fg(theme::COMMENT))
-            .alignment(Alignment::Center)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(" No Results ")
-                    .border_style(Style::default().fg(theme::COMMENT))
-                    .style(Style::default().bg(theme::BACKGROUND)),
-            );
-        frame.render_widget(no_results, area);
-    }
-
-    fn create_title(display_count: usize, total_count: usize, mode: SearchMode, app: &AppState) -> String {
-        let base_title = match mode {
-            SearchMode::Local => format!(" {display_count} Local Files "),
-            SearchMode::Recursive => format!(" {display_count} Recursive Files "),
-            SearchMode::Mixed => format!(
-                " {} Mixed Files ({}+{}) ",
-                display_count,
-                Self::get_local_matches(app).len(),
-                app.ui.filename_search_results.iter().filter(|e| !e.is_dir).count()
-            ),
-        };
-
-        if total_count > MAX_DISPLAY_RESULTS {
-            format!("{} (showing {}/{})", base_title.trim(), MAX_DISPLAY_RESULTS, total_count)
-        } else {
-            base_title
-        }
-    }
-
-    fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
-        let popup_layout = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Percentage((100 - percent_y) / 2),
-                Constraint::Percentage(percent_y),
-                Constraint::Percentage((100 - percent_y) / 2),
-            ])
-            .split(area);
-
-        Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Percentage((100 - percent_x) / 2),
-                Constraint::Percentage(percent_x),
-                Constraint::Percentage((100 - percent_x) / 2),
-            ])
-            .split(popup_layout[1])[1]
-    }
-
-    /// Helper methods for enhanced functionality
-    ///
-    /// Check if there's an active filename search task
-    fn is_search_active(app: &AppState) -> bool {
-        app.tasks
-            .values()
-            .any(|task| task.description.contains("Filename search") && !task.is_completed)
-    }
-
-    /// Get local matches for immediate feedback - files only
-    fn get_local_matches(app: &AppState) -> Vec<&ObjectInfo> {
-        if app.ui.input.is_empty() || app.ui.input.len() < MIN_SEARCH_LENGTH {
-            return Vec::new();
-        }
-
-        let search_term = app.ui.input.to_lowercase();
-        app.fs
-            .active_pane()
-            .entries
-            .iter()
-            .filter(|entry| !entry.is_dir && entry.name.to_lowercase().contains(&search_term))
-            .collect()
-    }
-}
-
-/// Search mode for better context and rendering
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SearchMode {
-    /// Local directory search only
-    Local,
-    /// Recursive search results
-    Recursive,
-    /// Mixed results (both local and recursive)
-    Mixed,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-struct SearchResultCache {
-    // Cache key: input string + results count for invalidation
-    cache_key: Option<(CompactString, usize)>,
-
-    // Cached computations to eliminate render-time allocations
-    cached_status_text: Option<String>,
-    cached_list_items: Option<Vec<String>>, // Static lifetime for cache
-    cached_display_entries: Option<Vec<ObjectInfo>>, // Owned for cache
-    cached_search_mode: Option<SearchMode>,
-
-    // Performance tracking
-    last_cache_time: Option<Instant>,
-}
-
-impl SearchResultCache {
-    // Get or compute all cached data in single call (eliminates multiple borrows)
-    fn get_cached_data(&mut self, app: &AppState) -> (&str, &[String], SearchMode)
-    {
-        if !self.is_valid(app)
-        {
-            self.invalidate();
-            self.compute_cache(app);
-        }
-
-        (
-            self.cached_status_text.as_ref().unwrap(),
-            self.cached_list_items.as_ref().unwrap(),
-            self.cached_search_mode.unwrap_or(SearchMode::Local)
-        )
-    }
-    
-    /// Check if cache is valid for current app state
-    fn is_valid(&self, app: &AppState) -> bool {
-        if let Some((cached_input, cached_count)) = &self.cache_key {
-            let current_count: usize = app.ui.filename_search_results.len();
-            cached_input == app.ui.input && *cached_count == current_count
-        } else {
-            false
-        }
-    }
-
-    /// Invalidate cache when input or results change
-    fn invalidate(&mut self) {
-        self.cache_key = None;
-        self.cached_status_text = None;
-        self.cached_list_items = None;
-        self.cached_display_entries = None;
-        self.cached_search_mode = None;
-    }
-
-    /// Get or compute cached status text (eliminates 66ms overhead)
-    fn get_status_text(&mut self, app: &AppState) -> &str {
-        if !self.is_valid(app) {
-            self.invalidate();
-            self.compute_cache(app);
-        }
-
-        self.cached_status_text.as_ref().unwrap()
-    }
-
-    /// Compute all cached values in single pass
-    fn compute_cache(&mut self, app: &AppState) {
-        let compute_start = Instant::now();
-
-        // Cache key for invalidation
-        self.cache_key = Some((app.ui.input.clone().into(), app.ui.filename_search_results.len()));
-
-        // Compute status text once
-        self.cached_status_text = Some(Self::compute_status_text(app));
-
-        // Compute display entries and list items once
-        let (entries, mode) = Self::compute_display_entries(app);
-        self.cached_search_mode = Some(mode);
-
-        // Convert to owned data for cache storage
-        self.cached_display_entries = Some(entries.into_iter().cloned().collect());
-
-        // Pre-compute list items with static strings
-        self.cached_list_items = Some(
-            self.cached_display_entries.as_ref().unwrap()
-                .iter()
-                .enumerate()
-                .map(|(idx, entry)|
-                    Self::create_display_string(entry, app, idx, mode)).collect()
+        f.render_stateful_widget(
+            List::new(list_items)
+                .block(blk)
+                .highlight_symbol("▶ ")
+                .highlight_style(
+                    Style::default()
+                        .bg(theme::CURRENT_LINE)
+                        .fg(theme::FOREGROUND)
+                        .add_modifier(Modifier::BOLD)
+                ),
+            lst,
+            &mut st
         );
 
-        self.last_cache_time = Some(compute_start);
+        let list_time: Duration = list_start.elapsed();
 
-        trace!("SearchResultCache computed in {:?}", compute_start.elapsed());
+        trace!(
+            list_render_us = %list_time.as_micros(),
+            items_rendered = %ce.items.len(),
+            selected_index = %selection,
+            "Results list rendered"
+        );
     }
 
-    // Helper methods (moved from FileNameSearchOverlay)
-    fn compute_status_text(app: &AppState) -> String {
-        if app.ui.input.is_empty() {
-            "Ready to search files (folders excluded)".to_string()
-        } else if app.ui.input.len() < MIN_SEARCH_LENGTH {
-            format!(
-                "Type {} more character(s) to start searching",
-                MIN_SEARCH_LENGTH - app.ui.input.len()
-            )
+    // ----------------- spinner / empty -----------------
+    #[instrument(
+        skip(self, f, app, area),
+        fields(
+            marker = "UI_DRAW_SPINNER",
+            operation_type = "ui_draw"
+        )
+    )]
+    fn spinner(&self, f: &mut Frame<'_>, app: &AppState, area: Rect) {
+        const FRAMES: &[char] = &['⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧','⠇','⠏'];
+        let idx: usize = ((self.epoch.elapsed().as_millis() / u128::from(SPIN_MS))
+                % FRAMES.len() as u128) as usize;
+        let txt: String = format!("{} Searching \"{}\" …", FRAMES[idx], app.ui.input);
+
+        trace!(
+            spinner_frame = %idx,
+            spinner_char = %FRAMES[idx],
+            "Rendering search spinner"
+        );
+
+        let w: Paragraph<'_> = Paragraph::new(txt)
+            .style(Style::default().fg(theme::CYAN))
+            .alignment(Alignment::Center)
+            .block(Block::default().borders(Borders::ALL).title(" Searching "));
+        f.render_widget(w, area);
+    }
+
+    #[instrument(
+        skip(f, app, area),
+        fields(
+            marker = "UI_DRAW_EMPTY",
+            operation_type = "ui_draw",
+            input_empty = %app.ui.input.is_empty()
+        )
+    )]
+    fn empty(f: &mut Frame<'_>, app: &AppState, area: Rect) {
+        let msg: &'static str = if app.ui.input.is_empty() {
+            trace!("Rendering empty input message");
+            "Type to search"
         } else {
-            let local_count = app
-                .fs
-                .active_pane()
-                .entries
-                .iter()
-                .filter(|e| {
-                    !e.is_dir && e.name.to_lowercase().contains(&app.ui.input.to_lowercase())
-                })
-                .count();
-            let recursive_count = app
-                .ui
-                .filename_search_results
-                .iter()
-                .filter(|e| !e.is_dir)
-                .count();
+            trace!(input = %app.ui.input, "Rendering no results message");
+            "No files found"
+        };
 
-            
-
-            if Self::is_search_active(app) {
-                format!("Searching... (Found {local_count} local file matches)")
-            } else if recursive_count > 0 {
-                format!("Found {local_count} local + {recursive_count} recursive file matches")
-            } else {
-                format!("Found {local_count} local file matches")
-            }
-        }
+        let w: Paragraph<'_> = Paragraph::new(msg)
+            .style(Style::default().fg(theme::COMMENT))
+            .alignment(Alignment::Center)
+            .block(Block::default().borders(Borders::ALL).title(" No Results "));
+        f.render_widget(w, area);
     }
 
-    /// Get local matches for immediate feedback - files only
-    fn get_local_matches(app: &AppState) -> Vec<&ObjectInfo> {
-        if app.ui.input.is_empty() || app.ui.input.len() < MIN_SEARCH_LENGTH {
-            return Vec::new();
+    // ----------------- cache builder ------------------
+    #[expect(clippy::cast_possible_truncation, reason = "Expected accuracy loss")]
+    #[expect(clippy::cast_sign_loss, reason = "Expected accuracy loss")]
+    #[instrument(
+        fields(
+            marker = "CACHE_BUILD_ENTRY",
+            operation_type = "cache_build",
+            input = %app.ui.input,
+            input_len = %app.ui.input.len(),
+            local_entries_count = %app.fs.active_pane().entries.len(),
+            recursive_results_count = %app.ui.filename_search_results.len()
+        )
+    )]
+    fn build(app: &AppState) -> CacheEntry {
+        let build_start = Instant::now();
+
+        if app.ui.input.len() < MIN_LEN {
+            trace!("Building empty cache entry (input too short)");
+            return CacheEntry {
+                items: Arc::new(Vec::new()),
+                status: Arc::from("Type more characters"),
+                mode: Mode::Empty,
+                made: Instant::now(),
+                build_time_us: build_start.elapsed().as_micros() as u64,
+            };
         }
 
-        let search_term = app.ui.input.to_lowercase();
-        app.fs
-            .active_pane()
-            .entries
-            .iter()
-            .filter(|entry| !entry.is_dir && entry.name.to_lowercase().contains(&search_term))
-            .collect()
-    }
+        let term: String = app.ui.input.to_lowercase();
+        let cwd: &PathBuf = &app.fs.active_pane().cwd;
 
-    /// Determine display entries and search mode - files only, empty when no input
-    fn compute_display_entries(app: &AppState) -> (Vec<&ObjectInfo>, SearchMode) {
-        // Return empty results if no input
-        if app.ui.input.is_empty() {
-            return (Vec::new(), SearchMode::Local);
-        }
+        debug!(
+            search_term = %term,
+            current_dir = %cwd.display(),
+            "Building cache entry for search"
+        );
 
-        let local_matches = Self::get_local_matches(app);
+        let mut seen: HashSet<PathBuf, FxBuildHasher> = FxHashSet::default();
+        let mut items: Vec<String> = Vec::new();
+        let mut local_count: i32 = 0;
+        let mut recursive_count: i32 = 0;
 
-        if !app.ui.filename_search_results.is_empty() {
-            // We have recursive results - filter to files only
-            let recursive_files: Vec<&ObjectInfo> = app
-                .ui
-                .filename_search_results
-                .iter()
-                .filter(|entry| !entry.is_dir)
-                .collect();
-
-            if local_matches.is_empty() {
-                // Only recursive file results
-                (recursive_files, SearchMode::Recursive)
-            } else {
-                // Mixed: both local and recursive files
-                let mut combined: Vec<&ObjectInfo> = local_matches;
-                combined.extend(recursive_files);
-                // Remove duplicates based on path
-                combined.sort_by_key(|entry| &entry.path);
-                combined.dedup_by_key(|entry| &entry.path);
-                (combined, SearchMode::Mixed)
-            }
-        } else if !local_matches.is_empty() {
-            // Only local file matches
-            (local_matches, SearchMode::Local)
-        } else {
-            // No matches at all
-            (Vec::new(), SearchMode::Local)
-        }
-    }
-
-    /// Create enhanced list item with rich formatting
-    fn create_display_string<'a>(
-        entry: &'a ObjectInfo,
-        app: &'a AppState,
-        _idx: usize,
-        search_mode: SearchMode,
-    ) -> String {
-        // Display name based on search mode
-        let display_name: CompactString = match search_mode {
-            SearchMode::Local => entry.name.clone(),
-            SearchMode::Recursive | SearchMode::Mixed => {
-                // Show relative path for recursive results
-                let current_dir: &PathBuf = &app.fs.active_pane().cwd;
-                
-                entry
-                    .path.strip_prefix(current_dir)
-                    .map_or_else(
-                        |_| -> CompactString 
-                        {
-                            entry.path.to_string_lossy().to_compact_string()
-                        },
-                            |relative: &Path| -> CompactString 
-                        {
-                            relative.to_string_lossy().to_compact_string()
-                        }
-                    )
+        // Helper closure to process entries
+        let mut process_entry =
+        |o: &ObjectInfo, is_local: bool|
+        {
+            if !o.is_dir &&
+                o.name.to_lowercase().contains(&term) &&
+                seen.insert(o.path.clone())
+            {
+                let display_text = build_display(o, cwd);
+                items.push(display_text);
+                if is_local {
+                    local_count += 1;
+                } else {
+                    recursive_count += 1;
+                }
             }
         };
 
-        if entry.size > 0 
-        {
-            let size_str = Self::format_file_size(entry.size);
+        // Process local entries first
+        for entry in &app.fs.active_pane().entries {
+            process_entry(entry, true);
+        }
 
-            format!("{display_name} ({size_str})")
-        } else {
-            display_name.to_string()
+        // Process recursive search results
+        for entry in &app.ui.filename_search_results {
+            process_entry(entry, false);
+        }
+
+        // Determine mode
+        let mode = match (local_count, recursive_count) {
+            (0, 0) => Mode::Empty,
+            (_, 0) => Mode::Local,
+            (0, _) => Mode::Recursive,
+            (_, _) => Mode::Mixed,
+        };
+
+        let status = match mode {
+            Mode::Empty => "No matches".to_string(),
+            Mode::Local => format!("{local_count} local files"),
+            Mode::Recursive => format!("{recursive_count} recursive files"),
+            Mode::Mixed => format!("{local_count} local + {recursive_count} recursive files"),
+        };
+
+        // Limit results for performance
+        let original_count = items.len();
+        items.truncate(MAX_RESULTS);
+
+        let build_time = build_start.elapsed();
+        let build_time_us = build_time.as_micros() as u64;
+
+        if items.len() < original_count {
+            debug!(
+                original_count = %original_count,
+                truncated_count = %items.len(),
+                max_results = %MAX_RESULTS,
+                "Results truncated for performance"
+            );
+        }
+
+        info!(
+            search_term = %term,
+            local_matches = %local_count,
+            recursive_matches = %recursive_count,
+            total_items = %items.len(),
+            mode = ?mode,
+            build_time_us = %build_time_us,
+            duplicates_removed = %(original_count + local_count as usize + recursive_count as usize - items.len()),
+            "Cache entry built successfully"
+        );
+
+        if build_time.as_millis() > SLOW_BUILD_MS {
+            warn!(
+                build_time_ms = %build_time.as_millis(),
+                search_term = %term,
+                items_processed = %(app.fs.active_pane().entries.len() + app.ui.filename_search_results.len()),
+                "Slow cache build detected (threshold: {}ms)",
+                SLOW_BUILD_MS
+            );
+        }
+
+        CacheEntry {
+            items: Arc::new(items),
+            status: Arc::from(status),
+            mode,
+            made: Instant::now(),
+            build_time_us,
         }
     }
+}
 
-        /// Helper methods for enhanced functionality
-    ///
-    /// Check if there's an active filename search task
-    fn is_search_active(app: &AppState) -> bool {
-        app.tasks
-            .values()
-            .any(|task| task.description.contains("Filename search") && !task.is_completed)
+// ---------- free helpers ------------
+fn centered(area: Rect) -> Rect {
+    let popup_layout: Rc<[Rect]> = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - POPUP_H) / 2),
+            Constraint::Percentage(POPUP_H),
+            Constraint::Percentage((100 - POPUP_H) / 2),
+        ])
+        .split(area);
+
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - POPUP_W) / 2),
+            Constraint::Percentage(POPUP_W),
+            Constraint::Percentage((100 - POPUP_W) / 2),
+        ])
+        .split(popup_layout[1])[1]
+}
+
+#[instrument(
+    fields(
+        marker = "SEARCH_STATUS_CHECK",
+        operation_type = "search_check"
+    )
+)]
+fn is_searching(app: &AppState) -> bool {
+    let is_active = app.tasks.values().any(|t|
+        t.description.contains("Filename search") && !t.is_completed
+    );
+    
+    trace!(is_searching = %is_active, active_tasks = %app.tasks.len(), "Search status checked");
+    
+    is_active
+}
+
+#[instrument(
+    skip(obj, cwd),
+    fields(
+        marker = "BUILD_DISPLAY_STRING",
+        operation_type = "string_format",
+        file_name = %obj.name,
+        file_size = %obj.size
+    )
+)]
+fn build_display(obj: &ObjectInfo, cwd: &Path) -> String {
+    let display_path = obj.path.strip_prefix(cwd).map_or_else(
+        |_| {
+            trace!("Using absolute path (strip_prefix failed)");
+            Cow::from(obj.name.as_str())
+        },
+        |p: &Path| -> Cow<'_, str> {
+            trace!("Using relative path");
+            p.to_string_lossy()
+        }
+    );
+
+    if obj.size == 0 {
+        trace!("No size info available");
+        return display_path.into_owned();
     }
 
-    #[allow(clippy::cast_precision_loss)]
-    /// Format file size in human readable format
-    fn format_file_size(size: u64) -> String {
-        const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
-        let mut size_f = size as f64;
-        let mut unit_idx = 0;
+    let formatted = format!("{} ({})", display_path, fmt_size(obj.size));
+    trace!(display_string = %formatted, "Display string built");
+    formatted
+}
 
-        while size_f >= 1024.0 && unit_idx < UNITS.len() - 1 {
-            size_f /= 1024.0;
-            unit_idx += 1;
-        }
+fn fmt_size(mut size: u64) -> String {
+    const UNITS: &[&str] = &["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut unit_index: usize = 0;
 
-        if unit_idx == 0 {
-            format!("{} {}", size, UNITS[unit_idx])
-        } else {
-            format!("{:.1} {}", size_f, UNITS[unit_idx])
-        }
+    while size >= 1024 && unit_index + 1 < UNITS.len() {
+        size /= 1024;
+        unit_index += 1;
+    }
+
+    format!("{} {}", size, UNITS[unit_index])
+}
+
+// Required trait implementations for compatibility
+impl Clone for FileNameSearchOverlay {
+    fn clone(&self) -> Self {
+        Self::new() // Create fresh instance with new cache
+    }
+}
+
+impl PartialEq for FileNameSearchOverlay {
+    fn eq(&self, other: &Self) -> bool {
+        self.last == other.last
+    }
+}
+
+impl Eq for FileNameSearchOverlay {}
+
+#[expect(clippy::missing_fields_in_debug, reason = "Intentional for performance")]
+impl std::fmt::Debug for FileNameSearchOverlay {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FileNameSearchOverlay")
+            .field("last_input", &self.last)
+            .finish()
     }
 }
