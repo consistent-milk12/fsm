@@ -8,7 +8,7 @@
 
 use crate::{controller::event_loop::TaskResult, fs::object_info::ObjectInfo, tasks::search_task::RawSearchResult};
 use crossterm::event::{KeyEvent, MouseEvent};
-use std::{path::PathBuf};
+use std::{path::PathBuf, sync::Arc};
 
 /// Type of input prompt to show
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,7 +32,7 @@ pub enum Action {
     /// Batch update `ObjectInfo` entries (reduces event queue saturation)
     BatchUpdateObjectInfo
     {
-        parent_dir: PathBuf,
+        parent_dir: Arc<PathBuf>,
         objects: Vec<ObjectInfo>,
     },
 
@@ -50,8 +50,8 @@ pub enum Action {
     // File operations
     /// Copy file/directory from source to destination
     Copy {
-        source: PathBuf,
-        dest: PathBuf,
+        source: Arc<PathBuf>,
+        dest: Arc<PathBuf>,
     },
     
     CreateDirectory,
@@ -69,7 +69,7 @@ pub enum Action {
     
     /// Handle streaming directory scan updates
     DirectoryScanUpdate {
-        path: PathBuf,
+        path: Arc<PathBuf>,
         update: crate::fs::dir_scanner::ScanUpdate,
     },
     
@@ -101,8 +101,8 @@ pub enum Action {
     
     /// Move file/directory from source to destination  
     Move {
-        source: PathBuf,
-        dest: PathBuf,
+        source: Arc<PathBuf>,
+        dest: Arc<PathBuf>,
     },
     
     /// Move selection down.
@@ -115,7 +115,7 @@ pub enum Action {
     NoOp,
     
     /// Open a file with external editor, optionally jumping to a specific line.
-    OpenFile(PathBuf, Option<usize>),
+    OpenFile(Arc<PathBuf>, Option<usize>),
     
     /// Page down (move selection down by viewport height).
     PageDown,
@@ -131,7 +131,7 @@ pub enum Action {
     
     /// Rename file/directory
     Rename {
-        source: PathBuf,
+        source: Arc<PathBuf>,
         new_name: String,
     },
     
@@ -190,7 +190,7 @@ pub enum Action {
     
     /// Updates an `ObjectInfo` in the state (e.g., from a background task).
     UpdateObjectInfo {
-        parent_dir: PathBuf,
+        parent_dir: Arc<PathBuf>,
         info: ObjectInfo,
     },
 }

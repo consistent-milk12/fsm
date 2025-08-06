@@ -10,8 +10,7 @@ keywords = ["file-manager", "tui", "terminal", "filesystem"]
 categories = ["command-line-utilities", "filesystem"]
 
 [dependencies]
-# Local workspace dependencies
-# clipr = { path = "../clipr" }
+ahash = { workspace = true }
 
 # Core async and UI dependencies
 tokio = { workspace = true }
@@ -61,6 +60,7 @@ hashbrown = { workspace = true }
 slab = { workspace = true }
 lru = { workspace = true }
 rustc-hash = { workspace = true }
+enum-map = { workspace = true }
 
 # Additional utilities
 ansi-to-tui = { workspace = true }

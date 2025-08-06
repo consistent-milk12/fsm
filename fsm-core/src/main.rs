@@ -43,6 +43,7 @@ use fsm_core::{
     model::{
         app_state::AppState,
         fs_state::FSState,
+        object_registry::ObjectRegistry,
         ui_state::{RedrawFlag, UIState},
     },
     printer::finalize_logs,
@@ -120,9 +121,11 @@ impl App {
             action_rx
         ) = mpsc::unbounded_channel::<Action>();
 
+        let registry = Arc::new(ObjectRegistry::new());
         let app_state: Arc<Mutex<AppState>> = Arc::new(Mutex::new(AppState::new(
             config,
             cache,
+            registry,
             fs_state,
             ui_state,
             task_tx.clone(),

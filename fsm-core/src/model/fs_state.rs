@@ -7,8 +7,8 @@
 
 use ratatui::widgets::TableState;
 
-use crate::fs::object_info::ObjectInfo;
-use std::collections::{HashSet, VecDeque};
+use crate::model::object_registry::{ObjectId, SortableEntry};
+use std::{cmp::Ordering, collections::{HashSet, VecDeque}, sync::Arc};
 use std::path::PathBuf;
 
 /// Filter and sort mode for directory views.
@@ -25,7 +25,7 @@ pub enum EntrySort {
 
 impl std::fmt::Display for EntrySort {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let s = match self {
+        let s: &'_ str = match self {
             Self::NameAsc => "name_asc",
             
             Self::NameDesc => "name_desc",
@@ -56,8 +56,8 @@ pub enum EntryFilter {
 }
 
 impl std::fmt::Display for EntryFilter {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let s = match self {
+    fn fmt(&'_ self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s: &'_ str = match self {
             Self::All => "all",
             
             Self::FilesOnly => "files_only",
@@ -80,13 +80,13 @@ pub struct PaneState {
     pub cwd: PathBuf,
 
     /// The directory contents as `ObjectInfo` snapshot.
-    pub entries: Vec<ObjectInfo>,
+    pub entries: Vec<SortableEntry>,
 
     /// Selected index in entries.
     pub selected: Option<usize>,
 
     /// Focused (previewed) entry.
-    pub focused: Option<ObjectInfo>,
+    pub focused: Option<ObjectId>,
 
     /// True if loading, disables UI actions.
     pub is_loading: bool,
@@ -110,7 +110,7 @@ pub struct PaneState {
     pub viewport_height: usize,
 
     /// Incremental loading state
-    pub incremental_entries: Vec<ObjectInfo>,
+    pub incremental_entries: Vec<SortableEntry>,
 
     /// Whether we're currently in incremental loading mode
     pub is_incremental_loading: bool,
@@ -141,7 +141,7 @@ impl PaneState {
     }
 
     /// Update the entry list and reset selection for new directory.
-    pub fn set_entries(&mut self, entries: Vec<ObjectInfo>) {
+    pub fn set_entries(&mut self, entries: Vec<SortableEntry>) {
         self.entries = entries;
         self.selected = Some(0);
         self.table_state.select(Some(0));
@@ -149,8 +149,21 @@ impl PaneState {
 
     #[must_use]
     /// Get currently selected entry (if any).
-    pub fn selected_entry(&self) -> Option<&ObjectInfo> {
-        self.selected.and_then(|idx: usize| self.entries.get(idx))
+    pub fn selected_entry(&self) -> Option<ObjectId> {
+        self
+            .selected
+            .and_then(
+                |idx: usize| -> Option<&SortableEntry> 
+                {
+                    self.entries.get(idx)
+                }
+            )
+            .map(
+                |sortable_entry: &SortableEntry| -> u64 
+                {
+                    sortable_entry.id
+                }
+            )
     }
 
     /// Update viewport height when terminal size changes
@@ -159,9 +172,9 @@ impl PaneState {
         self.adjust_scroll();
     }
 
-    #[must_use]
     /// Get visible entries for virtual scrolling
-    pub fn visible_entries(&self) -> &[ObjectInfo] {
+    #[must_use]
+    pub fn visible_entries(&self) -> &[SortableEntry] {
         let start: usize = self.scroll_offset;
         let end: usize = (start + self.viewport_height).min(self.entries.len());
 
@@ -204,7 +217,7 @@ impl PaneState {
                 self.scroll_offset = selected;
             }
             // If selection is below viewport, scroll down
-            else if selected >= self.scroll_offset + self.viewport_height {
+            else if selected >= (self.scroll_offset + self.viewport_height) {
                 self.scroll_offset = selected.saturating_sub(self.viewport_height - 1);
             }
         }
@@ -232,9 +245,11 @@ impl PaneState {
     /// Page up (move selection up by viewport height)
     pub fn page_up(&mut self) {
         if let Some(selected) = self.selected {
-            let new_selected = selected.saturating_sub(self.viewport_height);
+            let new_selected: usize = selected.saturating_sub(self.viewport_height);
+            
             self.selected = Some(new_selected);
             self.adjust_scroll();
+            
             self.table_state
                 .select(Some(new_selected - self.scroll_offset));
         }
@@ -243,7 +258,8 @@ impl PaneState {
     /// Page down (move selection down by viewport height)
     pub fn page_down(&mut self) {
         if let Some(selected) = self.selected {
-            let new_selected = (selected + self.viewport_height).min(self.entries.len() - 1);
+            let new_selected: usize = (selected + self.viewport_height).min(self.entries.len() - 1);
+            
             self.selected = Some(new_selected);
             self.adjust_scroll();
             self.table_state
@@ -259,19 +275,18 @@ impl PaneState {
         self.is_loading = true;
     }
 
-    /// Add an entry during incremental loading
-    pub fn add_incremental_entry(&mut self, entry: ObjectInfo) {
-        if self.is_incremental_loading {
-            self.incremental_entries.push(entry);
-            // Update displayed entries with current incremental state
-            self.entries = self.incremental_entries.clone();
-            // Sort incrementally (basic sorting for now)
-            self.sort_entries();
+    /// Batch approach - only sort on completion or chunk boundaries
+    pub fn add_incremental_entry(&mut self, entry: SortableEntry) {
+        if !self.is_incremental_loading 
+        {
+            return;
         }
+
+        self.incremental_entries.push(entry);
     }
 
     /// Complete incremental loading with final sorted entries
-    pub fn complete_incremental_loading(&mut self, final_entries: Vec<ObjectInfo>) {
+    pub fn complete_incremental_loading(&mut self, final_entries: Vec<SortableEntry>) {
         self.is_incremental_loading = false;
         self.is_loading = false;
         self.entries = final_entries;
@@ -289,39 +304,83 @@ impl PaneState {
     pub fn sort_entries(&mut self) {
         match self.sort {
             EntrySort::NameAsc => {
-                self.entries.sort_by(|a, b| {
-                    if a.is_dir && !b.is_dir {
-                        std::cmp::Ordering::Less
-                    } else if !a.is_dir && b.is_dir {
-                        std::cmp::Ordering::Greater
-                    } else {
-                        a.name.cmp(&b.name)
-                    }
-                });
+                self
+                    .entries
+                    .sort_by(
+                        |a: &SortableEntry, b: &SortableEntry| -> Ordering 
+                        {
+                            if a.is_dir && !b.is_dir {
+                                Ordering::Less
+                            } else if !a.is_dir && b.is_dir {
+                                Ordering::Greater
+                            } else {
+                                a.sort_name_hash.cmp(&b.sort_name_hash)
+                            }
+                        }
+                    );
             }
+
             EntrySort::NameDesc => {
-                self.entries.sort_by(|a, b| {
-                    if a.is_dir && !b.is_dir {
-                        std::cmp::Ordering::Less
-                    } else if !a.is_dir && b.is_dir {
-                        std::cmp::Ordering::Greater
-                    } else {
-                        b.name.cmp(&a.name)
-                    }
-                });
+                self
+                    .entries
+                    .sort_by(
+                        |a: &SortableEntry, b: &SortableEntry| -> Ordering 
+                        {
+                            if a.is_dir && !b.is_dir {
+                                Ordering::Less
+                            } else if !a.is_dir && b.is_dir {
+                                Ordering::Greater
+                            } else {
+                                b.sort_name_hash.cmp(&a.sort_name_hash)
+                            }
+                        }
+                );
             }
+
             EntrySort::SizeAsc => {
-                self.entries.sort_by(|a, b| a.size.cmp(&b.size));
+                self
+                    .entries
+                    .sort_by(
+                        |a: &SortableEntry, b: &SortableEntry| -> Ordering 
+                        {
+                            a.size.cmp(&b.size)
+                        }
+                    );
             }
+            
             EntrySort::SizeDesc => {
-                self.entries.sort_by(|a, b| b.size.cmp(&a.size));
+                self
+                    .entries
+                    .sort_by(
+                        |a: &SortableEntry, b: &SortableEntry| -> Ordering 
+                        {
+                            b.size.cmp(&a.size)
+                        }
+                    );
             }
+            
             EntrySort::ModifiedAsc => {
-                self.entries.sort_by(|a, b| a.modified.cmp(&b.modified));
+                self
+                    .entries
+                    .sort_by(
+                        |a: &SortableEntry, b: &SortableEntry| -> Ordering 
+                        {
+                            a.modified.cmp(&b.modified)
+                        }
+                    );
             }
+            
             EntrySort::ModifiedDesc => {
-                self.entries.sort_by(|a, b| b.modified.cmp(&a.modified));
+                self
+                    .entries
+                    .sort_by(
+                        |a: &SortableEntry, b: &SortableEntry| -> Ordering 
+                        {
+                            b.modified.cmp(&a.modified)
+                        }
+                    );
             }
+            
             EntrySort::Custom(_) => {
                 // For custom sorting, keep current order for now
             }
@@ -334,13 +393,17 @@ impl PaneState {
 pub struct FSState {
     /// One or more open panes (for dual-pane, etc.).
     pub panes: Vec<PaneState>,
+    
     /// Which pane is currently focused.
     pub active_pane: usize,
+    
     /// Batch operation progress (for power-user bulk actions).
     pub batch_op_status: Option<String>,
+    
     /// Set of favorite/recent directories.
-    pub recent_dirs: VecDeque<PathBuf>,
-    pub favorite_dirs: HashSet<PathBuf>,
+    pub recent_dirs: VecDeque<Arc<PathBuf>>,
+    
+    pub favorite_dirs: HashSet<Arc<PathBuf>>,
 }
 
 
@@ -376,18 +439,19 @@ impl FSState {
     }
 
     /// Add a path to recents (evicts oldest if over 32).
-    pub fn add_recent_dir(&mut self, path: PathBuf) {
+    pub fn add_recent_dir(&mut self, path: Arc<PathBuf>) {
         if self.recent_dirs.len() == 32 {
             self.recent_dirs.pop_front();
         }
+
         self.recent_dirs.push_back(path);
     }
 
-    pub fn add_favorite(&mut self, path: PathBuf) {
+    pub fn add_favorite(&mut self, path: Arc<PathBuf>) {
         self.favorite_dirs.insert(path);
     }
 
-    pub fn remove_favorite(&mut self, path: &PathBuf) {
+    pub fn remove_favorite(&mut self, path: &Arc<PathBuf>) {
         self.favorite_dirs.remove(path);
     }
 }

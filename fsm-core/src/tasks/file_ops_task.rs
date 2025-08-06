@@ -44,11 +44,13 @@ pub struct FileOperationTask {
 #[derive(Debug, Clone)]
 pub enum FileOperation {
     /// Copy file/directory from source to destination
-    Copy { source: PathBuf, dest: PathBuf },
+    Copy { source: Arc<PathBuf>, dest: Arc<PathBuf> },
+    
     /// Move file/directory from source to destination
-    Move { source: PathBuf, dest: PathBuf },
+    Move { source: Arc<PathBuf>, dest: Arc<PathBuf> },
+    
     /// Rename file/directory
-    Rename { source: PathBuf, new_name: String },
+    Rename { source: Arc<PathBuf>, new_name: String },
 }
 
 impl std::fmt::Display for FileOperation {
@@ -222,7 +224,7 @@ impl FileOperationTask {
         match &self.operation {
             FileOperation::Copy { source, dest: _ } | FileOperation::Move { source, dest: _ } => {
                 if source.is_file() {
-                    let metadata: Metadata = TokioFs::metadata(source).await?;
+                    let metadata: Metadata = TokioFs::metadata(&**source).await?;
 
                     Ok((metadata.len(), 1))
                 } else if source.is_dir() {
@@ -237,7 +239,7 @@ impl FileOperationTask {
                 new_name: _,
             } => {
                 // Rename is O(1), no progress tracker is needed.
-                let metadata: Metadata = TokioFs::metadata(source).await?;
+                let metadata: Metadata = TokioFs::metadata(&**source).await?;
 
                 Ok((metadata.len(), 1))
             }

@@ -489,10 +489,12 @@ impl FileNameSearchOverlay {
         {
             if !o.is_dir &&
                 o.name.to_lowercase().contains(&term) &&
-                seen.insert(o.path.clone())
+                seen.insert(o.path.clone().to_path_buf())
             {
                 let display_text = build_display(o, cwd);
+                
                 items.push(display_text);
+
                 if is_local {
                     local_count += 1;
                 } else {
@@ -501,9 +503,11 @@ impl FileNameSearchOverlay {
             }
         };
 
-        // Process local entries first
-        for entry in &app.fs.active_pane().entries {
-            process_entry(entry, true);
+        // Process local entries first - need registry lookup for SortableEntry
+        for sortable_entry in &app.fs.active_pane().entries {
+            if let Some(object_info) = app.registry.get(sortable_entry.id) {
+                process_entry(&object_info, true);
+            }
         }
 
         // Process recursive search results

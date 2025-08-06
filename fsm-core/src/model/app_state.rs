@@ -26,14 +26,16 @@ use crate::controller::actions::Action;
 use crate::controller::event_loop::TaskResult;
 use crate::fs::object_info::ObjectInfo;
 use crate::model::fs_state::{FSState, PaneState};
+use crate::model::object_registry::{ObjectRegistry, SortableEntry};
 use crate::model::ui_state::{RedrawFlag, UIState};
 use crate::tasks::filename_search_task::FilenameSearchTask;
 
-use std::{cmp::Ordering, collections::{HashMap, HashSet, VecDeque}};
+use std::{cmp::Ordering, collections::{HashMap, HashSet, VecDeque}, path::PathBuf};
 use std::io::Error;
-use std::path::{Path, PathBuf};
+use std::path::{Path};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use dashmap::mapref::one::Ref;
 use tokio::{process::Command, task::JoinError};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn, Instrument};
@@ -59,6 +61,7 @@ pub struct AppState {
     // --- Core Configuration and Services ---
     pub config: Arc<Config>,
     pub cache: Arc<ObjectInfoCache>,
+    pub registry: Arc<ObjectRegistry>,
 
     // --- UI and Filesystem State ---
     pub ui: UIState,
@@ -113,6 +116,7 @@ impl AppState {
     pub fn new(
         config: Arc<Config>,
         cache: Arc<ObjectInfoCache>,
+        registry: Arc<ObjectRegistry>,
         fs: FSState,
         ui: UIState,
         task_tx: mpsc::UnboundedSender<TaskResult>,
@@ -122,6 +126,7 @@ impl AppState {
             // Core Configuration and Services
             config,
             cache,
+            registry,
 
             // UI and Filesystem State
             ui,
@@ -272,8 +277,8 @@ impl AppState {
             );
         }
         
-        let canonical_path: PathBuf = match tokio::fs::canonicalize(&path).await {
-            Ok(p) => p,
+        let canonical_path: Arc<PathBuf> = match tokio::fs::canonicalize(&path).await {
+            Ok(p) => p.into(),
         
             Err(e) => {
                 self.set_error(format!("Invalid path: {}: {}", path.display(), e));
@@ -317,7 +322,7 @@ impl AppState {
     }
 
     /// Enter directory using streaming scan for better responsiveness
-    async fn enter_directory_streaming(&mut self, path: PathBuf) {
+    async fn enter_directory_streaming(&mut self, path: Arc<PathBuf>) {
         let current_pane: &mut PaneState = self.fs.active_pane_mut();
         current_pane.start_incremental_loading();
 
@@ -336,14 +341,15 @@ impl AppState {
 
         // Spawn task to handle streaming updates
         let action_tx: mpsc::UnboundedSender<Action> = self.action_tx.clone();
-        let scan_path: PathBuf = path.clone();
-        let scan_path_tmp: PathBuf = scan_path.clone();
+        let scan_path: Arc<PathBuf> = path.clone();
 
+        let value: Arc<PathBuf> = scan_path.clone();
+        
         tokio::spawn(
             async move {
                 while let Some(update) = rx.recv().await {
                     let _ = action_tx.send(Action::DirectoryScanUpdate {
-                        path: scan_path.clone(),
+                        path: value.clone(),
                         update,
                     });
                 }
@@ -351,7 +357,7 @@ impl AppState {
             .instrument(tracing::info_span!(
                 "dir_scan_stream_processing",
                 operation_type = "dir_scan_stream_processing",
-                path = %scan_path_tmp.display()
+                path = %scan_path.display()
             )),
         );
 
@@ -365,13 +371,25 @@ impl AppState {
         if let Some(selected_idx) = self.ui.selected
             && let Some(selected_entry) = active_pane.entries.get(selected_idx)
         {
-            let path: &PathBuf = &selected_entry.path;
-            if path.is_file() {
-                self.open_file_with_editor(path.clone()).await;
-            } else if path.is_dir() {
-                self.enter_directory(path.clone()).await;
-            } else {
-                self.set_error(format!("Cannot open: {}", path.display()));
+            // Clone Arc<PathBuf> before registry lookup ends to avoid borrow conflicts  
+            let path_and_type: Option<(Arc<PathBuf>, bool)> = self
+                .registry
+                .get(selected_entry.id)
+                .map(
+                    |obj: Ref<'_, u64, ObjectInfo>| -> (Arc<PathBuf>, bool) 
+                    {
+                        (obj.path.clone(), obj.is_dir)
+                    }
+                 );
+
+            if let Some((path, is_dir)) = path_and_type {
+                if path.is_file() {
+                    self.open_file_with_editor(path.clone().to_path_buf()).await;
+                } else if is_dir {
+                    self.enter_directory(path.clone().to_path_buf()).await;
+                } else {
+                    self.set_error(format!("Cannot open: {}", path.display()));
+                }
             }
         }
 
@@ -379,8 +397,9 @@ impl AppState {
     }
 
     /// Open a file with external editor (VS Code)
-    pub async fn open_file_with_editor(&mut self, file_path: std::path::PathBuf) {
+    pub async fn open_file_with_editor(&mut self, file_path: PathBuf) {
         let path_str: String = file_path.to_string_lossy().to_string();
+        
         let open_result: Result<Result<String, String>, JoinError> = tokio::spawn(
             async move 
             {
@@ -424,19 +443,30 @@ impl AppState {
         if let Some(selected_idx) = self.ui.selected
             && let Some(selected_entry) = active_pane.entries.get(selected_idx)
         {
-            let path: &PathBuf = &selected_entry.path;
+            // Clone Arc<PathBuf> and is_dir before registry lookup ends to avoid borrow conflicts
+            let path_and_type: Option<(Arc<PathBuf>, bool)> = self
+                .registry
+                .get(selected_entry.id)
+                .map(
+                    |obj: Ref<'_, u64, ObjectInfo>| -> (Arc<PathBuf>, bool)
+                    { 
+                        (obj.path.clone(), obj.is_dir) 
+                    }
+                );
 
-            let result: Result<(), Error> = if selected_entry.is_dir {
-                tokio::fs::remove_dir_all(path).await
-            } else {
-                tokio::fs::remove_file(path).await
-            };
+            if let Some((path, is_dir)) = path_and_type {
+                let result: Result<(), Error> = if is_dir {
+                    tokio::fs::remove_dir_all(&**path).await
+                } else {
+                    tokio::fs::remove_file(&**path).await
+                };
 
-            if let Err(e) = result {
-                self.set_error(format!("Failed to delete {}: {}", path.display(), e));
-            } else {
-                self.show_success(format!("Deleted {}", path.display()));
-                self.reload_directory().await;
+                if let Err(e) = result {
+                    self.set_error(format!("Failed to delete {}: {}", path.display(), e));
+                } else {
+                    self.show_success(format!("Deleted {}", path.display()));
+                    self.reload_directory().await;
+                }
             }
         }
     }
@@ -491,19 +521,26 @@ impl AppState {
 
     /// Rename the currently selected entry
     pub async fn rename_selected_entry(&mut self, new_name: String) {
-        let active_pane: &PaneState = self.fs.active_pane();
+        let active_pane: PaneState = self.fs.active_pane().clone();
         if let Some(selected_idx) = self.ui.selected
             && let Some(selected_entry) = active_pane.entries.get(selected_idx)
         {
-            let old_path: &PathBuf = &selected_entry.path;
-            let parent_dir: &Path = old_path.parent().unwrap_or(&active_pane.cwd);
-            let new_path: PathBuf = parent_dir.join(&new_name);
+            // Clone Arc<PathBuf> before registry lookup ends to avoid borrow conflicts
+            let old_path_opt = self.registry.get(selected_entry.id)
+                .map(|obj| obj.path.clone());
 
-            if let Err(e) = tokio::fs::rename(old_path, &new_path).await {
-                self.set_error(format!("Failed to rename to '{new_name}': {e}"));
+            if let Some(old_path) = old_path_opt {
+                let parent_dir: &Path = old_path.parent().unwrap_or(&active_pane.cwd);
+                let new_path: PathBuf = parent_dir.join(&new_name);
+
+                if let Err(e) = tokio::fs::rename(&**old_path, &new_path).await {
+                    self.set_error(format!("Failed to rename to '{new_name}': {e}"));
+                } else {
+                    self.show_success(format!("Renamed to '{new_name}'"));
+                    self.reload_directory().await;
+                }
             } else {
-                self.show_success(format!("Renamed to '{new_name}'"));
-                self.reload_directory().await;
+                self.set_error("No entry selected for renaming".to_string());
             }
         } else {
             self.set_error("No entry selected for renaming".to_string());
@@ -675,8 +712,12 @@ impl AppState {
         crate::tasks::search_task::search_task(task_id, pattern, path, task_tx, action_tx);
     }
 
-    /// Updates an `ObjectInfo` in the active pane with new data from a background task.
+    /// Updates an `ObjectInfo` in the registry with new data from a background task.
     pub fn update_object_info(&mut self, parent_dir: &PathBuf, info: &ObjectInfo) {
+        // Update the registry with new ObjectInfo
+        let object_id = self.registry.insert(info.clone());
+        
+        // Update SortableEntry in relevant pane if needed
         if let Some(pane) = self
             .fs
             .panes
@@ -686,26 +727,24 @@ impl AppState {
                     &p.cwd == parent_dir
                 }
             )
-        && let Some(entry) = pane
-            .entries
-            .iter_mut()
-            .find(
-                |e: &&mut ObjectInfo| -> bool 
-                {e.path == info.path})
         {
-            entry.size = info.size;
-            entry.items_count = info.items_count;
-            entry.modified = info.modified;
-            entry.metadata_loaded = info.metadata_loaded;
-            
-            debug!(
-                "Updating object info for {}: modified = {}",
-                info.path.display(),
-                info.format_date("%Y-%m-%d")
-            );
-            
-            self.ui.request_redraw(RedrawFlag::All);
+            // Find matching SortableEntry by id and update if registry changed
+            for entry in &mut pane.entries {
+                if entry.id == object_id {
+                    // Refresh SortableEntry with updated ObjectInfo
+                    *entry = SortableEntry::from_object_info(info, object_id);
+                    break;
+                }
+            }
         }
+            
+        debug!(
+            "Updating object info for {}: modified = {}",
+            info.path.display(),
+            info.format_date("%Y-%m-%d")
+        );
+        
+        self.ui.request_redraw(RedrawFlag::All);
     }
 
     /// Process batch of `ObjectInfo` updates efficiently (single mutex lock per batch) 
@@ -729,25 +768,25 @@ impl AppState {
             "name_asc" => active_pane
                 .entries
                 .sort_by(
-                    |a: &ObjectInfo, b: &ObjectInfo| -> Ordering 
+                    |a: &SortableEntry, b: &SortableEntry| -> Ordering 
                     {
-                        a.name.cmp(&b.name)
+                        a.sort_name_hash.cmp(&b.sort_name_hash)
                     }
                 ),
             
             "name_desc" => active_pane
                 .entries
                 .sort_by(
-                    |a: &ObjectInfo, b: &ObjectInfo| -> Ordering 
+                    |a: &SortableEntry, b: &SortableEntry| -> Ordering 
                     {
-                        b.name.cmp(&a.name)
+                        b.sort_name_hash.cmp(&a.sort_name_hash)
                     }
                 ),
             
             "size_asc" => active_pane
                 .entries
                 .sort_by(
-                    |a: &ObjectInfo, b: &ObjectInfo| -> Ordering 
+                    |a: &SortableEntry, b: &SortableEntry| -> Ordering 
                     {
                         a.size.cmp(&b.size)
                     }
@@ -756,7 +795,7 @@ impl AppState {
             "size_desc" => active_pane
                 .entries
                 .sort_by(
-                    |a: &ObjectInfo, b: &ObjectInfo| -> Ordering 
+                    |a: &SortableEntry, b: &SortableEntry| -> Ordering 
                     {
                         b.size.cmp(&a.size)
                     }
@@ -764,7 +803,7 @@ impl AppState {
             
             "modified_asc" => active_pane
                 .entries
-                .sort_by(|a: &ObjectInfo, b: &ObjectInfo| -> Ordering 
+                .sort_by(|a: &SortableEntry, b: &SortableEntry| -> Ordering 
                     {
                         a.modified.cmp(&b.modified)
                     }
@@ -773,7 +812,7 @@ impl AppState {
             "modified_desc" => active_pane
                 .entries
                 .sort_by(
-                    |a: &ObjectInfo, b: &ObjectInfo| -> Ordering 
+                    |a: &SortableEntry, b: &SortableEntry| -> Ordering 
                     {
                         b.modified.cmp(&a.modified)
                     }
@@ -787,15 +826,19 @@ impl AppState {
 
     pub fn filter_entries(&mut self, filter_criteria: &str) {
         let active_pane: &mut PaneState = self.fs.active_pane_mut();
-        // This is a placeholder for a more complex filtering implementation.
-        // For now, we'll just filter by a simple string contains.
-        let entries: Vec<ObjectInfo> = active_pane.entries.clone();
+        // Filter SortableEntry by checking name via registry lookup
+        let entries: Vec<SortableEntry> = active_pane.entries.clone();
         
         active_pane.entries = entries
             .into_iter()
-            .filter(|entry: &ObjectInfo| -> bool 
+            .filter(|entry: &SortableEntry| -> bool 
                 {
-                    entry.name.contains(filter_criteria)
+                    // Look up ObjectInfo from registry to check name
+                    if let Some(object_info) = self.registry.get(entry.id) {
+                        object_info.name.contains(filter_criteria)
+                    } else {
+                        false // Skip entries not found in registry
+                    }
                 }
             )
             .collect();
@@ -804,6 +847,7 @@ impl AppState {
     }
 }
 
+#[expect(clippy::missing_fields_in_debug, reason = "Expected")]
 impl std::fmt::Debug for AppState {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         f.debug_struct("AppState")

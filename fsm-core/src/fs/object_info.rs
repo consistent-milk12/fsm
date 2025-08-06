@@ -7,7 +7,7 @@
 
 use compact_str::CompactString;
 use serde::{Deserialize, Serialize};
-use std::{ffi::OsStr, fs::{FileType, Metadata}, time::Duration};
+use std::{ffi::OsStr, fs::{FileType, Metadata}, time::Duration, sync::Arc};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -33,11 +33,11 @@ impl std::fmt::Display for ObjectType {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObjectInfo {
     /// LARGEST FIRST (CLAUDE.md Rule 14)
-    /// ~24 bytes (largest)
-    pub path: PathBuf,
+    /// 8 bytes (Arc pointer, shared across instances)
+    pub path: Arc<PathBuf>,
 
     /// 16 bytes (no timezone overhead)
     pub modified: SystemTime,
@@ -60,10 +60,10 @@ pub struct ObjectInfo {
 }
 
 /// Lightweight version optimized for immediate display and minimal allocation
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LightObjectInfo {
     // LARGEST FIRST (CLAUDE.md Rule 14)
-    pub path: PathBuf,                      // ~24 bytes (largest)
+    pub path: Arc<PathBuf>,                 // 8 bytes (Arc pointer, shared)
     pub name: CompactString,                // ~24 bytes (stack-optimized)
     pub extension: Option<CompactString>,   // ~24 bytes when Some
 
@@ -107,7 +107,7 @@ impl LightObjectInfo {
         };
 
         Ok(Self {
-            path: path.to_path_buf(),
+            path: Arc::new(path.to_path_buf()),
             name,
             extension,
             is_dir: file_type.is_dir(),
@@ -117,12 +117,12 @@ impl LightObjectInfo {
 
     // CONVERSION TO FULL OBJECTINFO
     pub async fn into_full_info(self) -> Result<ObjectInfo, AppError> {
-        let metadata = TokioFs::symlink_metadata(&self.path).await?;
+        let metadata = TokioFs::symlink_metadata(&*self.path).await?;
 
         let size = if self.is_dir { 0 } else { metadata.len() };
         let items_count = if self.is_dir {
             // Optimized directory counting
-            match TokioFs::read_dir(&self.path).await {
+            match TokioFs::read_dir(&*self.path).await {
                 Ok(mut entries) => {
                     let mut count = 0u64;
                     while entries.next_entry().await?.is_some() {
@@ -230,7 +230,7 @@ impl ObjectInfo {
           let size = if is_dir { 0 } else { metadata.len() };
 
           Ok(Self {
-              path: path.to_path_buf(),
+              path: Arc::new(path.to_path_buf()),
               modified,
               name,
               extension,
@@ -271,7 +271,7 @@ impl ObjectInfo {
     {
         Self 
         {
-            path: PathBuf::new(),
+            path: Arc::new(PathBuf::new()),
             modified: SystemTime::UNIX_EPOCH,
             name: CompactString::const_new(""),
             extension: None,

@@ -11,7 +11,7 @@
 use std::rc::Rc;
 
 use crate::{
-    fs::object_info::ObjectInfo, model::{app_state::AppState, PaneState}, view::{
+    model::{app_state::AppState, object_registry::SortableEntry, PaneState}, view::{
         components::command_completion::{CommandCompletion, CompletionConfig},
         icons, theme,
     }
@@ -71,50 +71,53 @@ impl ObjectTable {
             .bottom_margin(1);
 
         // Use virtual scrolling - only render visible entries
-        let visible_entries: &[ObjectInfo] = pane.visible_entries();
+        let visible_entries: &[SortableEntry] = pane.visible_entries();
         let total_entries: usize = pane.entries.len();
 
-        let rows = visible_entries.iter().map(|obj| {
-            let (icon, style, type_str) = if obj.is_dir {
-                (icons::FOLDER_ICON, Style::default().fg(theme::CYAN), "Dir")
-            } else if obj.is_symlink {
-                (
-                    icons::SYMLINK_ICON,
-                    Style::default().fg(theme::PINK),
-                    "Symlink",
-                )
-            } else {
-                (
-                    icons::FILE_ICON,
-                    Style::default().fg(theme::FOREGROUND),
-                    obj.extension.as_deref().unwrap_or("File"),
-                )
-            };
-
-            let items_str: String = if obj.is_dir {
-                if obj.items_count > 0 {
-                    obj.items_count.to_string()
+        let rows = visible_entries.iter().filter_map(|sortable_entry| {
+            // Get ObjectInfo from registry for full data access
+            app.registry.get(sortable_entry.id).map(|obj| {
+                let (icon, style, type_str) = if obj.is_dir {
+                    (icons::FOLDER_ICON, Style::default().fg(theme::CYAN), "Dir")
+                } else if obj.is_symlink {
+                    (
+                        icons::SYMLINK_ICON,
+                        Style::default().fg(theme::PINK),
+                        "Symlink",
+                    )
                 } else {
-                    "-".to_string()
-                }
-            } else {
-                String::new()
-            };
+                    (
+                        icons::FILE_ICON,
+                        Style::default().fg(theme::FOREGROUND),
+                        obj.extension.as_deref().unwrap_or("File"),
+                    )
+                };
 
-            let size_str: String = if obj.is_dir {
-                String::new()
-            } else {
-                obj.size_human()
-            };
+                let items_str: String = if obj.is_dir {
+                    if obj.items_count > 0 {
+                        obj.items_count.to_string()
+                    } else {
+                        "-".to_string()
+                    }
+                } else {
+                    String::new()
+                };
 
-            Row::new(vec![
-                Cell::from(format!("{icon} {}", obj.name)),
-                Cell::from(type_str.to_string()),
-                Cell::from(items_str),
-                Cell::from(size_str),
-                Cell::from(obj.format_date("%d/%m/%Y %I:%M:%S %p")),
-            ])
-            .style(style)
+                let size_str: String = if obj.is_dir {
+                    String::new()
+                } else {
+                    obj.size_human()
+                };
+
+                Row::new(vec![
+                    Cell::from(format!("{icon} {}", obj.name)),
+                    Cell::from(type_str.to_string()),
+                    Cell::from(items_str),
+                    Cell::from(size_str),
+                    Cell::from(obj.format_date("%d/%m/%Y %I:%M:%S %p")),
+                ])
+                .style(style)
+            })
         });
 
         let widths: [Constraint; 5] = [

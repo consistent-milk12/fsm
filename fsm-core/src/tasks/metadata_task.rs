@@ -19,7 +19,7 @@ pub fn load_metadata_task(
     action_tx: mpsc::UnboundedSender<Action>,
     cache: Arc<ObjectInfoCache>,
 ) {
-    let light_info_path = light_info.path.clone();
+    let light_info_path: Arc<PathBuf> = light_info.path.clone();
     tokio::spawn(
         async move {
             info!(
@@ -32,7 +32,7 @@ pub fn load_metadata_task(
             // Check cache first, then load if not present
             let load_start = std::time::Instant::now();
             match cache.get_or_load_path(
-                &light_info.path, 
+                &**light_info.path, 
                 || light_info.clone().into_full_info()
             ).await {
                 Ok(full_info) => {
@@ -46,7 +46,7 @@ pub fn load_metadata_task(
                     );
 
                     let _ = action_tx.send(Action::UpdateObjectInfo {
-                        parent_dir,
+                        parent_dir: Arc::new(parent_dir),
                         info: full_info,
                     });
                 }
@@ -83,7 +83,7 @@ pub fn load_metadata_task(
     )
 )]
 pub fn batch_load_metadata_task(
-    parent_dir: PathBuf,
+    parent_dir: Arc<PathBuf>,
     light_entries: Vec<LightObjectInfo>,
     action_tx: mpsc::UnboundedSender<Action>,
     batch_size: usize,
@@ -110,12 +110,14 @@ pub fn batch_load_metadata_task(
             let mut cache_hits: usize = 0;
             let mut cache_misses: usize = 0;
 
+            let value = parent_dir.clone();
+
             for light_info in light_entries {
                 let light_info_path = light_info.path.clone();
                 let item_start = std::time::Instant::now();
                 
                 match cache.get_or_load_path(
-                    light_info_path.clone(), 
+                    &**light_info_path, 
                     || {
                         cache_misses += 1;
                         light_info.into_full_info()
@@ -136,9 +138,9 @@ pub fn batch_load_metadata_task(
                             load_duration_us = item_duration.as_micros(),
                             "Metadata item loaded successfully"
                         );
-
+                        
                         let _ = action_tx.send(Action::UpdateObjectInfo {
-                            parent_dir: parent_dir.clone(),
+                            parent_dir: value.clone(),
                             info: full_info,
                         });
                         
@@ -178,7 +180,7 @@ pub fn batch_load_metadata_task(
             info!(
                 marker = "METADATA_TASK",
                 operation_type = "batch_metadata_load_complete",
-                parent_dir = %parent_dir.display(),
+                parent_dir = %value.display(),
                 total_count = count,
                 success_count = success_count,
                 error_count = error_count,

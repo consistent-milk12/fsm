@@ -3,6 +3,8 @@ members = ["fsm-core"]
 resolver = "2"
 
 [workspace.dependencies]
+ahash = { version = "0.8.12" }
+
 # Core async and UI dependencies
 tokio = { version = "1.47.1", features = [
     "full",
@@ -76,7 +78,8 @@ regex = { version = "1.11.1" }
 hashbrown = { version = "*" }
 slab = { version = "0.4.10" }
 lru = { version = "0.16.0" }
-rustc-hash = { version = "*" }
+rustc-hash = { version = "2.1.1" }
+enum-map = { version = "2.7.3", features = ["serde"] }
 
 # Additional utilities
 ansi-to-tui = "7.0.0"

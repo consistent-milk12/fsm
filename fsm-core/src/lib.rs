@@ -26,7 +26,6 @@ pub mod controller {
 }
 
 pub mod model {
-
     pub mod app_state;
     pub use app_state::{AppHistoryEvent, AppState, PluginInfo};
 
@@ -41,6 +40,8 @@ pub mod model {
         FileOperationProgress, LoadingState, Notification, NotificationLevel, RedrawFlag,
         SearchType, UIMode, UIOverlay, UIState,
     };
+
+    pub mod object_registry;
 }
 
 pub mod view {

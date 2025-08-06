@@ -22,6 +22,7 @@ use crate::tasks::file_ops_task::{FileOperation, FileOperationTask};
 use crate::tasks::search_task::RawSearchResult;
 use crate::tasks::size_task as FileSizeOperator; 
 use crossterm::event::{Event as TermEvent, EventStream, KeyCode, KeyModifiers};
+use dashmap::mapref::one::Ref;
 use futures::StreamExt;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -838,7 +839,7 @@ impl EventLoop {
             ) && i == selected_idx
             {
                 info!("Opening from raw search: {:?} at line {:?}", path, line_num);
-                return Action::OpenFile(path, line_num);
+                return Action::OpenFile(path.into(), line_num);
             }
         }
 
@@ -870,7 +871,8 @@ impl EventLoop {
                         "Opening from rich search: {:?} at line {:?}",
                         path, line_num
                     );
-                    return Action::OpenFile(path, line_num);
+
+                    return Action::OpenFile(path.into(), line_num);
                 }
             }
         }
@@ -1440,7 +1442,7 @@ impl EventLoop {
         app.ui.request_redraw(RedrawFlag::All);
     }
 
-    async fn handle_open_file(&self, path: PathBuf, line_number: Option<usize>) {
+    async fn handle_open_file(&self, path: Arc<PathBuf>, line_number: Option<usize>) {
         info!("Opening file {:?} at line {:?}", path, line_number);
         let path_str: String = path.to_string_lossy().to_string();
 
@@ -1670,15 +1672,18 @@ impl EventLoop {
         }
     }
 
-    async fn handle_directory_scan_update(&self, path: PathBuf, update: ScanUpdate) {
+    async fn handle_directory_scan_update(&self, path: Arc<PathBuf>, update: ScanUpdate) {
         debug!("Directory scan update for path: {:?}", path);
         let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
 
-        if app.fs.active_pane().cwd == path {
+        if app.fs.active_pane().cwd == **path {
             match update {
                 ScanUpdate::Entry(entry) => {
                     trace!("Adding incremental entry: {:?}", entry.name);
-                    app.fs.active_pane_mut().add_incremental_entry(entry);
+                    // Convert ObjectInfo to SortableEntry via registry
+                    let object_id = app.registry.insert(entry);
+                    let sortable_entry = crate::model::object_registry::SortableEntry::from_object_info(&app.registry.get(object_id).unwrap(), object_id);
+                    app.fs.active_pane_mut().add_incremental_entry(sortable_entry);
                     app.ui.request_redraw(RedrawFlag::All);
                 }
                 ScanUpdate::Completed(count) => {
@@ -1718,27 +1723,29 @@ impl EventLoop {
     }
 
     #[allow(clippy::unused_async)]
-    async fn handle_scan_completed(&self, app: &mut AppState, path: PathBuf, count: usize) {
+    async fn handle_scan_completed(&self, app: &mut AppState, path: Arc<PathBuf>, count: usize) {
         info!("Directory scan completed with {} entries", count);
-        let entries: Vec<ObjectInfo> = app.fs.active_pane().entries.clone();
+        let sortable_entries: Vec<crate::model::object_registry::SortableEntry> = app.fs.active_pane().entries.clone();
 
         app.fs
             .active_pane_mut()
-            .complete_incremental_loading(entries);
+            .complete_incremental_loading(sortable_entries);
         app.fs.add_recent_dir(path.clone());
 
         let action_tx: UnboundedSender<Action> = app.action_tx.clone();
-        let entries_for_size: Vec<ObjectInfo> = app.fs.active_pane().entries.clone();
+        let entries_for_size: Vec<crate::model::object_registry::SortableEntry> = app.fs.active_pane().entries.clone();
 
-        for entry in entries_for_size {
-            if entry.is_dir {
-                FileSizeOperator::calculate_size_task(
-                    path.clone(),
-                    entry,
-                    action_tx.clone(),
-                    app.cache.clone(),
-                );
-            }
+        for sortable_entry in entries_for_size {
+            // Get ObjectInfo from registry to check if directory
+            if let Some(object_info) = app.registry.get(sortable_entry.id)
+                && object_info.is_dir {
+                    FileSizeOperator::calculate_size_task(
+                        path.clone(),
+                        object_info.clone(),
+                        action_tx.clone(),
+                        app.cache.clone(),
+                    );
+                }
         }
 
         app.ui.request_redraw(RedrawFlag::All);
@@ -1879,46 +1886,55 @@ impl EventLoop {
         }
     }
 
-    fn extract_selected_file_path(app: &MutexGuard<'_, AppState>) -> Option<PathBuf> {
+    fn extract_selected_file_path(app: &MutexGuard<'_, AppState>) -> Option<Arc<PathBuf>> {
         app.fs.active_pane().selected.and_then(|selected_idx| {
             app.fs
                 .active_pane()
                 .entries
                 .get(selected_idx)
-                .map(|entry| entry.path.clone())
+                .and_then(|sortable_entry| {
+                    app
+                        .registry
+                        .get(sortable_entry.id)
+                        .map(|obj: Ref<'_, u64, ObjectInfo>| -> Arc<PathBuf> 
+                            {
+                                obj.path.clone()
+                            }
+                        )
+                })
         })
     }
 
     async fn execute_copy_operation(
         &self,
-        source_path: PathBuf,
+        source_path:Arc<PathBuf>,
         input: String,
     ) {
         let dest_path = PathBuf::from(input);
         Box::pin(self.dispatch_action(Action::Copy {
             source: source_path,
-            dest: dest_path,
+            dest: dest_path.into(),
         }))
         .await;
     }
 
     async fn execute_move_operation(
         &self,
-        source_path: PathBuf,
+        source_path: Arc<PathBuf>,
         input: String,
     ) {
-        let dest_path = PathBuf::from(input);
+        let dest_path: PathBuf = PathBuf::from(input);
 
         Box::pin(self.dispatch_action(Action::Move {
             source: source_path,
-            dest: dest_path,
+            dest: dest_path.into(),
         }))
         .await;
     }
 
     async fn execute_rename_operation(
         &self,
-        source_path: PathBuf,
+        source_path: Arc<PathBuf>,
         input: String,
     ) {
         Box::pin(self.dispatch_action(Action::Rename {
@@ -1964,20 +1980,24 @@ impl EventLoop {
             Action::Copy { source, dest } => {
                 self.handle_copy_operation(source, dest).await;
             }
+
             Action::Move { source, dest } => {
                 self.handle_move_operation(source, dest).await;
             }
+
             Action::Rename { source, new_name } => {
                 self.handle_rename_operation(source, new_name).await;
             }
+
             Action::CancelFileOperation { operation_id } => {
                 self.handle_cancel_file_operation(operation_id).await;
             }
+
             _ => unreachable!(),
         }
     }
 
-    async fn handle_copy_operation(&self, source: PathBuf, dest: PathBuf) {
+    async fn handle_copy_operation(&self, source: Arc<PathBuf>, dest: Arc<PathBuf>) {
         info!("Starting copy operation: {:?} -> {:?}", source, dest);
 
         let operation = FileOperation::Copy {
@@ -1998,7 +2018,7 @@ impl EventLoop {
         self.spawn_file_operation_task(task, "Copy").await;
     }
 
-    async fn handle_move_operation(&self, source: PathBuf, dest: PathBuf) {
+    async fn handle_move_operation(&self, source: Arc<PathBuf>, dest: Arc<PathBuf>) {
         info!("Starting move operation: {:?} -> {:?}", source, dest);
 
         let operation = FileOperation::Move {
@@ -2019,7 +2039,7 @@ impl EventLoop {
         self.spawn_file_operation_task(task, "Move").await;
     }
 
-    async fn handle_rename_operation(&self, source: PathBuf, new_name: String) {
+    async fn handle_rename_operation(&self, source: Arc<PathBuf>, new_name: String) {
         info!("Starting rename operation: {:?} -> {}", source, new_name);
 
         let operation = FileOperation::Rename {

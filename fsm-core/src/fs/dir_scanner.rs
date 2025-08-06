@@ -235,7 +235,7 @@ pub enum ScanUpdate {
     )
 )]
 pub async fn scan_dir_streaming_with_background_metadata(
-    path: PathBuf,
+    path: Arc<PathBuf>,
     show_hidden: bool,
     batch_size: usize,
     action_tx: UnboundedSender<Action>,
@@ -271,7 +271,7 @@ pub async fn scan_dir_streaming_with_background_metadata(
 }
 
 struct DirectoryScanner {
-    path: PathBuf,
+    path: Arc<PathBuf>,
     show_hidden: bool,
     batch_size: usize,
     action_tx: UnboundedSender<Action>,
@@ -282,7 +282,7 @@ struct DirectoryScanner {
 
 impl DirectoryScanner {
     const fn new(
-        path: PathBuf,
+        path: Arc<PathBuf>,
         show_hidden: bool,
         batch_size: usize,
         action_tx: UnboundedSender<Action>,
@@ -460,7 +460,7 @@ impl DirectoryScanner {
     }
 
     async fn initialize_directory_reader(&self) -> Result<ReadDir, AppError> {
-        match fs::read_dir(&self.path).await {
+        match fs::read_dir(&*self.path).await {
             Ok(read_dir) => Ok(read_dir),
             
             Err(e) => {
@@ -592,7 +592,7 @@ impl DirectoryScanner {
     fn start_background_metadata_loading(&self, light_entries: Vec<LightObjectInfo>) {
         if !light_entries.is_empty() {
             batch_load_metadata_task(
-                self.path.clone(),
+                self.path.clone().into(),
                 light_entries,
                 self.action_tx.clone(),
                 5, // Metadata batch size

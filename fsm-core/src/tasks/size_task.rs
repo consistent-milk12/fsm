@@ -34,7 +34,7 @@ use walkdir::WalkDir;
     )
 )]
 pub fn calculate_size_task(
-    parent_dir: PathBuf,
+    parent_dir: Arc<PathBuf>,
     mut object_info: ObjectInfo,
     action_tx: mpsc::UnboundedSender<Action>,
     cache: Arc<ObjectInfoCache>,
@@ -43,8 +43,8 @@ pub fn calculate_size_task(
         return;
     }
 
-    let path: PathBuf = object_info.path.clone();
-    let path_display = path.display().to_string();
+    let path: Arc<PathBuf> = object_info.path.clone();
+    let path_display: String = path.display().to_string();
 
     tokio::spawn(
         async move {
@@ -59,7 +59,7 @@ pub fn calculate_size_task(
 
             // Check cache first for existing size calculation
             let cache_check_start = Instant::now();
-            if let Some(cached_info) = cache.get_by_path(&path).await
+            if let Some(cached_info) = cache.get_by_path(&*path).await
                 && (cached_info.size > 0 || cached_info.items_count > 0) 
             {
                 let cache_check_duration = cache_check_start.elapsed();
@@ -92,15 +92,16 @@ pub fn calculate_size_task(
             );
 
             // Perform expensive calculation in blocking task
-            let path_clone: PathBuf = path.clone();
             let calculation_start = Instant::now();
+            let path_for_calc = path.clone();
+           
             let result: Result<(u64, usize), JoinError> = TokioScheduler::spawn_blocking(
                 move || -> (u64, usize) {
                     let mut total_size: u64 = 0;
                     let mut items_count: usize = 0;
-
+                    
                     // Calculate recursive size for files, but only count direct children
-                    for entry in WalkDir::new(&path_clone)
+                    for entry in WalkDir::new(&**path_for_calc)
                         .min_depth(1)
                         .into_iter()
                         .filter_map(Result::ok)
@@ -131,7 +132,6 @@ pub fn calculate_size_task(
                     info!(
                         marker = "SIZE_TASK",
                         operation_type = "size_calculation_success",
-                        path = %path.display(),
                         calculated_size = size,
                         calculated_items = items,
                         calculation_duration_ms = calculation_duration.as_millis(),
@@ -141,7 +141,7 @@ pub fn calculate_size_task(
 
                     // Cache the result for future use
                     let cache_insert_start: Instant = Instant::now();
-                    cache.insert_path(&path, object_info.clone()).await;
+                    cache.insert_path((**path).to_path_buf(), object_info.clone()).await;
                     let cache_insert_duration: Duration = cache_insert_start.elapsed();
                     
                     tracing::debug!(
