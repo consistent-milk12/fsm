@@ -1060,7 +1060,17 @@ impl EventLoop {
 
         match action {
             // Batch update actions
-            Action::BatchUpdateObjectInfo { .. } => todo!(),
+            Action::BatchUpdateObjectInfo 
+            { 
+                parent_dir, 
+                objects 
+            } => {
+                trace!("Batch updating {0} object infos for {parent_dir:?}", objects.len()); 
+                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
+
+                app.update_object_info_batch(&parent_dir, objects).await;
+                app.ui.request_redraw(RedrawFlag::Main);
+            }
 
             // UI actions
             Action::ToggleHelp
