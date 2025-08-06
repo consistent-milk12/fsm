@@ -11,12 +11,9 @@
 //! - Proper error handling without poisoning cache
 
 use std::{
-    path::Path,
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
-    time::{Duration, Instant},
+    collections::VecDeque, path::{Path, PathBuf}, sync::{
+        atomic::{AtomicU64, Ordering}, Arc
+    }, time::{Duration, Instant}
 };
 
 use moka::future::Cache;
@@ -569,10 +566,10 @@ impl ObjectInfoCache {
             return;
         }
 
-        let stats = self.stats();
-        let uptime = self.startup_time.elapsed();
-        let entry_count = self.entry_count();
-        let memory_usage = self.weighted_size();
+        let stats: CacheStatsSnapshot = self.stats();
+        let uptime: Duration = self.startup_time.elapsed();
+        let entry_count: u64 = self.entry_count();
+        let memory_usage: u64 = self.weighted_size();
 
         info!(
             "Cache Statistics:\n\
@@ -601,9 +598,9 @@ impl ObjectInfoCache {
 
     /// Check cache health and log warnings if needed
     pub fn health_check(&self) {
-        let stats = self.stats();
-        let entry_count = self.entry_count();
-        let memory_usage_mb = self.weighted_size() / (1024 * 1024);
+        let stats: CacheStatsSnapshot = self.stats();
+        let entry_count: u64 = self.entry_count();
+        let memory_usage_mb: u64 = self.weighted_size() / (1024 * 1024);
 
         // Warn if hit rate is low
         if stats.hit_rate() < 0.5 && stats.hits + stats.misses > 1000 {
@@ -641,7 +638,7 @@ impl ObjectInfoCache {
     #[expect(clippy::cast_possible_truncation, reason = "Expected accuracy loss")]
     /// Get approximate memory usage per entry
     pub fn avg_entry_size(&self) -> usize {
-        let entry_count = self.entry_count();
+        let entry_count: u64 = self.entry_count();
         
         if entry_count == 0 {
             0
@@ -657,6 +654,122 @@ impl ObjectInfoCache {
         self.entry_count() as f64 > self.config.max_capacity as f64 * 0.9
     }
 }
+
+impl ObjectInfoCache {
+    /// Pre-warm cache with directory relationships using iterative queue-based approach
+    #[instrument(skip(self), fields(base_path = %base_path.as_ref().display()))]
+    pub async fn warm_directory_relationships<P: AsRef<Path>>(
+        &self,
+        base_path: P,
+        depth: usize
+    ) -> Result<usize, AppError> {
+        let base_path: &Path = base_path.as_ref();
+        let mut warmed_count: usize = 0;
+        let mut work_queue: VecDeque<(PathBuf, usize)> = VecDeque::new();
+
+        // Warm parent directory first
+        if let Some(parent) = base_path.parent() {
+            let parent_key: Arc<str> = Self::path_to_key(parent);
+            if self.get(&parent_key).await.is_none() {
+                match ObjectInfo::from_path_direct(parent).await {
+                    Ok(info) => {
+                        self.insert(parent_key, info).await;
+
+                        warmed_count += 1;
+                    }
+
+                    Err(e) => warn!(
+                        "Failed to warm parent directory {}: {}", 
+                        parent.display(), e
+                    ),
+                }
+            }
+        }
+
+        // Start with base path
+        work_queue.push_back((base_path.to_path_buf(), depth));
+
+        // Process queue iteratively - no recursion
+        while let Some((current_path, remaining_depth)) = work_queue.pop_front() {
+            if remaining_depth == 0 {
+                continue;
+            }
+
+            match tokio::fs::read_dir(&current_path).await {
+                Ok(mut entries) => {
+                    while let Some(entry) = entries.next_entry().await? {
+                        let entry_path: PathBuf = entry.path();
+                        let entry_key: Arc<str> = Self::path_to_key(&entry_path);
+
+                        if self.get(&entry_key).await.is_none() {
+                            match ObjectInfo::from_path_direct(&entry_path).await {
+                                Ok(info) => {
+                                    self.insert(entry_key, info.clone()).await;
+                                    warmed_count += 1;
+
+                                    // Add subdirectories to queue for next level
+                                    if info.is_dir && remaining_depth > 1
+                                    {
+                                        work_queue.push_back((entry_path, remaining_depth - 1));
+                                    }
+                                }
+
+                                Err(e) => warn!(
+                                    "Failed to warm entry {}: {}", 
+                                    entry_path.display(), e
+                                ),
+                            }
+                        }
+                    }
+                }
+
+                Err(e) => warn!(
+                    "Failed to read directory for warming {}: {}", 
+                    current_path.display(), e
+                ),
+            }
+        }
+
+        info!(
+            marker = "CACHE_OPERATION",
+            operation_type = "cache_warm_complete",
+            warmed_count = warmed_count,
+            base_path = %base_path.display(),
+            "Iterative cache warming completed"
+        );
+
+        Ok(warmed_count)
+    }
+
+    /// Smart warming based on navigation patterns - optimized for UI responsiveness
+    #[instrument(skip(self), fields(current_path = %current_path.as_ref().display()))]
+    pub async fn warm_for_navigation<P: AsRef<Path>>(
+        &self,
+        current_path: P,
+    ) -> Result<usize, AppError> {
+        let current_path = current_path.as_ref();
+        let mut total_warmed = 0;
+
+        // Warm parent for "go up" navigation (depth 1 - immediate parent only)
+        if let Some(parent) = current_path.parent() {
+            total_warmed += self.warm_directory_relationships(parent, 1).await?;
+        }
+
+        // Warm current directory children for "enter" navigation (depth 1 - immediate children)
+        total_warmed += self.warm_directory_relationships(current_path, 1).await?;
+
+        info!(
+            marker = "CACHE_OPERATION",
+            operation_type = "navigation_warming_complete",
+            total_warmed = total_warmed,
+            current_path = %current_path.display(),
+            "Navigation-optimized cache warming completed"
+        );
+
+        Ok(total_warmed)
+    }
+}
+
 
 impl Default for ObjectInfoCache {
     fn default() -> Self {

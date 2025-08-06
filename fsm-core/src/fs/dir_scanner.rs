@@ -47,6 +47,25 @@ pub async fn scan_dir(
     profiling_config: &ProfilingConfig,
     cache: &ObjectInfoCache
 ) -> Result<Vec<ObjectInfo>, AppError> {
+    // Pre-warm cache for better hit rates
+    let warm_start = Instant::now();
+    let warmed_count = cache.warm_for_navigation(path).await
+        .unwrap_or_else(|e| {
+            tracing::warn!("Cache warming failed: {}", e);
+            0
+        });
+    let warm_duration = warm_start.elapsed();
+    
+    if warmed_count > 0 {
+        info!(
+            marker = "CACHE_OPERATION",
+            operation_type = "pre_scan_warming",
+            warmed_count = warmed_count,
+            warm_duration_us = warm_duration.as_micros(),
+            "Pre-scan cache warming completed"
+        );
+    }
+
     let start_time: Instant = Instant::now();
     let start_mem: Option<i64> = ProfilingData::get_current_memory_kb();
 

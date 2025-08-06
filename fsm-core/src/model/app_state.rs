@@ -252,6 +252,26 @@ impl AppState {
     pub async fn enter_directory(&mut self, path: PathBuf) {
         info!("Entering directory: {}", path.display());
         
+        // Pre-warm cache before directory change for better performance
+        let warm_start = std::time::Instant::now();
+        let warmed_count = self.cache.warm_for_navigation(&path).await
+            .unwrap_or_else(|e| {
+                tracing::warn!("Navigation cache warming failed: {}", e);
+                0
+            });
+        
+        if warmed_count > 0 {
+            let warm_duration = warm_start.elapsed();
+            info!(
+                marker = "CACHE_OPERATION",
+                operation_type = "navigation_pre_warming",
+                warmed_count = warmed_count,
+                warm_duration_us = warm_duration.as_micros(),
+                target_path = %path.display(),
+                "Pre-navigation cache warming completed"
+            );
+        }
+        
         let canonical_path: PathBuf = match tokio::fs::canonicalize(&path).await {
             Ok(p) => p,
         

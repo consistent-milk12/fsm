@@ -5,7 +5,6 @@
 //! A modern, async terminal user interface file manager built with ratatui and tokio.
 //! Features include directory navigation, file operations, search functionality,
 //! and a command palette for power users.
-
 #![allow(clippy::missing_errors_doc)]
 #![allow(clippy::cargo_common_metadata)]
 #![allow(clippy::wildcard_dependencies)]
