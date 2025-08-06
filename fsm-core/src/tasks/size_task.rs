@@ -12,9 +12,9 @@
 use crate::cache::cache_manager::ObjectInfoCache;
 use crate::controller::actions::Action;
 use crate::fs::object_info::ObjectInfo;
-use std::{path::PathBuf, sync::Arc};
+use std::{path::PathBuf, sync::Arc, time::{Duration, Instant}};
 use tokio::{sync::mpsc, task::{self as TokioScheduler, JoinError}};
-use tracing::{info, warn};
+use tracing::{info, warn, instrument, Instrument};
 use walkdir::WalkDir;
 
 /// Spawns a Tokio task to calculate the recursive size and direct item count for a directory.
@@ -25,6 +25,14 @@ use walkdir::WalkDir;
 /// Results are cached for performance and UI responsiveness.
 /// Once calculated, it sends an `Action::UpdateObjectInfo` to the main event loop
 /// to update the UI.
+#[expect(clippy::too_many_lines, reason = "Expected due to logging")]
+#[instrument(
+    skip(action_tx, cache, object_info),
+    fields(
+        path = %object_info.path.display(),
+        is_dir = object_info.is_dir
+    )
+)]
 pub fn calculate_size_task(
     parent_dir: PathBuf,
     mut object_info: ObjectInfo,
@@ -36,79 +44,137 @@ pub fn calculate_size_task(
     }
 
     let path: PathBuf = object_info.path.clone();
+    let path_display = path.display().to_string();
 
-    tokio::spawn(async move {
-        // Check cache first for existing size calculation
-        if let Some(cached_info) = cache.get_by_path(&path).await
-            && (cached_info.size > 0 || cached_info.items_count > 0) 
-        {
-            info!("Using cached size for directory: {} (size: {}, items: {})",
-                path.display(), cached_info.size, cached_info.items_count);
+    tokio::spawn(
+        async move {
+            let task_start = Instant::now();
+            
+            info!(
+                marker = "SIZE_TASK",
+                operation_type = "size_calculation_start",
+                path = %path.display(),
+                "Starting directory size calculation"
+            );
 
-            // Send cached result immediately
-            let _ = action_tx.send(Action::UpdateObjectInfo {
-                parent_dir,
-                info: cached_info,
-            });
-        
-            return;
-        }
-
-        info!("Calculating new size for directory: {}", path.display());
-
-        // Perform expensive calculation in blocking task
-        let path_clone: PathBuf = path.clone();
-        let result: Result<(u64, usize), JoinError> = TokioScheduler::spawn_blocking(
-            move || -> (u64, usize)
+            // Check cache first for existing size calculation
+            let cache_check_start = Instant::now();
+            if let Some(cached_info) = cache.get_by_path(&path).await
+                && (cached_info.size > 0 || cached_info.items_count > 0) 
             {
-                let mut total_size: u64 = 0;
-                let mut items_count: usize = 0;
-
-                // Calculate recursive size for files, but only count direct children
-                for entry in WalkDir::new(&path_clone)
-                    .min_depth(1)
-                    .into_iter()
-                    .filter_map(Result::ok)
-                {
-                    if entry.depth() == 1 {
-                        items_count += 1;
-                    }
-
-                    if let Ok(metadata) = entry.metadata() {
-                        total_size += metadata.len();
-                    }
-                }
-
-                (total_size, items_count)
-            }
-        )
-        .await;
-
-        match result {
-            Ok((size, items)) => {
-                // Update object info with calculated values
-                object_info.size = size;
-                object_info.items_count = items as u64;
-                object_info.metadata_loaded = true;
-
+                let cache_check_duration = cache_check_start.elapsed();
                 info!(
-                    "Size calculation completed for {0}: {size} bytes, {items} items",
-                    path.display()
+                    marker = "SIZE_TASK",
+                    operation_type = "size_cache_hit",
+                    path = %path.display(),
+                    cached_size = cached_info.size,
+                    cached_items = cached_info.items_count,
+                    cache_lookup_duration_us = cache_check_duration.as_micros(),
+                    "Using cached size for directory"
                 );
 
-                // Cache the result for future use
-                cache.insert_path(&path, object_info.clone()).await;
-
-                // Send updated info to UI
+                // Send cached result immediately
                 let _ = action_tx.send(Action::UpdateObjectInfo {
                     parent_dir,
-                    info: object_info,
+                    info: cached_info,
                 });
-            }
             
-            Err(e) => {
-                warn!("Size calculation failed for {path:?}: {e}");
+                return;
+            }
+
+            let cache_check_duration = cache_check_start.elapsed();
+            info!(
+                marker = "SIZE_TASK",
+                operation_type = "size_cache_miss",
+                path = %path.display(),
+                cache_lookup_duration_us = cache_check_duration.as_micros(),
+                "Cache miss - calculating new size for directory"
+            );
+
+            // Perform expensive calculation in blocking task
+            let path_clone: PathBuf = path.clone();
+            let calculation_start = Instant::now();
+            let result: Result<(u64, usize), JoinError> = TokioScheduler::spawn_blocking(
+                move || -> (u64, usize) {
+                    let mut total_size: u64 = 0;
+                    let mut items_count: usize = 0;
+
+                    // Calculate recursive size for files, but only count direct children
+                    for entry in WalkDir::new(&path_clone)
+                        .min_depth(1)
+                        .into_iter()
+                        .filter_map(Result::ok)
+                    {
+                        if entry.depth() == 1 {
+                            items_count += 1;
+                        }
+
+                        if let Ok(metadata) = entry.metadata() {
+                            total_size += metadata.len();
+                        }
+                    }
+
+                    (total_size, items_count)
+                }
+            )
+            .await;
+
+            let calculation_duration = calculation_start.elapsed();
+
+            match result {
+                Ok((size, items)) => {
+                    // Update object info with calculated values
+                    object_info.size = size;
+                    object_info.items_count = items as u64;
+                    object_info.metadata_loaded = true;
+
+                    info!(
+                        marker = "SIZE_TASK",
+                        operation_type = "size_calculation_success",
+                        path = %path.display(),
+                        calculated_size = size,
+                        calculated_items = items,
+                        calculation_duration_ms = calculation_duration.as_millis(),
+                        total_duration_ms = task_start.elapsed().as_millis(),
+                        "Size calculation completed successfully"
+                    );
+
+                    // Cache the result for future use
+                    let cache_insert_start: Instant = Instant::now();
+                    cache.insert_path(&path, object_info.clone()).await;
+                    let cache_insert_duration: Duration = cache_insert_start.elapsed();
+                    
+                    tracing::debug!(
+                        marker = "SIZE_TASK",
+                        operation_type = "size_cache_insert",
+                        path = %path.display(),
+                        cache_insert_duration_us = cache_insert_duration.as_micros(),
+                        "Cached size calculation result"
+                    );
+
+                    // Send updated info to UI
+                    let _ = action_tx.send(Action::UpdateObjectInfo {
+                        parent_dir,
+                        info: object_info,
+                    });
+                }
+                
+                Err(e) => {
+                    warn!(
+                        marker = "SIZE_TASK",
+                        operation_type = "size_calculation_failure",
+                        path = %path.display(),
+                        calculation_duration_ms = calculation_duration.as_millis(),
+                        error = %e,
+                        "Size calculation failed"
+                    );
+                }
             }
         }
-    });
+        .instrument(tracing::info_span!(
+            "size_calculation",
+            operation_type = "size_calculation",
+            path = %path_display
+        ))
+    );
 }

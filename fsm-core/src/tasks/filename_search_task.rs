@@ -276,7 +276,7 @@ impl FilenameSearchTask {
     #[instrument(
         skip(child, task_tx),
         fields(
-            operation_type = "stream_processing",
+            operation_type = "filename_search_stream_processing",
             task_id = %task_id,
             search_path = %search_path.display(),
             processed_count = 0u64,
@@ -332,7 +332,7 @@ impl FilenameSearchTask {
 
                     match cache.get_or_load_path(
                         &file_path, 
-                        || ObjectInfo::from_path(&file_path)).await 
+                        || ObjectInfo::from_path_direct(&file_path)).await 
                     {
                         Ok(info) => {
                             results.push(info);
@@ -357,11 +357,13 @@ impl FilenameSearchTask {
                     // End of stream - normal termination
                     break;
                 }
+
                 Ok(Err(e)) => {
-                    warn!("Stream read error: {}", e);
+                    warn!("Stream read error: {e}");
                     error_count += 1;
                     break;
                 }
+                
                 Err(_) => {
                     // Line read timeout - check if child is still alive
                     match child.try_wait() {
@@ -376,7 +378,7 @@ impl FilenameSearchTask {
                         }
 
                         Err(e) => {
-                            warn!("Failed to check child status: {}", e);
+                            warn!("Failed to check child status: {e}");
                             break;
                         }
                     }

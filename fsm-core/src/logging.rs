@@ -988,7 +988,7 @@ impl JsonLayer {
 
     // PERFORMANCE OPTIMIZED: Skip span events for trace/debug levels
     fn should_emit_span_event(level: Level) -> bool {
-        level >= Level::INFO // Only emit span events for INFO and above
+        level >= Level::WARN // Only emit span events for INFO and above
     }
 
     /// PERFORMANCE OPTIMIZED: Minimal span lifecycle events

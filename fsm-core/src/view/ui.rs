@@ -17,11 +17,13 @@ use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout},
 };
+use tracing::instrument;
 
 pub struct View;
 
 impl View {
     /// Draws the full UI for one frame.
+    #[instrument(skip_all, fields(operation_type = "ui_redraw"))]
     pub fn redraw(frame: &mut Frame<'_>, app: &mut AppState) {
         // The main object table's block will act as the background
         let main_layout: Rc<[Rect]> = Layout::default()
@@ -32,11 +34,25 @@ impl View {
             ])
             .split(frame.area());
 
+        let object_table_span = tracing::info_span!(
+            "object_table_render",
+            operation_type = "object_table_render"
+        )
+        .entered();
         ObjectTable::render(frame, app, main_layout[0]);
+        drop(object_table_span);
+
+        let status_bar_span =
+            tracing::info_span!("status_bar_render", operation_type = "status_bar_render")
+                .entered();
         StatusBar::render(frame, app, main_layout[1]);
+        drop(status_bar_span);
 
         // Overlays are rendered on top of the main UI
         if app.ui.overlay != UIOverlay::None {
+            let _overlay_span =
+                tracing::info_span!("overlay_render", operation_type = "overlay_render")
+                    .entered();
             let overlay_area: Rect = frame.area();
 
             match app.ui.overlay {
@@ -47,12 +63,7 @@ impl View {
                 UIOverlay::FileNameSearch => {
                     let x = &mut app.ui.filename_search_overlay.clone();
 
-                    FileNameSearchOverlay::render(
-                        x,
-                        frame,
-                        app, 
-                        overlay_area
-                    );
+                    FileNameSearchOverlay::render(x, frame, app, overlay_area);
                 }
 
                 UIOverlay::ContentSearch => ContentSearchOverlay::render(frame, app, overlay_area),
@@ -69,6 +80,9 @@ impl View {
 
         // Render file operations progress overlay if operations are active
         if !app.ui.active_file_operations.is_empty() {
+            let _file_ops_span =
+                tracing::info_span!("file_ops_render", operation_type = "file_ops_render")
+                    .entered();
             let overlay_area = Self::calculate_progress_overlay_area(
                 frame.area(),
                 app.ui.active_file_operations.len(),
@@ -79,6 +93,9 @@ impl View {
 
         // Always render notifications on top of everything
         if app.ui.notification.is_some() {
+            let _notification_span =
+                tracing::info_span!("notification_render", operation_type = "notification_render")
+                    .entered();
             NotificationOverlay::render(frame, app, frame.area());
         }
     }

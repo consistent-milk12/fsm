@@ -292,7 +292,7 @@ impl ObjectInfoCache {
 
     /// Get entry or load if missing with comprehensive tracing
     #[expect(clippy::too_many_lines, reason = "Expected due to logging")]
-    #[instrument(skip(self, loader), fields(cache_key = %key))]
+    #[instrument(skip(self, loader), fields(cache_key = %key, operation_type = "cache_get_or_load"))]
     pub async fn get_or_load<F, Fut>(
         &self,
         key: ObjectKey,

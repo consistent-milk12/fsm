@@ -13,7 +13,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use tokio::fs::{self as TokioFs};
 
-use crate::AppError;
+use crate::{cache::cache_manager::ObjectInfoCache, AppError};
 
 /// Enum for object type, matching the table logic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -33,31 +33,32 @@ impl std::fmt::Display for ObjectType {
     }
 }
 
-  #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-  pub struct ObjectInfo {
-      /// LARGEST FIRST (CLAUDE.md Rule 14)
-      /// ~24 bytes (largest)
-      pub path: PathBuf,
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ObjectInfo {
+    /// LARGEST FIRST (CLAUDE.md Rule 14)
+    /// ~24 bytes (largest)
+    pub path: PathBuf,
 
-      /// 16 bytes (no timezone overhead)
-      pub modified: SystemTime,
+    /// 16 bytes (no timezone overhead)
+    pub modified: SystemTime,
 
-      /// ~24 bytes (stack-optimized) 
-      pub name: CompactString,
+    /// ~24 bytes (stack-optimized) 
+    pub name: CompactString,
 
-      /// ~24 bytes when Some
-      pub extension: Option<CompactString>,
+    /// ~24 bytes when Some
+    pub extension: Option<CompactString>,
 
-      /// 8-BYTE ALIGNED PRIMITIVES
-      pub size: u64,                          // 8 bytes
-      pub items_count: u64,                   // 8 bytes
+    /// 8-BYTE ALIGNED PRIMITIVES
+    pub size: u64,                          // 8 bytes
+    pub items_count: u64,                   // 8 bytes
 
-      // FLAGS GROUPED (cache-friendly)
-      pub is_dir: bool,                       // 1 byte
-      pub is_symlink: bool,                   // 1 byte
-      pub metadata_loaded: bool,              // 1 byte
-      // + 5 bytes padding = 8-byte boundary
-  }
+    // FLAGS GROUPED (cache-friendly)
+    pub is_dir: bool,                       // 1 byte
+    pub is_symlink: bool,                   // 1 byte
+    pub metadata_loaded: bool,              // 1 byte
+    // + 5 bytes padding = 8-byte boundary
+}
+
 /// Lightweight version optimized for immediate display and minimal allocation
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LightObjectInfo {
@@ -173,30 +174,60 @@ impl ObjectInfo {
           bytesize::ByteSize::b(self.size).to_string()
       }
 
-      // OPTIMIZED CONSTRUCTION - Zero-allocation where possible
-      pub async fn from_path(path: &Path) -> Result<Self, AppError> {
+      pub async fn from_path_cached(
+        path: &Path,
+        cache: Option<&ObjectInfoCache> 
+      ) -> Result<Self, AppError>
+      {
+            if let Some(cache_ref) = cache
+            {
+                let path_str: &str = path.to_str().ok_or_else(
+                    || -> AppError {AppError::FileOperationFailed 
+                    { 
+                        operation: "Invalid Path".into(), 
+                        path: "Invalid Path".into(), 
+                        reason: "path.to_str() failed".into(),
+                    }}
+                )?;
+
+                // Use cache with fallback
+                cache_ref.get_or_load(
+                    path_str.into(), 
+                    || 
+                    Self::from_path_direct(path)
+                ).await 
+            } else {
+                Self::from_path_direct(path).await
+            }
+      }
+
+      /// Direct I/O construction (private - only for cache loading)
+      pub async fn from_path_direct(path: &Path) -> Result<Self, AppError> {
           let metadata: Metadata = TokioFs::symlink_metadata(path).await?;
           let file_type: FileType = metadata.file_type();
 
           let is_dir = file_type.is_dir();
           let is_symlink: bool = file_type.is_symlink();
 
-          // CompactString optimization for filenames
-          let name: CompactString = CompactString::new(
+          let name = CompactString::new(
               path.file_name()
                   .and_then(OsStr::to_str)
                   .unwrap_or("")
           );
 
-          let extension = path
-              .extension()
-              .and_then(OsStr::to_str)
-              .map(CompactString::new);
+          let extension = if file_type.is_file() {
+              path.extension()
+                  .and_then(OsStr::to_str)
+                  .map(CompactString::new)
+          } else {
+              None
+          };
 
-          let size = if is_dir { 0 } else { metadata.len() };
           let modified = metadata
             .modified()
             .unwrap_or(SystemTime::UNIX_EPOCH);
+  
+          let size = if is_dir { 0 } else { metadata.len() };
 
           Ok(Self {
               path: path.to_path_buf(),
@@ -204,11 +235,16 @@ impl ObjectInfo {
               name,
               extension,
               size,
-              items_count: 0, // Calculated separately if needed
+              items_count: 0,
               is_dir,
               is_symlink,
               metadata_loaded: true,
           })
+      }
+
+      /// Legacy method - now delegates to cache-aware version
+      pub async fn from_path(path: &Path) -> Result<Self, AppError> {
+          Self::from_path_cached(path, None).await
       }
 
       #[expect(clippy::cast_possible_wrap, reason = "Expected accuracy")]

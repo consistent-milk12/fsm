@@ -1045,7 +1045,17 @@ impl EventLoop {
 
     /// Enhanced action dispatcher with comprehensive error handling
     pub async fn dispatch_action(&self, action: Action) {
+        let span = tracing::info_span!(
+            "action_dispatch",
+            action = ?action,
+            operation_type = "action_dispatch"
+        );
+        let guard = span.enter();
+        
         let start_time = Instant::now();
+        
+        // Drop the span guard before any async operations
+        drop(guard);
 
         match action {
             // UI actions
@@ -1719,7 +1729,6 @@ impl EventLoop {
         app.ui.request_redraw(RedrawFlag::All);
     }
 
-    #[expect(clippy::significant_drop_tightening, reason = "False warning")]
     async fn handle_submit_input_prompt(&self, input: String) {
         info!("Submitting input prompt: '{}'", input);
 
@@ -1766,38 +1775,32 @@ impl EventLoop {
             }
             
             None => {
-                self.handle_missing_prompt_type(app).await;   
+                drop(app);
+                self.handle_missing_prompt_type().await;   
             }
         }
     }
 
-    async fn dispatch_create_file_action(&self, app: MutexGuard<'_, AppState>, input: String) {
-        drop(app);
+    async fn dispatch_create_file_action(&self, _app: MutexGuard<'_, AppState>, input: String) {
         Box::pin(self.dispatch_action(Action::CreateFileWithName(input))).await;
     }
 
-    async fn dispatch_create_directory_action(&self, app: MutexGuard<'_, AppState>, input: String) {
-        drop(app);
+    async fn dispatch_create_directory_action(&self, _app: MutexGuard<'_, AppState>, input: String) {
         Box::pin(self.dispatch_action(Action::CreateDirectoryWithName(input))).await;
     }
 
-    async fn dispatch_rename_entry_action(&self, app: MutexGuard<'_, AppState>, input: String) {
+    async fn dispatch_rename_entry_action(&self, _app: MutexGuard<'_, AppState>, input: String) {
         info!("Processing rename prompt with input: '{}'", input);
-        drop(app);
         Box::pin(self.dispatch_action(Action::RenameEntry(input))).await;
     }
 
-    async fn dispatch_search_action_content(&self, app: MutexGuard<'_, AppState>, input: String) {
+    async fn dispatch_search_action_content(&self, _app: MutexGuard<'_, AppState>, input: String) {
         info!("Processing search prompt with input: '{}'", input);
-
-        drop(app);
-
         Box::pin(self.dispatch_action(Action::DirectContentSearch(input))).await;
     }
 
-    async fn dispatch_go_to_path_action(&self, app: MutexGuard<'_, AppState>, input: String) {
+    async fn dispatch_go_to_path_action(&self, _app: MutexGuard<'_, AppState>, input: String) {
         info!("Processing go-to-path prompt with input: '{}'", input);
-        drop(app);
         Box::pin(self.dispatch_action(Action::GoToPath(input))).await;
     }
 
@@ -1825,30 +1828,39 @@ impl EventLoop {
     async fn process_copy_destination_prompt(&self, app: MutexGuard<'_, AppState>, input: String) {
         info!("Processing copy destination prompt with input: '{}'", input);
 
-        if let Some(source_path) = Self::extract_selected_file_path(&app) {
-            self.execute_copy_operation(app, source_path, input).await;
+        let source_path = Self::extract_selected_file_path(&app);
+        drop(app);
+        
+        if let Some(source_path) = source_path {
+            self.execute_copy_operation(source_path, input).await;
         } else {
-            self.show_copy_error(app).await;
+            self.show_copy_error().await;
         }
     }
 
     async fn process_move_destination_prompt(&self, app: MutexGuard<'_, AppState>, input: String) {
         info!("Processing move destination prompt with input: '{}'", input);
 
-        if let Some(source_path) = Self::extract_selected_file_path(&app) {
-            self.execute_move_operation(app, source_path, input).await;
+        let source_path = Self::extract_selected_file_path(&app);
+        drop(app);
+        
+        if let Some(source_path) = source_path {
+            self.execute_move_operation(source_path, input).await;
         } else {
-            self.show_move_error(app).await;
+            self.show_move_error().await;
         }
     }
 
     async fn process_rename_file_prompt(&self, app: MutexGuard<'_, AppState>, input: String) {
         info!("Processing rename file prompt with input: '{}'", input);
 
-        if let Some(source_path) = Self::extract_selected_file_path(&app) {
-            self.execute_rename_operation(app, source_path, input).await;
+        let source_path = Self::extract_selected_file_path(&app);
+        drop(app);
+        
+        if let Some(source_path) = source_path {
+            self.execute_rename_operation(source_path, input).await;
         } else {
-            self.show_rename_error(app).await;
+            self.show_rename_error().await;
         }
     }
 
@@ -1864,12 +1876,10 @@ impl EventLoop {
 
     async fn execute_copy_operation(
         &self,
-        app: MutexGuard<'_, AppState>,
         source_path: PathBuf,
         input: String,
     ) {
         let dest_path = PathBuf::from(input);
-        drop(app);
         Box::pin(self.dispatch_action(Action::Copy {
             source: source_path,
             dest: dest_path,
@@ -1879,12 +1889,11 @@ impl EventLoop {
 
     async fn execute_move_operation(
         &self,
-        app: MutexGuard<'_, AppState>,
         source_path: PathBuf,
         input: String,
     ) {
         let dest_path = PathBuf::from(input);
-        drop(app);
+
         Box::pin(self.dispatch_action(Action::Move {
             source: source_path,
             dest: dest_path,
@@ -1894,11 +1903,9 @@ impl EventLoop {
 
     async fn execute_rename_operation(
         &self,
-        app: MutexGuard<'_, AppState>,
         source_path: PathBuf,
         input: String,
     ) {
-        drop(app);
         Box::pin(self.dispatch_action(Action::Rename {
             source: source_path,
             new_name: input,
@@ -1907,29 +1914,33 @@ impl EventLoop {
     }
 
     #[allow(clippy::unused_async)]
-    async fn show_copy_error(&self, mut app: MutexGuard<'_, AppState>) {
+    async fn show_copy_error(&self) {
+        let mut app = self.app.lock().await;
         app.ui
             .show_error("No file selected for copy operation".to_string());
         app.ui.request_redraw(RedrawFlag::All);
     }
 
     #[allow(clippy::unused_async)]
-    async fn show_move_error(&self, mut app: MutexGuard<'_, AppState>) {
+    async fn show_move_error(&self) {
+        let mut app = self.app.lock().await;
         app.ui
             .show_error("No file selected for move operation".to_string());
         app.ui.request_redraw(RedrawFlag::All);
     }
 
     #[allow(clippy::unused_async)]
-    async fn show_rename_error(&self, mut app: MutexGuard<'_, AppState>) {
+    async fn show_rename_error(&self) {
+        let mut app = self.app.lock().await;
         app.ui
             .show_error("No file selected for rename operation".to_string());
         app.ui.request_redraw(RedrawFlag::All);
     }
 
     #[allow(clippy::unused_async)]
-    async fn handle_missing_prompt_type(&self, mut app: MutexGuard<'_, AppState>) {
+    async fn handle_missing_prompt_type(&self) {
         info!("No prompt type set when submitting input");
+        let mut app = self.app.lock().await;
         app.ui.request_redraw(RedrawFlag::All);
     }
 

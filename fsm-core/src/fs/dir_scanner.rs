@@ -84,7 +84,7 @@ pub async fn scan_dir(
                     "Cache miss - loading from filesystem"
                 );
 
-                ObjectInfo::from_path(&entry_path)
+                ObjectInfo::from_path_direct(&entry_path)
             }
         )
         .await 

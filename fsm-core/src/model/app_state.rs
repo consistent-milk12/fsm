@@ -36,7 +36,7 @@ use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tokio::{process::Command, task::JoinError};
 use tokio::sync::mpsc;
-use tracing::{debug, info, warn};
+use tracing::{debug, info, warn, Instrument};
 
 /// Represents a pending or running asynchronous task (search, copy, delete, etc.).
 #[derive(Debug, Clone)]
@@ -87,6 +87,7 @@ pub struct AppState {
     /// Application startup time for analytics
     pub started_at: Instant,
 }
+
 
 #[derive(Debug, Clone)]
 pub enum AppHistoryEvent {
@@ -316,19 +317,22 @@ impl AppState {
         // Spawn task to handle streaming updates
         let action_tx: mpsc::UnboundedSender<Action> = self.action_tx.clone();
         let scan_path: PathBuf = path.clone();
+        let scan_path_tmp: PathBuf = scan_path.clone();
 
-        tokio::spawn(async move {
-                while let Some(update) = rx.recv().await 
-                {
-                    let _ = action_tx.send(
-                        Action::DirectoryScanUpdate 
-                        {
-                            path: scan_path.clone(),
-                            update,
-                        }
-                    );
+        tokio::spawn(
+            async move {
+                while let Some(update) = rx.recv().await {
+                    let _ = action_tx.send(Action::DirectoryScanUpdate {
+                        path: scan_path.clone(),
+                        update,
+                    });
                 }
             }
+            .instrument(tracing::info_span!(
+                "dir_scan_stream_processing",
+                operation_type = "dir_scan_stream_processing",
+                path = %scan_path_tmp.display()
+            )),
         );
 
         self.ui.request_redraw(RedrawFlag::All);
