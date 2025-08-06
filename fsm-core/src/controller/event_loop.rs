@@ -30,7 +30,7 @@ use tokio::process::Command;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::{Mutex, MutexGuard, mpsc};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, info, span::Entered, trace, warn, Span};
 
 /// Enhanced task result with performance metrics
 #[derive(Debug, Clone)]
@@ -1045,19 +1045,23 @@ impl EventLoop {
 
     /// Enhanced action dispatcher with comprehensive error handling
     pub async fn dispatch_action(&self, action: Action) {
-        let span = tracing::info_span!(
+        let span: Span = tracing::info_span!(
             "action_dispatch",
             action = ?action,
             operation_type = "action_dispatch"
         );
-        let guard = span.enter();
         
-        let start_time = Instant::now();
+        let guard: Entered<'_> = span.enter();
+        
+        let start_time: Instant = Instant::now();
         
         // Drop the span guard before any async operations
         drop(guard);
 
         match action {
+            // Batch update actions
+            Action::BatchUpdateObjectInfo { .. } => todo!(),
+
             // UI actions
             Action::ToggleHelp
             | Action::EnterCommandMode
@@ -1137,6 +1141,7 @@ impl EventLoop {
                     app.ui.request_redraw(RedrawFlag::All);
                 }
             }
+
             Action::Key(_) | Action::Mouse(_) | Action::Resize(..) | Action::NoOp => {
                 let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
                 app.ui.request_redraw(RedrawFlag::All);

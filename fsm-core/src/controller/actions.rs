@@ -6,7 +6,7 @@
 //! internal events that the application can respond to. This provides a single,
 //! clear interface for the `Controller` to process.
 
-use crate::fs::object_info::ObjectInfo;
+use crate::{controller::event_loop::TaskResult, fs::object_info::ObjectInfo, tasks::search_task::RawSearchResult};
 use crossterm::event::{KeyEvent, MouseEvent};
 use std::{path::PathBuf};
 
@@ -29,161 +29,168 @@ pub enum InputPromptType {
 /// This abstracts away raw terminal events into meaningful commands.
 #[derive(Debug, Clone)]
 pub enum Action {
-    /// A keyboard event.
-    Key(KeyEvent),
-
-    /// A mouse event.
-    Mouse(MouseEvent),
-
-    /// A terminal resize event.
-    Resize(u16, u16),
-
-    /// Quit the application.
-    Quit,
-
-    /// Toggle the help overlay visibility.
-    ToggleHelp,
-
-    /// Enter vim-style command mode.
-    EnterCommandMode,
-
-    /// Exit command mode.
-    ExitCommandMode,
-
-    /// Toggle the file name search overlay.
-    ToggleFileNameSearch,
-
-    /// Toggle the content search overlay.
-    ToggleContentSearch,
-
-    /// Perform a file name search (instant).
-    FileNameSearch(String),
-
-    /// Perform a content search (ripgrep).
-    ContentSearch(String),
-
-    /// Direct content search with pattern (no overlay).
-    DirectContentSearch(String),
-
-    /// Toggle showing hidden files.
-    ToggleShowHidden,
-
-    /// Show search results.
-    ShowSearchResults(Vec<crate::fs::object_info::ObjectInfo>),
-
-    /// Show filename search results.
-    ShowFilenameSearchResults(Vec<ObjectInfo>),
-
-    /// Show rich content search results with line numbers and context (deprecated).
-    ShowRichSearchResults(Vec<String>),
-
-    /// Show raw ripgrep search results.
-    ShowRawSearchResults(crate::tasks::search_task::RawSearchResult),
-
-    /// Simulate a loading state (for demo/testing).
-    SimulateLoading,
-
-    /// An internal tick event for periodic updates.
-    Tick,
-
-    /// A result from a background task.
-    TaskResult(crate::controller::event_loop::TaskResult),
-
-    /// Move selection up.
-    MoveSelectionUp,
-
-    /// Move selection down.
-    MoveSelectionDown,
-
-    /// Page up (move selection up by viewport height).
-    PageUp,
-
-    /// Page down (move selection down by viewport height).
-    PageDown,
-
-    /// Jump to first entry.
-    SelectFirst,
-
-    /// Jump to last entry.
-    SelectLast,
-
-    /// Enter selected directory or open file.
-    EnterSelected,
-
-    /// Go to parent directory.
-    GoToParent,
-
-    Delete,
-
-    CreateFile,
-
-    CreateDirectory,
-
-    CreateFileWithName(String),
-
-    CreateDirectoryWithName(String),
-
-    Sort(String),
-
-    Filter(String),
-
-    /// Updates an `ObjectInfo` in the state (e.g., from a background task).
-    UpdateObjectInfo {
+    /// Batch update `ObjectInfo` entries (reduces event queue saturation)
+    BatchUpdateObjectInfo
+    {
         parent_dir: PathBuf,
-        info: ObjectInfo,
+        objects: Vec<ObjectInfo>,
     },
 
-    /// Handle streaming directory scan updates
-    DirectoryScanUpdate {
-        path: PathBuf,
-        update: crate::fs::dir_scanner::ScanUpdate,
+    /// Cancel ongoing file operation
+    CancelFileOperation {
+        operation_id: String,
     },
-
-    /// No operation. Used when an event is consumed but no state change is needed.
-    NoOp,
 
     /// Close the currently active overlay.
     CloseOverlay,
-
-    /// Reload the current directory.
-    ReloadDirectory,
-
-    /// Open a file with external editor, optionally jumping to a specific line.
-    OpenFile(PathBuf, Option<usize>),
-
-    /// Show input prompt for file/directory creation.
-    ShowInputPrompt(InputPromptType),
-
-    /// Submit input prompt with user input.
-    SubmitInputPrompt(String),
-
-    /// Rename selected entry.
-    RenameEntry(String),
-
-    /// Navigate to specified path.
-    GoToPath(String),
-
+    
+    /// Perform a content search (ripgrep).
+    ContentSearch(String),
+    
     // File operations
     /// Copy file/directory from source to destination
     Copy {
         source: PathBuf,
         dest: PathBuf,
     },
-
+    
+    CreateDirectory,
+    
+    CreateDirectoryWithName(String),
+    
+    CreateFile,
+    
+    CreateFileWithName(String),
+    
+    Delete,
+    
+    /// Direct content search with pattern (no overlay).
+    DirectContentSearch(String),
+    
+    /// Handle streaming directory scan updates
+    DirectoryScanUpdate {
+        path: PathBuf,
+        update: crate::fs::dir_scanner::ScanUpdate,
+    },
+    
+    /// Enter vim-style command mode.
+    EnterCommandMode,
+    
+    /// Enter selected directory or open file.
+    EnterSelected,
+    
+    /// Exit command mode.
+    ExitCommandMode,
+    
+    /// Perform a file name search (instant).
+    FileNameSearch(String),
+    
+    Filter(String),
+    
+    /// Go to parent directory.
+    GoToParent,
+    
+    /// Navigate to specified path.
+    GoToPath(String),
+    
+    /// A keyboard event.
+    Key(KeyEvent),
+    
+    /// A mouse event.
+    Mouse(MouseEvent),
+    
     /// Move file/directory from source to destination  
     Move {
         source: PathBuf,
         dest: PathBuf,
     },
-
+    
+    /// Move selection down.
+    MoveSelectionDown,
+    
+    /// Move selection up.
+    MoveSelectionUp,
+    
+    /// No operation. Used when an event is consumed but no state change is needed.
+    NoOp,
+    
+    /// Open a file with external editor, optionally jumping to a specific line.
+    OpenFile(PathBuf, Option<usize>),
+    
+    /// Page down (move selection down by viewport height).
+    PageDown,
+    
+    /// Page up (move selection up by viewport height).
+    PageUp,
+    
+    /// Quit the application.
+    Quit,
+    
+    /// Reload the current directory.
+    ReloadDirectory,
+    
     /// Rename file/directory
     Rename {
         source: PathBuf,
         new_name: String,
     },
-
-    /// Cancel ongoing file operation
-    CancelFileOperation {
-        operation_id: String,
+    
+    /// Rename selected entry.
+    RenameEntry(String),
+    
+    /// A terminal resize event.
+    Resize(u16, u16),
+    
+    /// Jump to first entry.
+    SelectFirst,
+    
+    /// Jump to last entry.
+    SelectLast,
+    
+    /// Show filename search results.
+    ShowFilenameSearchResults(Vec<ObjectInfo>),
+    
+    /// Show input prompt for file/directory creation.
+    ShowInputPrompt(InputPromptType),
+    
+    /// Show raw ripgrep search results.
+    ShowRawSearchResults(RawSearchResult),
+    
+    /// Show rich content search results with line numbers and context (deprecated).
+    ShowRichSearchResults(Vec<String>),
+    
+    /// Show search results.
+    ShowSearchResults(Vec<ObjectInfo>),
+    
+    /// Simulate a loading state (for demo/testing).
+    SimulateLoading,
+    
+    Sort(String),
+    
+    /// Submit input prompt with user input.
+    SubmitInputPrompt(String),
+    
+    /// A result from a background task.
+    TaskResult(TaskResult),
+    
+    /// An internal tick event for periodic updates.
+    Tick,
+    
+    /// Toggle the content search overlay.
+    ToggleContentSearch,
+    
+    /// Toggle the file name search overlay.
+    ToggleFileNameSearch,
+    
+    /// Toggle the help overlay visibility.
+    ToggleHelp,
+    
+    /// Toggle showing hidden files.
+    ToggleShowHidden,
+    
+    /// Updates an `ObjectInfo` in the state (e.g., from a background task).
+    UpdateObjectInfo {
+        parent_dir: PathBuf,
+        info: ObjectInfo,
     },
 }

@@ -708,6 +708,21 @@ impl AppState {
         }
     }
 
+    /// Process batch of `ObjectInfo` updates efficiently (single mutex lock per batch) 
+    pub async fn update_object_info_batch(&mut self, parent_dir: &PathBuf, objects: Vec<ObjectInfo>)
+    {
+        for (i, info) in objects.iter().enumerate()
+        {
+            self.update_object_info(parent_dir, info);
+
+            // Yield every 10 entries to prevent event loop blocking
+            if (i % 10 == 0) && (i > 0)
+            {
+                tokio::task::yield_now().await;
+            }
+        }
+    }
+
     pub fn sort_entries(&mut self, sort_criteria: &str) {
         let active_pane: &mut PaneState = self.fs.active_pane_mut();
         match sort_criteria {
