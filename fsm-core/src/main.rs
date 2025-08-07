@@ -34,6 +34,7 @@ use tokio::{
 
 use fsm_core::{
     cache::cache_manager::ObjectInfoCache,
+    model::metadata_manager::MetadataManager,
     config::Config,
     controller::{
         actions::Action,
@@ -108,6 +109,11 @@ impl App {
 
         let cache: Arc<ObjectInfoCache> =
             Arc::new(ObjectInfoCache::with_config(config.cache.clone()));
+        
+        // UNIFIED METADATA MANAGER: Replaces separate cache + registry architecture
+        let metadata_manager: Arc<MetadataManager> = 
+            Arc::new(MetadataManager::new(config.cache.max_capacity));
+        
         let fs_state: FSState = FSState::default();
         let ui_state: UIState = UIState::default();
 
@@ -126,6 +132,7 @@ impl App {
             config,
             cache,
             registry,
+            metadata_manager,
             fs_state,
             ui_state,
             task_tx.clone(),

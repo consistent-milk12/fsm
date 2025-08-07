@@ -33,7 +33,7 @@ pub fn load_metadata_task(
             let load_start = std::time::Instant::now();
             match cache.get_or_load_path(
                 &**light_info.path, 
-                || light_info.clone().into_full_info()
+                || light_info.clone().into_full_async()
             ).await {
                 Ok(full_info) => {
                     let load_duration = load_start.elapsed();
@@ -116,11 +116,13 @@ pub fn batch_load_metadata_task(
                 let light_info_path = light_info.path.clone();
                 let item_start = std::time::Instant::now();
                 
-                match cache.get_or_load_path(
-                    &**light_info_path, 
+                // OPTIMIZED: Avoid double dereferencing by using path directly
+                let cache_key = crate::cache::cache_manager::ObjectInfoCache::path_to_key(&**light_info_path);
+                match cache.get_or_load(
+                    cache_key,
                     || {
                         cache_misses += 1;
-                        light_info.into_full_info()
+                        light_info.into_full_async()
                     }
                 ).await {
                     Ok(full_info) => {

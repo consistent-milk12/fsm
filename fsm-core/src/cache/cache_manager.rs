@@ -16,12 +16,13 @@ use std::{
     }, time::{Duration, Instant}
 };
 
+use compact_str::ToCompactString;
 use moka::future::Cache;
 // Serde traits now imported via config module
 use thiserror::Error;
 use tracing::{debug, error, info, warn, instrument};
 
-use crate::{config::CacheConfig, error::AppError, fs::object_info::ObjectInfo};
+use crate::{config::CacheConfig, error_core::CoreError, fs::object_info::ObjectInfo};
 
 /// Compact string key for cache entries (uses Arc for cheap cloning)
 pub type ObjectKey = Arc<str>;
@@ -39,9 +40,9 @@ pub enum CacheError {
     Timeout,
 }
 
-impl From<CacheError> for AppError {
+impl From<CacheError> for CoreError {
     fn from(e: CacheError) -> Self {
-        Self::Cache(e.to_string())
+        Self::Cache(e.to_compact_string())
     }
 }
 
@@ -294,10 +295,10 @@ impl ObjectInfoCache {
         &self,
         key: ObjectKey,
         loader: F,
-    ) -> Result<ObjectInfo, AppError>
+    ) -> Result<ObjectInfo, CoreError>
     where
         F: FnOnce() -> Fut + Send,
-        Fut: std::future::Future<Output = Result<ObjectInfo, AppError>> + Send,
+        Fut: std::future::Future<Output = Result<ObjectInfo, CoreError>> + Send,
     {
         // Fast path: check if already cached
         let fast_check_start = Instant::now();
@@ -343,7 +344,7 @@ impl ObjectInfoCache {
         let stats: Arc<CacheStats> = self.stats.clone();
         let enable_stats: bool = self.config.enable_stats;
 
-        let result: Result<CacheEntry, Arc<AppError>> = self
+        let result: Result<CacheEntry, Arc<CoreError>> = self
             .inner
             .try_get_with(key.clone(), async move {
                 info!(
@@ -353,7 +354,7 @@ impl ObjectInfoCache {
                     "Starting loader function execution"
                 );
                 
-                let load_result: Result<ObjectInfo, AppError> = loader().await;
+                let load_result: Result<ObjectInfo, CoreError> = loader().await;
                 let load_duration: Duration = load_start.elapsed();
 
                 if enable_stats {
@@ -415,7 +416,8 @@ impl ObjectInfoCache {
                     error = %e,
                     "get_or_load encountered error"
                 );
-                Err(AppError::Other(e.to_string()))
+            
+                Err(CoreError::Other(e.to_compact_string()))
             }
         }
     }
@@ -425,11 +427,11 @@ impl ObjectInfoCache {
         &self,
         path: P,
         loader: F,
-    ) -> Result<ObjectInfo, AppError>
+    ) -> Result<ObjectInfo, CoreError>
     where
         P: AsRef<Path>,
         F: FnOnce() -> Fut + Send,
-        Fut: std::future::Future<Output = Result<ObjectInfo, AppError>> + Send,
+        Fut: std::future::Future<Output = Result<ObjectInfo, CoreError>> + Send,
     {
         let key: Arc<str> = Self::path_to_key(path);
         self.get_or_load(key, loader).await
@@ -662,7 +664,7 @@ impl ObjectInfoCache {
         &self,
         base_path: P,
         depth: usize
-    ) -> Result<usize, AppError> {
+    ) -> Result<usize, CoreError> {
         let base_path: &Path = base_path.as_ref();
         let mut warmed_count: usize = 0;
         let mut work_queue: VecDeque<(PathBuf, usize)> = VecDeque::new();
@@ -671,7 +673,7 @@ impl ObjectInfoCache {
         if let Some(parent) = base_path.parent() {
             let parent_key: Arc<str> = Self::path_to_key(parent);
             if self.get(&parent_key).await.is_none() {
-                match ObjectInfo::from_path_direct(parent).await {
+                match ObjectInfo::from_path_sync(parent) {
                     Ok(info) => {
                         self.insert(parent_key, info).await;
 
@@ -702,7 +704,7 @@ impl ObjectInfoCache {
                         let entry_key: Arc<str> = Self::path_to_key(&entry_path);
 
                         if self.get(&entry_key).await.is_none() {
-                            match ObjectInfo::from_path_direct(&entry_path).await {
+                            match ObjectInfo::from_path_sync(&entry_path) {
                                 Ok(info) => {
                                     self.insert(entry_key, info.clone()).await;
                                     warmed_count += 1;
@@ -746,7 +748,7 @@ impl ObjectInfoCache {
     pub async fn warm_for_navigation<P: AsRef<Path>>(
         &self,
         current_path: P,
-    ) -> Result<usize, AppError> {
+    ) -> Result<usize, CoreError> {
         let current_path = current_path.as_ref();
         let mut total_warmed = 0;
 

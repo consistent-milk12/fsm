@@ -130,9 +130,23 @@ pub enum CoreError {
 
         #[source]
         source: Box<io::Error>,
-    }
+    },
+
+    /// Caching layer error.
+    #[error("Cache error: {0}")]
+    Cache(CompactString),
+
+    /// Any other error, with description.
+    #[error("Unexpected error: {0}")]
+    Other(CompactString),
 }
 
+impl Clone for CoreError
+{
+    fn clone(&self) -> Self {
+        Self::Other(CompactString::const_new("Shouldn't be cloned. This is just a quick fix."))
+    }
+}
 
 // ────────────────────────────────────────────────────────────────────────────
 // Fast classification helpers
@@ -172,30 +186,34 @@ impl CoreError {
     #[must_use]
     pub const fn operation_type(&self) -> &'static str {
         match self {
-            Self::InvalidInput { .. }               => "input_validation",
+            Self::InvalidInput { .. }                       => "input_validation",
             
             Self::PathNotFound(_) |
-            Self::PathAccessDenied(_)               => "path_access",
+                    Self::PathAccessDenied(_)               => "path_access",
             
             Self::CommandUnavailable { .. } |
-            Self::CommandFailed { .. }              => "command_execution",
+                    Self::CommandFailed { .. }              => "command_execution",
             
             Self::TaskFailed { .. } |
-            Self::TaskTimeout { .. }                => "task_management",
+                    Self::TaskTimeout { .. }                => "task_management",
             
             Self::SearchFailed { .. } |
-            Self::SearchStreamError { .. }          => "search_operation",
+                    Self::SearchStreamError { .. }          => "search_operation",
             
             Self::FileSystem { .. } |
-            Self::Metadata { .. }                   => "file_system",
+                    Self::Metadata { .. }                   => "file_system",
             
-            Self::ParseError { .. }                 => "data_parsing",
+            Self::ParseError { .. }                         => "data_parsing",
             
-            Self::SpanContextMissing { .. }         => "tracing_context",
+            Self::SpanContextMissing { .. }                 => "tracing_context",
             
-            Self::InvalidState { .. }               => "invalid_state",
-        
-            Self::ProcessSpawn { .. }               => "process_spawn",
+            Self::InvalidState { .. }                       => "invalid_state",
+            
+            Self::ProcessSpawn { .. }                       => "process_spawn",
+            
+            Self::Cache(_)                                  => "Moka Cache Error",
+
+            Self::Other(_)                                  => "unknown_error",
         }
     }
 
@@ -370,6 +388,10 @@ impl CoreError {
             Self::InvalidState { .. }        => "ERROR_INVALID_SYSTEM_STATE",
             
             Self::ProcessSpawn { .. }        => "ERROR_PROCESS_SPAWN",
+
+            Self::Cache(_)                   => "ERROR_MOKA_CACHE",
+            
+            Self::Other(_)                   => "ERROR_UNKNOWN"
         }
     }
 }
@@ -383,5 +405,14 @@ impl From<io::Error> for CoreError {
             kind:   err.kind(),
             source: Box::new(err),
         }
+    }
+}
+
+impl From<std::sync::Arc<Self>> for CoreError
+{
+    fn from(value: std::sync::Arc<Self>) -> Self {
+        let core_err: Self = value.into();
+        
+        core_err
     }
 }

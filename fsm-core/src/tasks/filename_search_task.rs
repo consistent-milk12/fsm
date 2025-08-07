@@ -332,10 +332,11 @@ impl FilenameSearchTask {
                         continue;
                     }
 
+                    // OPTIMIZED: Use get_or_load_path with proper async loader
                     match cache.get_or_load_path(
                         &file_path, 
-                        || ObjectInfo::from_path_direct(&file_path)).await 
-                    {
+                        || ObjectInfo::from_path_async(&file_path)
+                    ).await {
                         Ok(info) => {
                             results.push(info);
 

@@ -14,7 +14,7 @@ use crate::{cache::cache_manager::ObjectInfoCache,
 use crate::error::AppError;
 use crate::fs::object_info::{LightObjectInfo, ObjectInfo};
 use std::{cmp::Ordering, ffi::OsStr, path::{Path, PathBuf}, sync::Arc, time::Duration};
-use std::time::{Instant, SystemTime};
+use std::time::Instant;
 use tokio::{fs::{self, DirEntry, ReadDir}, sync::mpsc::{UnboundedReceiver, UnboundedSender}};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -103,10 +103,9 @@ pub async fn scan_dir(
                     "Cache miss - loading from filesystem"
                 );
 
-                ObjectInfo::from_path_direct(&entry_path)
+                ObjectInfo::from_path_async(&entry_path)
             }
-        )
-        .await 
+        ).await
         {
             Ok(info) => {
                 let lookup_duration = cache_lookup_start.elapsed();
@@ -500,11 +499,12 @@ impl DirectoryScanner {
     ) -> (bool, bool) {
         let entry_path: PathBuf = entry.path();
 
-        match LightObjectInfo::from_path(&entry_path).await {
-            Ok(light_info) => {
-                // Create placeholder with cache check for existing full metadata
+        match LightObjectInfo::from_path_sync_with_meta(&entry_path) {
+            Ok((light_info, metadata)) => {
+                // Create full ObjectInfo immediately using the metadata we already fetched
+                // This avoids the duplicate stat() syscall that was causing performance issues
                 let cache_check_start = Instant::now();
-                let (placeholder_info, was_cache_hit) = if let Some(cached_info) = self
+                let (full_info, was_cache_hit) = if let Some(cached_info) = self
                     .cache.get_by_path(&entry_path)
                     .await
                      {
@@ -516,36 +516,42 @@ impl DirectoryScanner {
                     );
                     (cached_info, true)
                 } else {
-                    let placeholder = ObjectInfo {
-                        path: light_info.path.clone(),
-                        modified: SystemTime::UNIX_EPOCH, // Placeholder
-                        name: light_info.name.clone(),
-                        extension: light_info.extension.clone(),
-                        size: 0,
-                        items_count: 0,
-                        is_dir: light_info.is_dir,
-                        is_symlink: light_info.is_symlink,
-                        metadata_loaded: false,
+                    // Use the metadata we already have to create complete ObjectInfo
+                    // This eliminates the duplicate stat() syscall entirely
+                    let full_info = match ObjectInfo::from_light_common(light_info.clone(), &metadata) {
+                        Ok(info) => info,
+                        Err(e) => {
+                            tracing::warn!(
+                                path = %entry_path.display(),
+                                error = %e,
+                                "Failed to create ObjectInfo from metadata"
+                            );
+                            return (false, false);
+                        }
                     };
+                    
+                    // Insert into cache for future hits
+                    self.cache.insert_path(&entry_path, full_info.clone()).await;
+                    
                     tracing::debug!(
                         path = %entry_path.display(),
-                        "Cache miss - using placeholder for streaming scan"
+                        "Created full ObjectInfo from existing metadata (zero duplicate syscalls)"
                     );
-                    (placeholder, false)
+                    (full_info, false)
                 };
 
                 // Send streaming update immediately
                 if self
                     .tx
                     .send(
-                        ScanUpdate::Entry(placeholder_info.clone())
+                        ScanUpdate::Entry(full_info.clone())
                     )
                     .is_err()
                 {
                     return (false, false); // Receiver dropped
                 }
 
-                entries.push(placeholder_info);
+                entries.push(full_info);
                 light_entries.push(light_info);
 
                 (true, was_cache_hit)

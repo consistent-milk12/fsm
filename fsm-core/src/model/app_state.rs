@@ -18,7 +18,8 @@
 //! - Extensible for plugins, user scripting, and power tools
 
 use crate::{
-    cache::cache_manager::ObjectInfoCache, 
+    cache::cache_manager::ObjectInfoCache,
+    model::metadata_manager::MetadataManager, 
     fs::dir_scanner::scan_dir_streaming_with_background_metadata
 };
 use crate::config::Config;
@@ -60,6 +61,9 @@ pub struct TaskInfo {
 pub struct AppState {
     // --- Core Configuration and Services ---
     pub config: Arc<Config>,
+    pub metadata: Arc<MetadataManager>,
+    
+    // DEPRECATED: Keep for backward compatibility during transition
     pub cache: Arc<ObjectInfoCache>,
     pub registry: Arc<ObjectRegistry>,
 
@@ -111,12 +115,14 @@ pub struct PluginInfo {
 }
 
 impl AppState {
-    #[must_use]
     /// Construct a new, ready-to-use `AppState`.
+    #[must_use]
+    #[expect(clippy::too_many_arguments, reason = "Necessary")]
     pub fn new(
         config: Arc<Config>,
         cache: Arc<ObjectInfoCache>,
         registry: Arc<ObjectRegistry>,
+        metadata: Arc<MetadataManager>,
         fs: FSState,
         ui: UIState,
         task_tx: mpsc::UnboundedSender<TaskResult>,
@@ -125,6 +131,8 @@ impl AppState {
         Self {
             // Core Configuration and Services
             config,
+            metadata,
+            // DEPRECATED: Keep for backward compatibility during transition
             cache,
             registry,
 
