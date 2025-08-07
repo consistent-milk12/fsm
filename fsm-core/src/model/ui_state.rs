@@ -606,6 +606,14 @@ impl UIState {
         self.redraw_flags = 0;
     }
 
+    /// Check if there are pending changes that might benefit from a render
+    /// Used for smart frame pacing to improve UI responsiveness
+    #[must_use]
+    pub const fn has_pending_changes(&self) -> bool {
+        // Consider pending changes if any redraw flags are set or overlay is active
+        self.redraw_flags != 0 || !matches!(self.overlay, UIOverlay::None)
+    }
+
     /// Clear a specific redraw flag.
     pub const fn clear_redraw_for(&mut self, flag: RedrawFlag) {
         self.redraw_flags &= !flag.bits();

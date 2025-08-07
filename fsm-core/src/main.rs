@@ -55,6 +55,9 @@ use tracing_appender::non_blocking::WorkerGuard;
 
 type AppTerminal = Terminal<Backend<Stdout>>;
 
+const MIN_FRAME_TIME: Duration = Duration::from_millis(16); // 60 FPS max
+const FORCE_RENDER_INTERVAL: Duration = Duration::from_millis(100); // Force refresh every 100ms
+
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() -> Result<()> {
     setup_panic_handler();
@@ -85,7 +88,7 @@ struct App {
 impl App {
     /// Initialize the application with all necessary components
     async fn new() -> Result<Self> {
-        let tracer_guard: WorkerGuard = init_logging_with_level("TRACE").await?;
+        let tracer_guard: WorkerGuard = init_logging_with_level("INFO").await?;
 
         Tracer::info!("Starting File Manager TUI");
 
@@ -93,7 +96,7 @@ impl App {
 
         // Concurrently load configuration and determine the current directory to improve startup time.
         let config_handle: JoinHandle<StdResult<Config, Error>> = tokio::spawn(Config::load());
-        let dir_handle = tokio::spawn(tokio::fs::canonicalize("."));
+        let dir_handle: JoinHandle<StdResult<PathBuf, io::Error>> = tokio::spawn(tokio::fs::canonicalize("."));
 
         let config: Arc<Config> = Arc::new(
             config_handle
@@ -173,9 +176,31 @@ impl App {
             "Starting main event loop"
         );
 
+        // Smart rendering with frame pacing for UI responsiveness
+        let mut last_render: Instant = Instant::now();
+
         loop {
-            self.render().await?;
             self.check_memory_usage();
+            
+            // Smart redraw: only render when needed or forced refresh
+            let now: Instant = Instant::now();
+            let should_render: bool = {
+                let state: MutexGuard<'_, AppState> = if let Ok(state) = self.state.try_lock() { state } else {
+                    // Don't block on render - skip this frame if state is busy
+                    tokio::task::yield_now().await;
+
+                    continue;
+                };
+                
+                state.ui.needs_redraw() 
+                    || (now.duration_since(last_render) > FORCE_RENDER_INTERVAL)
+                    || (now.duration_since(last_render) > MIN_FRAME_TIME && state.ui.has_pending_changes())
+            };
+            
+            if should_render {
+                self.render().await?;
+                last_render = now;
+            }
 
             let action: Action = tokio::select! {
                 () = self.shutdown.notified() => {
@@ -232,30 +257,30 @@ impl App {
         Ok(())
     }
 
-    // Enhanced render function with performance tracing
+    // Optimized non-blocking render function
+    #[expect(clippy::manual_let_else, reason = "False Positive")]
     async fn render(&mut self) -> Result<()> {
-        let mut state: MutexGuard<'_, AppState> = self.state.lock().await;
+        // Use try_lock to avoid blocking - if state is busy, skip the frame
+        let mut state = if let Ok(state) = self.state.try_lock() { state } else {
+            // State is busy with background operations - yield and retry
+            tokio::task::yield_now().await;
+            return Ok(());
+        };
 
+        // Double-check if redraw is still needed (may have changed)
         if state.ui.needs_redraw() {
             let start: Instant = Instant::now();
 
-            tracing::debug!(
-                marker = "UI_RENDER_START",
-                operation_type = "render",
-                "Starting UI render"
-            );
-
+            // Render with minimal mutex hold time
             self.terminal
-                .draw(
-                    |frame: &mut Frame<'_>| 
-                    {
-                        View::redraw(frame, &mut state);
-                    }
-                )
+                .draw(|frame: &mut Frame<'_>| {
+                    View::redraw(frame, &mut state);
+                })
                 .context("Failed to draw terminal")?;
 
             state.ui.clear_redraw();
 
+            // Release mutex immediately after render
             drop(state);
 
             let duration: Duration = start.elapsed();

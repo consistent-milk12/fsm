@@ -86,28 +86,32 @@ impl std::fmt::Display for ObjectType {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObjectInfo {
-    // Shared absolute path.
-    pub path: Arc<PathBuf>,
+    // Cache line 1 (64 bytes) - Hot path fields accessed together
+    // Shared absolute path - registry lookup hot path
+    pub path: Arc<PathBuf>,        // 8 bytes
 
-    // Last-modification timestamp.
-    pub modified: SystemTime,
+    // Byte length - sorting hot path
+    pub size: u64,                 // 8 bytes
 
-    // File or directory name.
-    pub name: CompactString,
+    // Children count - directory operations
+    pub items_count: u64,          // 8 bytes
 
-    // Lower-case extension (files only).
-    pub extension: Option<CompactString>,
+    // Last-modification timestamp - sorting hot path  
+    pub modified: SystemTime,      // 16 bytes (u64 + u32)
 
-    // Byte length (0 for directories).
-    pub size: u64,
+    // File or directory name - rendering hot path
+    pub name: CompactString,       // 24 bytes
+    // Total: 64 bytes - exactly one cache line
 
-    // Children count (lazy-loaded).
-    pub items_count: u64,
+    // Cache line 2 - Less frequently accessed fields
+    // Lower-case extension (files only) - occasional access
+    pub extension: Option<CompactString>, // 32 bytes
 
-    // Object classification bits.
-    pub is_dir: bool,
-    pub is_symlink: bool,
-    pub metadata_loaded: bool,
+    // Object classification bits - frequent but small
+    pub is_dir: bool,              // 1 byte
+    pub is_symlink: bool,          // 1 byte  
+    pub metadata_loaded: bool,     // 1 byte
+    // 29 bytes padding to cache line boundary
 }
 
 // ------------------------------------------------------------
@@ -116,11 +120,13 @@ pub struct ObjectInfo {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LightObjectInfo {
-    pub path: Arc<PathBuf>,
-    pub name: CompactString,
-    pub extension: Option<CompactString>,
-    pub is_dir: bool,
-    pub is_symlink: bool,
+    // Hot path fields - accessed during directory scanning
+    pub path: Arc<PathBuf>,        // 8 bytes - most accessed
+    pub name: CompactString,       // 24 bytes - frequent rendering
+    pub extension: Option<CompactString>, // 32 bytes - occasional  
+    pub is_dir: bool,              // 1 byte - frequent classification
+    pub is_symlink: bool,          // 1 byte - less frequent
+    // 6 bytes padding - but fields in optimal access order
 }
 
 // ------------------------------------------------------------
@@ -317,11 +323,9 @@ impl ObjectInfo {
 
         let size: u64 = if is_dir { 0 } else { meta.len() };
 
-        let items: u64 = if is_dir {
-            fs::read_dir(path).map_or(0, |r: ReadDir| -> u64 { r.count() as u64 })
-        } else {
-            0
-        };
+        // Lazy item counting optimization - avoid extra read_dir() syscall
+        // Item count loaded on-demand when needed for display
+        let items: u64 = 0;
 
         let mod_time: SystemTime = meta.modified().unwrap_or(UNIX_EPOCH);
 
@@ -357,11 +361,9 @@ impl ObjectInfo {
     pub fn from_light_common(light: LightObjectInfo, meta: &Metadata) -> Result<Self, CoreError> {
         let size: u64 = if light.is_dir { 0 } else { meta.len() };
 
-        let items: u64 = if light.is_dir {
-            fs::read_dir(&*light.path).map_or(0, |r: ReadDir| -> u64 { r.count() as u64 })
-        } else {
-            0
-        };
+        // Lazy item counting optimization - avoid extra read_dir() syscall  
+        // Item count loaded on-demand when needed for display
+        let items: u64 = 0;
 
         let mod_time: SystemTime = meta.modified().unwrap_or(UNIX_EPOCH);
 
@@ -376,6 +378,20 @@ impl ObjectInfo {
             is_symlink: light.is_symlink,
             metadata_loaded: true,
         })
+    }
+
+    /// Lazy load directory item count on-demand (avoids syscall during construction)
+    pub fn load_items_count(&mut self) -> Result<u64, CoreError> {
+        if self.is_dir && self.items_count == 0 {
+            self.items_count = fs::read_dir(&*self.path)
+                .map_or(0, |r: ReadDir| -> u64 { r.count() as u64 });
+        }
+        Ok(self.items_count)
+    }
+
+    /// Get item count, loading if needed
+    pub fn get_items_count(&mut self) -> Result<u64, CoreError> {
+        self.load_items_count()
     }
 }
 

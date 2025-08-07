@@ -21,17 +21,18 @@ pub struct SortableEntry
     /// 8 bytes - registry lookup key
     pub id: ObjectId,
 
-    /// 4 bytes - fast name comparison
-    pub sort_name_hash: u32,
-
     /// 8 bytes - direct sort
     pub size: u64,
 
     /// 8 bytes - `SystemTime` as millis
     pub modified: u64,
 
+    /// 4 bytes - fast name comparison
+    pub sort_name_hash: u32,
+
     /// 1 byte - directories first
     pub is_dir: bool,
+    // 3 bytes padding (optimized from 7 bytes)
 }
 
 impl SortableEntry

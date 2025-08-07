@@ -189,11 +189,26 @@ impl EventLoop {
         }
     }
 
-    /// Enhanced event loop with performance monitoring
+    /// Optimized event loop with non-blocking receives for improved responsiveness
     pub async fn next_action(&mut self) -> Option<Action> {
         let start_time = Instant::now();
 
-        let action = tokio::select! {
+        // Try non-blocking receives first for better input responsiveness
+        if let Ok(task_result) = self.task_rx.try_recv() {
+            debug!("Task result received (immediate): {:?}", task_result);
+            return Some(Action::TaskResult(task_result));
+        }
+
+        if let Ok(action) = self.action_rx.try_recv() {
+            debug!("Direct action received (immediate): {:?}", action);
+            return Some(action);
+        }
+
+        // Use blocking select with prioritized terminal events for UI responsiveness
+        let action: Option<Action> = tokio::select! {
+            // Prioritize terminal events for immediate input response
+            biased;
+            
             Some(Ok(event)) = self.event_stream.next() => {
                 trace!("Terminal event received: {:?}", event);
                 let action = self.handle_terminal_event(event).await;
