@@ -512,7 +512,9 @@ impl FileNameSearchOverlay {
 
         // Process recursive search results
         for entry in &app.ui.filename_search_results {
-            process_entry(entry, false);
+            if let Some(obj_info) = app.registry.get(entry.id) {
+                process_entry(&obj_info, false);
+            }
         }
 
         // Determine mode

@@ -15,9 +15,11 @@ use std::time::{Duration, Instant};
 
 use tokio_util::sync::CancellationToken;
 
+use compact_str::CompactString;
+
 use crate::{controller::actions::InputPromptType, FileNameSearchOverlay};
-use crate::fs::object_info::ObjectInfo;
 use crate::model::command_palette::{Command, CommandAction, CommandPaletteState};
+use crate::model::object_registry::SortableEntry;
 use crate::tasks::search_task::RawSearchResult;
 
 /// Granular redraw flags for selective UI updates
@@ -292,14 +294,14 @@ pub struct UIState {
     pub show_hidden: bool,
 
     /// Current theme (theme name).
-    pub theme: String,
+    pub theme: CompactString,
 
     // --- Search Results State (moved from AppState) ---
-    /// Generic search results for file listing
-    pub search_results: Vec<ObjectInfo>,
+    /// Generic search results for file listing (29 bytes vs 112+ `ObjectInfo`)
+    pub search_results: Vec<SortableEntry>,
 
-    /// Filename-specific search results  
-    pub filename_search_results: Vec<ObjectInfo>,
+    /// Filename-specific search results (matches `object_table.rs` pattern)
+    pub filename_search_results: Vec<SortableEntry>,
 
     /// Rich text search results (formatted strings)
     pub rich_search_results: Vec<String>,
@@ -373,7 +375,7 @@ impl UIState {
 
             // Visual and Display State
             show_hidden: false,
-            theme: "default".to_string(),
+            theme: "default".into(),
 
             // Search Results State
             search_results: Vec::new(),
@@ -657,7 +659,7 @@ impl UIState {
         self.request_redraw(RedrawFlag::Main);
     }
 
-    pub fn set_theme(&mut self, theme: impl Into<String>) {
+    pub fn set_theme(&mut self, theme: impl Into<CompactString>) {
         self.theme = theme.into();
         self.request_redraw_all();
     }

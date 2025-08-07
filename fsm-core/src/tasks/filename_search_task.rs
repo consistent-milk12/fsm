@@ -23,6 +23,7 @@ use crate::{cache::cache_manager::ObjectInfoCache, error_core::{CoreError, CoreR
 use crate::{
     controller::{actions::Action, event_loop::TaskResult},
     fs::object_info::ObjectInfo,
+    model::object_registry::{ObjectRegistry, SortableEntry},
 };
 
 // ============================================================================
@@ -52,10 +53,11 @@ impl FilenameSearchTask {
         search_path: PathBuf,
         task_tx: UnboundedSender<TaskResult>,
         action_tx: UnboundedSender<Action>,
-        cache: Arc<ObjectInfoCache>
+        cache: Arc<ObjectInfoCache>,
+        registry: Arc<ObjectRegistry>,
     ) {
         tokio::spawn(async move {
-            let task_start = Instant::now();
+            let task_start: Instant = Instant::now();
 
             // Input validation
             if let Err(err) = Self::validate_search_inputs(
@@ -124,8 +126,8 @@ impl FilenameSearchTask {
                 error_count,
                 &task_tx,
                 &action_tx,
+                &registry,
             )
-            .await 
             {
                 let _ = task_tx.send(TaskResult::from_core_error(task_id, &err));
             }
@@ -172,7 +174,7 @@ impl FilenameSearchTask {
         }
 
         if !search_path.exists() {
-            let err = CoreError::path_not_found(&search_path.to_string_lossy());
+            let err: CoreError = CoreError::path_not_found(&search_path.to_string_lossy());
 
             Span::current()
                 .record("path_exists", false)
@@ -441,6 +443,7 @@ impl FilenameSearchTask {
     // ------------------------------------------------------------------------
 
     #[expect(clippy::cast_possible_truncation, reason = "Current precision is enough in this context.")]
+    #[expect(clippy::too_many_arguments, reason = "Necessary")]
     #[instrument(
         fields(
             operation_type = "completion_handling",
@@ -450,7 +453,7 @@ impl FilenameSearchTask {
             performance_category = EmptyTraceField,
         )
     )]
-    async fn handle_search_completion(
+    fn handle_search_completion(
         task_id: u64,
         results: Vec<ObjectInfo>,
         task_start: Instant,
@@ -458,6 +461,7 @@ impl FilenameSearchTask {
         error_count: u64,
         task_tx: &UnboundedSender<TaskResult>,
         action_tx: &UnboundedSender<Action>,
+        registry: &Arc<ObjectRegistry>,
     ) -> CoreResult<()> {
         let total_duration: Duration = task_start.elapsed();
         let results_count: usize = results.len();
@@ -494,8 +498,17 @@ impl FilenameSearchTask {
             memory_usage: None,
         });
 
-        // Forward results to UI
-        let _ = action_tx.send(Action::ShowFilenameSearchResults(results));
+        // Convert ObjectInfo to SortableEntry via registry population
+        let sortable_entries: Vec<SortableEntry> = results
+            .into_iter()
+            .map(|obj_info| {
+                let (_id, sortable_entry) = registry.insert_with_sortable(obj_info);
+                sortable_entry
+            })
+            .collect();
+
+        // Forward SortableEntry results to UI
+        let _ = action_tx.send(Action::ShowFilenameSearchResults(sortable_entries));
 
         Ok(())
     }

@@ -672,6 +672,7 @@ impl AppState {
             self.task_tx.clone(),
             self.action_tx.clone(),
             self.cache.clone(),
+            self.registry.clone(),
         );
 
         self.ui.request_redraw(RedrawFlag::All);

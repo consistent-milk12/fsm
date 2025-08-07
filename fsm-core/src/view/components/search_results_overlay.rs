@@ -36,7 +36,8 @@ impl SearchResultsOverlay {
 
             let items: Vec<ListItem> = results
                 .iter()
-                .map(|obj| ListItem::new(obj.path.to_string_lossy().into_owned()))
+                .filter_map(|entry| app.registry.get(entry.id))
+                .map(|obj_info| ListItem::new(obj_info.path.to_string_lossy().into_owned()))
                 .collect();
 
             let mut list_state = ListState::default();

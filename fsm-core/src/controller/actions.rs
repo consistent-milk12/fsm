@@ -6,7 +6,7 @@
 //! internal events that the application can respond to. This provides a single,
 //! clear interface for the `Controller` to process.
 
-use crate::{controller::event_loop::TaskResult, fs::object_info::ObjectInfo, tasks::search_task::RawSearchResult};
+use crate::{controller::event_loop::TaskResult, fs::object_info::ObjectInfo, model::object_registry::SortableEntry, tasks::search_task::RawSearchResult};
 use crossterm::event::{KeyEvent, MouseEvent};
 use std::{path::PathBuf, sync::Arc};
 
@@ -148,7 +148,7 @@ pub enum Action {
     SelectLast,
     
     /// Show filename search results.
-    ShowFilenameSearchResults(Vec<ObjectInfo>),
+    ShowFilenameSearchResults(Vec<SortableEntry>),
     
     /// Show input prompt for file/directory creation.
     ShowInputPrompt(InputPromptType),
@@ -160,7 +160,7 @@ pub enum Action {
     ShowRichSearchResults(Vec<String>),
     
     /// Show search results.
-    ShowSearchResults(Vec<ObjectInfo>),
+    ShowSearchResults(Vec<SortableEntry>),
     
     /// Simulate a loading state (for demo/testing).
     SimulateLoading,

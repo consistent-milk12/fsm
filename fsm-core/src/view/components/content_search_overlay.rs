@@ -210,14 +210,15 @@ impl ContentSearchOverlay {
             .ui
             .search_results
             .iter()
-            .map(|entry| {
-                let file_name = entry
+            .filter_map(|entry| app.registry.get(entry.id))
+            .map(|obj_info| {
+                let file_name = obj_info
                     .path
                     .file_name()
                     .and_then(|n| n.to_str())
                     .unwrap_or("unknown");
 
-                let dir_path = entry
+                let dir_path = obj_info
                     .path
                     .parent()
                     .map_or_else(|| ".".to_string(), |p| p.to_string_lossy().to_string());

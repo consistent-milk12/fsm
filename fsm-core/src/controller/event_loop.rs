@@ -15,6 +15,7 @@ use crate::{controller::actions::{Action, InputPromptType}, logging::ProfilingDa
 use crate::fs::dir_scanner::ScanUpdate;
 use crate::fs::object_info::ObjectInfo;
 use crate::model::app_state::AppState;
+use crate::model::object_registry::SortableEntry;
 use crate::model::command_palette::CommandAction;
 use crate::model::fs_state::{EntryFilter, EntrySort, PaneState};
 use crate::model::ui_state::{LoadingState, NotificationLevel, RedrawFlag, UIMode, UIOverlay};
@@ -158,14 +159,14 @@ impl EventLoop {
         // Log performance warnings with profiling data
         if time_ms > 16.0 {
             // 60fps threshold - collect profiling data for slow events
-            let profiling_data = ProfilingData::collect_profiling_data(
+            let profiling_data: ProfilingData = ProfilingData::collect_profiling_data(
                 None, 
                 processing_time
             );
             
             // Check channel queue lengths for diagnostic info
-            let task_queue_len = self.task_rx.len();
-            let action_queue_len = self.action_rx.len();
+            let task_queue_len: usize = self.task_rx.len();
+            let action_queue_len: usize = self.action_rx.len();
             
             info!(
                 marker = "PERF_SLOW_EVENT",
@@ -222,10 +223,10 @@ impl EventLoop {
 
     /// Enhanced terminal event handling with comprehensive logging
     async fn handle_terminal_event(&self, event: TermEvent) -> Action {
-        let app = self.app.lock().await;
-        let current_overlay = app.ui.overlay;
-        let current_mode = app.ui.mode;
-        let has_notification = app.ui.notification.is_some();
+        let app: MutexGuard<'_, AppState> = self.app.lock().await;
+        let current_overlay: UIOverlay = app.ui.overlay;
+        let current_mode: UIMode = app.ui.mode;
+        let has_notification: bool = app.ui.notification.is_some();
         drop(app);
 
         debug!(
@@ -628,9 +629,10 @@ impl EventLoop {
                 if !app.ui.filename_search_results.is_empty()
                     && let Some(selected_idx) = app.ui.selected
                     && let Some(selected_entry) = app.ui.filename_search_results.get(selected_idx)
+                    && let Some(obj_info) = app.registry.get(selected_entry.id)
                 {
-                    info!("Opening selected file: {:?}", selected_entry.path);
-                    return Action::OpenFile(selected_entry.path.clone(), None);
+                    info!("Opening selected file: {:?}", obj_info.path);
+                    return Action::OpenFile(obj_info.path.clone(), None);
                 }
 
                 // Fallback to triggering search
@@ -796,8 +798,10 @@ impl EventLoop {
             if !app.ui.search_results.is_empty() && selected_idx < app.ui.search_results.len() {
                 debug!("Processing simple search results");
                 let result = &app.ui.search_results[selected_idx];
-                info!("Opening file: {:?}", result.path);
-                return Action::OpenFile(result.path.clone(), None);
+                if let Some(obj_info) = app.registry.get(result.id) {
+                    info!("Opening file: {:?}", obj_info.path);
+                    return Action::OpenFile(obj_info.path.clone(), None);
+                }
             }
         }
 
@@ -945,10 +949,11 @@ impl EventLoop {
 
                 if let Some(selected_idx) = app.ui.selected
                     && let Some(result) = app.ui.search_results.get(selected_idx)
+                    && let Some(obj_info) = app.registry.get(result.id)
                 {
-                    info!("Opening search result: {:?}", result.path);
+                    info!("Opening search result: {:?}", obj_info.path);
                     
-                    return Action::OpenFile(result.path.clone(), None);
+                    return Action::OpenFile(obj_info.path.clone(), None);
                 }
 
                 drop(app);
@@ -1387,7 +1392,7 @@ impl EventLoop {
             Action::ShowFilenameSearchResults(results) => {
                 info!("Showing {} filename search results", results.len());
                 let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-                app.ui.filename_search_results.clone_from(&results);
+                app.ui.filename_search_results = results;
                 app.ui.request_redraw(RedrawFlag::All);
             }
             Action::ShowRichSearchResults(results) => {
@@ -1403,7 +1408,7 @@ impl EventLoop {
         }
     }
 
-    async fn handle_show_search_results(&self, results: Vec<ObjectInfo>) {
+    async fn handle_show_search_results(&self, results: Vec<SortableEntry>) {
         info!("Showing {} search results", results.len());
         let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
         app.ui.search_results = results;
