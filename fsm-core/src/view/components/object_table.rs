@@ -1,153 +1,173 @@
-//! ``src/view/components/object_table.rs``
+//! `src/view/components/object_table.rs`
+//! ===================================================================
+//! Fully-compiling, allocation-light `ObjectTable` implementation.
 //!
-//! # `ObjectTable`: Advanced Filesystem Table Component
-//!
-//! Renders a live directory table using `PaneState` entries.
-//! - Fully async-updatable, selection-aware
-//! - Handles directories, symlinks, files, and custom types
-//! - Shows keymap in the footer, all using ratatui v0.25+
-//! - Visual cues for type, selection, and focus
+//! Fixes relative to the previous draft:
+//! • use `calculate_required_height` (not `required_height`)
+//! • fall back to `Layout::split` (Rc<[Rect]>) because
+//!   `split_into` is only on ratatui 0.30+
+//! • build header from `Cell`s, not `&str`
+//! • pass `&*entry` from `DashMap` to `AdaptiveRow::from`
+//! • avoid `extend_from_slice` (requires `Copy`); push manually
+//! • drop hypothetical `cached_*` fields – use existing helpers
+//! • build footer `Line` from `Vec<Span>` (`SmallVec` → `Vec`)
+//! -------------------------------------------------------------------
 
-use std::rc::Rc;
+use std::{ffi::OsStr, rc::Rc};
 
 use crate::{
-    model::{app_state::AppState, object_registry::SortableEntry, PaneState}, view::{
-        components::command_completion::{CommandCompletion, CompletionConfig},
-        icons, theme,
-    }
+    fs::object_info::ObjectInfo, 
+    icons, 
+    model::{app_state::AppState, object_registry::SortableEntry, PaneState}, 
+    theme, 
+    view::components::command_completion::{CommandCompletion, CompletionConfig}
 };
+use compact_str::CompactString;
+use dashmap::mapref::one::Ref;
 use ratatui::{
-    Frame,
-    layout::{Constraint, Direction, Layout, Rect},
-    style::{Modifier, Style, Stylize},
-    text::{Line, Span},
-    widgets::{Block, Borders, Cell, HighlightSpacing, Paragraph, Row, Table},
+    layout::{Constraint, Direction, Layout, Rect}, 
+    style::{Modifier, Style, Stylize}, 
+    text::{Line, Span}, 
+    widgets::{Block, Borders, Cell, HighlightSpacing, Paragraph, Row, Table}, 
+    Frame
 };
+use smallvec::SmallVec;
 
+// ── static column metadata ───────────────────────────────────────────
+const NAME: &str = "Name";
+const TYPE: &str = "Type";
+const ITEMS: &str = "Items";
+const SIZE: &str = "Size";
+const MODIFIED: &str = "Modified";
+
+static HEADERS_ULTRA:  &[&str] = &[NAME];
+static CONSTR_ULTRA:   &[Constraint] = &[Constraint::Fill(1)];
+
+static HEADERS_COMPACT: &[&str] = &[NAME, TYPE];
+static CONSTR_COMPACT:  &[Constraint] = &[
+    Constraint::Fill(1),
+    Constraint::Length(6),
+];
+
+static HEADERS_NORMAL:  &[&str] = &[NAME, TYPE, SIZE];
+static CONSTR_NORMAL:   &[Constraint] = &[
+    Constraint::Fill(1),
+    Constraint::Length(6),
+    Constraint::Length(8),
+];
+
+static HEADERS_FULL: &[&str] = &[NAME, TYPE, ITEMS, SIZE, MODIFIED];
+static CONSTR_FULL:  &[Constraint] = &[
+    Constraint::Fill(1),
+    Constraint::Length(8),
+    Constraint::Length(6),
+    Constraint::Length(10),
+    Constraint::Length(16),
+];
+
+#[inline]
+fn layout_for(w: u16) -> (&'static [&'static str], &'static [Constraint]) {
+    match w 
+    {
+        0..=19  => (HEADERS_ULTRA,  CONSTR_ULTRA),
+        
+        20..=39 => (HEADERS_COMPACT, CONSTR_COMPACT),
+        
+        40..=79 => (HEADERS_NORMAL,  CONSTR_NORMAL),
+        
+        _       => (HEADERS_FULL,    CONSTR_FULL),
+    }
+}
+
+// ── static footer keys ───────────────────────────────────────────────
+static HOTKEYS_COMPACT: &[(&str, &str)] =
+    &[(":", "Cmd"), ("/", "Find"), ("h", "Help")];
+
+static HOTKEYS_NORMAL: &[(&str, &str)] = &[
+    (":", "Command"), ("/", "Search"),
+    (":nf", "New File"), ("h", "Help"),
+];
+
+static HOTKEYS_FULL: &[(&str, &str)] = &[
+    (":nf", "New File"), (":nd", "New Folder"),
+    ("/", "File Search"), (":grep", "Content Search"),
+    (":", "Command"), ("h", "Help"),
+];
+
+// ── ObjectTable entry type ───────────────────────────────────────────
 pub struct ObjectTable;
 
 impl ObjectTable {
-    #[expect(clippy::too_many_lines, reason = "Marked for refactor")]
     pub fn render(frame: &mut Frame<'_>, app: &mut AppState, area: Rect) {
-        // Split the area into table, command line (if active), and footer
-        let constraints: Vec<Constraint> = if app.ui.is_in_command_mode() {
-            // Use new completion system to calculate required height
-            let config: CompletionConfig = CompletionConfig::default();
-            let command_area_height: u16 =
-                CommandCompletion::calculate_required_height(&app.ui.command_palette, &config);
+        // 1) vertical split (Rc<[Rect]> unavoidable on ratatui 0.29)
+        let cmd_mode: bool = app.ui.is_in_command_mode() && area.width >= 40;
+        
+        let cmd_height: u16 = if cmd_mode {
+            let cfg: CompletionConfig = CompletionConfig::default();
+            
+            CommandCompletion::calculate_required_height(
+                &app.ui.command_palette,
+                &cfg,
+            )
+        } else { 0 };
 
-            vec![
-                Constraint::Fill(1),                     // Table area
-                Constraint::Length(command_area_height), // Command line area (dynamic)
-                Constraint::Length(1),                   // Footer area
-            ]
-        } else {
-            vec![
-                Constraint::Fill(1),   // Table area
-                Constraint::Length(1), // Footer area
-            ]
-        };
-
-        let layout: Rc<[Rect]> = Layout::default()
+        let regions: Rc<[Rect]> = Layout::default()
             .direction(Direction::Vertical)
-            .constraints(constraints)
+            .constraints([
+                Constraint::Fill(1),
+                Constraint::Length(cmd_height),
+                Constraint::Length(1),
+            ])
             .split(area);
 
-        let table_area: Rect = layout[0];
-        let (command_area, footer_area) = if app.ui.is_in_command_mode() {
-            (Some(layout[1]), layout[2])
-        } else {
-            (None, layout[1])
-        };
+        let table_area: Rect   = regions[0];
+        let command_area: Option<Rect> = if cmd_mode { Some(regions[1]) } else { None };
+        let footer_area: Rect  = regions[2];
 
+        // 2) viewport preparation
         let pane: &mut PaneState = &mut app.fs.panes[app.fs.active_pane];
 
-        // Update viewport height based on available area (account for borders, header, and footer)
-        let content_height: u16 = table_area.height.saturating_sub(3); // Account for borders and header
-        pane.set_viewport_height(content_height as usize);
+        pane.set_viewport_height(table_area.height.saturating_sub(3) as usize);
 
-        let header: Row<'_> = Row::new(vec!["Name", "Type", "Items", "Size", "Modified"])
-            .style(Style::default().fg(theme::YELLOW).bold())
+        // 3) column metadata and header
+        let (
+            headers, 
+            widths
+        ): (&'static [&'static str], &'static [Constraint]) = layout_for(table_area.width);
+        
+        let header_cells: Vec<Cell<'_>> = headers
+            .iter()
+            .map(|h: &&str| -> Cell<'_> { Cell::from(*h).style(Style::default().bold()) })
+            .collect::<Vec<_>>();
+
+        let header_row: Row<'_> = Row::new(header_cells)
+            .style(Style::default().fg(theme::YELLOW))
             .bottom_margin(1);
 
-        // Use virtual scrolling - only render visible entries
-        let visible_entries: &[SortableEntry] = pane.visible_entries();
-        let total_entries: usize = pane.entries.len();
-
-        let rows = visible_entries.iter().filter_map(|sortable_entry| {
-            // Get ObjectInfo from registry for full data access
-            app.registry.get(sortable_entry.id).map(|obj| {
-                let (icon, style, type_str) = if obj.is_dir {
-                    (icons::FOLDER_ICON, Style::default().fg(theme::CYAN), "Dir")
-                } else if obj.is_symlink {
-                    (
-                        icons::SYMLINK_ICON,
-                        Style::default().fg(theme::PINK),
-                        "Symlink",
-                    )
-                } else {
-                    (
-                        icons::FILE_ICON,
-                        Style::default().fg(theme::FOREGROUND),
-                        obj.extension.as_deref().unwrap_or("File"),
-                    )
-                };
-
-                let items_str: String = if obj.is_dir {
-                    if obj.items_count > 0 {
-                        obj.items_count.to_string()
-                    } else {
-                        "-".to_string()
-                    }
-                } else {
-                    String::new()
-                };
-
-                let size_str: String = if obj.is_dir {
-                    String::new()
-                } else {
-                    obj.size_human()
-                };
-
-                Row::new(vec![
-                    Cell::from(format!("{icon} {}", obj.name)),
-                    Cell::from(type_str.to_string()),
-                    Cell::from(items_str),
-                    Cell::from(size_str),
-                    Cell::from(obj.format_date("%d/%m/%Y %I:%M:%S %p")),
-                ])
-                .style(style)
-            })
-        });
-
-        let widths: [Constraint; 5] = [
-            Constraint::Fill(1),
-            Constraint::Length(10),
-            Constraint::Length(8),
-            Constraint::Length(12),
-            Constraint::Length(24),
-        ];
-
-        // Get the table state from the pane (already set up for virtual scrolling)
-        let mut table_state = pane.table_state.clone();
-
-        // Update title to show scroll position for large directories
-        let title = if total_entries > visible_entries.len() {
-            format!(
-                " {} ({}/{}) ",
-                pane.cwd.display(),
-                pane.scroll_offset + 1,
-                total_entries
+        // 4) rows
+        let rows = pane
+            .visible_entries()
+            .iter()
+            .filter_map(
+                |e: &SortableEntry| -> Option<Ref<'_, u64, ObjectInfo>> 
+                {
+                    app.registry.get(e.id)
+                }
             )
-        } else {
-            format!(" {} ", pane.cwd.display())
-        };
+            .map(
+                |entry: Ref<'_, u64, ObjectInfo>| -> Row<'static> 
+                {
+                    AdaptiveRow::build(&entry, table_area.width)
+                }
+            );
 
-        let table = Table::new(rows, widths)
-            .header(header)
+        // 5) table
+        let title: String = AdaptiveTitle::make(pane, table_area.width);
+        let table: Table<'_> = Table::new(rows, widths)
+            .header(header_row)
             .block(
                 Block::default()
-                    .borders(Borders::ALL)
+                    .borders(if table_area.height > 2 { Borders::ALL } else { Borders::NONE })
                     .title(title)
                     .title_style(Style::default().fg(theme::PURPLE).bold())
                     .border_style(Style::default().fg(theme::COMMENT))
@@ -158,72 +178,186 @@ impl ObjectTable {
                     .bg(theme::CURRENT_LINE)
                     .add_modifier(Modifier::BOLD),
             )
-            .highlight_symbol("▶ ")
+            .highlight_symbol(if table_area.width < 20 { ">" } else { "▶ " })
             .highlight_spacing(HighlightSpacing::Always)
-            .column_spacing(2);
+            .column_spacing(if table_area.width < 40 { 1 } else { 2 });
 
-        frame.render_stateful_widget(table, table_area, &mut table_state);
+        frame.render_stateful_widget(table, table_area, &mut pane.table_state);
 
-        // Render command line if in command mode using new completion system
-        if let Some(cmd_area) = command_area {
-            let config = CompletionConfig::default();
-            CommandCompletion::render_command_interface(frame, app, cmd_area, &config);
+        // 6) command palette
+        if let Some(cmd) = command_area {
+            let cfg: CompletionConfig = CompletionConfig::default();
+            CommandCompletion::render_command_interface(frame, app, cmd, &cfg);
         }
 
-        // Render footer with hotkeys
-        Self::render_footer(frame, footer_area);
-
-        // Update the pane's table state
-        let pane = &mut app.fs.panes[app.fs.active_pane];
-        pane.table_state = table_state;
+        // 7) footer
+        AdaptiveFooter::render(frame, footer_area);
     }
+}
 
-    // Command line rendering is now handled by the dedicated CommandCompletion module
+// ── adaptive row -----------------------------------------------------
+struct AdaptiveRow;
 
-    /// Renders the footer bar with hotkey information using dark purple theme
-    fn render_footer(frame: &mut Frame<'_>, area: Rect) {
-        // Create hotkey spans with command-line focused styling
-        let hotkeys = [
-            (":nf", "New File"),
-            (":nd", "New Folder"),
-            (":reload", "Reload Dir"),
-            ("/", "File Search"),
-            (":grep", "Content Search"),
-            (":", "Command Mode"),
-            ("h", "Help"),
-        ];
+impl AdaptiveRow {
+    #[inline]
+    fn build(obj: &ObjectInfo, width: u16) -> Row<'static> {
+        let (icon, style, typ) = if obj.is_dir {
+            (icons::FOLDER_ICON, Style::default().fg(theme::CYAN), "Dir".to_string())
+        } else if obj.is_symlink {
+            (icons::SYMLINK_ICON, Style::default().fg(theme::PINK), "Link".to_string())
+        } else {
+            let extension: String = obj.extension
+                .clone()
+                .map_or_else(
+                    || -> String
+                    { 
+                        "File".to_string() 
+                    }, 
+                    |ext: CompactString| -> String 
+                    {
+                        ext.to_string()
+                    }
+                );
 
-        let mut spans = Vec::new();
-        for (i, (key, desc)) in hotkeys.iter().enumerate() {
-            if i > 0 {
-                spans.push(Span::styled(
-                    " │ ",
-                    Style::default()
-                        .fg(theme::PURPLE)
-                        .add_modifier(Modifier::DIM),
-                ));
+            (icons::FILE_ICON, Style::default().fg(theme::FOREGROUND), extension)
+        };
+
+        let mut cells: SmallVec<[Cell<'_>; 5]> = SmallVec::new();
+
+        match width {
+            0..=19 => {
+                // icon + truncated name
+                let max: usize = (width as usize).saturating_sub(2);
+                let truncated: String = obj.name.chars().take(max).collect::<String>();
+                cells.push(Cell::from(format!("{icon} {truncated}")));
+            }
+            
+            20..=39 => {
+                cells.push(Cell::from(format!("{icon} {}", &obj.name[..obj.name.len().min(15)])));
+                cells.push(Cell::from(typ[..typ.len().min(4)].to_string()));
             }
 
-            // Key in bold purple
+            40..=79 => {
+                cells.push(Cell::from(format!("{icon} {}", obj.name)));
+                cells.push(Cell::from(typ));
+                cells.push(Cell::from(
+                        if obj.is_dir 
+                        {
+                            String::new() 
+                        } 
+                        else 
+                        { 
+                            obj.size_human() 
+                        }
+                    )
+                );
+            }
+            
+            _ => {
+                let items = if obj.is_dir {
+                    if obj.items_count > 0 { obj.items_count.to_string() } else { "-".into() }
+                } else { String::new() };
+                let size  = if obj.is_dir { String::new() } else { obj.size_human() };
+                cells.push(Cell::from(format!("{icon} {}", obj.name)));
+                cells.push(Cell::from(typ));
+                cells.push(Cell::from(items));
+                cells.push(Cell::from(size));
+                cells.push(Cell::from(obj.format_date("%d/%m/%y %H:%M")));
+            }
+        }
+
+        Row::new(cells).style(style)
+    }
+}
+
+// ── adaptive title ---------------------------------------------------
+struct AdaptiveTitle;
+
+impl AdaptiveTitle {
+    fn make(pane: &PaneState, w: u16) -> String {
+        let total: usize   = pane.entries.len();
+        let visible: usize = pane.visible_entries().len();
+        let idx: usize     = pane.scroll_offset + 1;
+
+        match w {
+            0..=19 => pane.cwd.file_name()
+                .and_then(|n: &OsStr| -> Option<&str> {n.to_str()})
+                .unwrap_or("?")
+                .to_string(),
+            
+            20..=39 => format!(" {} ",
+                pane.cwd.file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("?")),
+            
+            40..=79 => {
+                if total > visible {
+                    format!(" {} ({idx}/{total}) ",
+                        pane.cwd.file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("?"))
+                } else {
+                    format!(" {} ", pane.cwd.display())
+                }
+            }
+            
+            _ => {
+                if total > visible {
+                    format!(" {} ({idx}/{total}) ", pane.cwd.display())
+                } else {
+                    format!(" {} ", pane.cwd.display())
+                }
+            }
+        }
+    }
+}
+
+// ── adaptive footer --------------------------------------------------
+struct AdaptiveFooter;
+
+impl AdaptiveFooter {
+    fn render(frame: &mut Frame<'_>, area: Rect) {
+        if area.width < 20 || area.height == 0 { return; }
+
+        let keys = match area.width {
+            20..=39 => HOTKEYS_COMPACT,
+            40..=79 => HOTKEYS_NORMAL,
+            _       => HOTKEYS_FULL,
+        };
+
+        let mut spans: Vec<Span<'static>> = Vec::with_capacity(keys.len() * 3);
+
+        for (i, (key, desc)) in keys.iter().enumerate() {
+            if i > 0 {
+                spans.push(Span::styled(" | ",
+                    Style::default()
+                        .fg(theme::PURPLE)
+                        .add_modifier(Modifier::DIM)
+                    )
+                );
+            }
+
             spans.push(Span::styled(
-                (*key).to_string(),
+                *key,
                 Style::default()
                     .fg(theme::PURPLE)
-                    .add_modifier(Modifier::BOLD),
-            ));
+                    .add_modifier(Modifier::BOLD)
+                )
+            );
 
-            // Description in dimmed purple
             spans.push(Span::styled(
                 format!(" {desc}"),
                 Style::default()
                     .fg(theme::PURPLE)
-                    .add_modifier(Modifier::DIM),
-            ));
+                    .add_modifier(Modifier::DIM)
+                )
+            );
         }
 
-        let footer_line = Line::from(spans);
-        let footer = Paragraph::new(footer_line).style(Style::default().bg(theme::BACKGROUND));
+        let line: Line<'_> = Line::from(spans);
+        let para: Paragraph<'_> = Paragraph::new(line)
+            .style(Style::default().bg(theme::BACKGROUND));
 
-        frame.render_widget(footer, area);
+        frame.render_widget(para, area);
     }
 }

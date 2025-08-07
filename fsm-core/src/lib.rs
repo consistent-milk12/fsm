@@ -41,6 +41,9 @@ pub mod model {
         SearchType, UIMode, UIOverlay, UIState,
     };
 
+    pub mod loading_strategy;
+    pub use loading_strategy::SmoothedKStrategy;
+
     pub mod object_registry;
 }
 

@@ -2143,7 +2143,7 @@ impl EventLoop {
 
                     EntrySort::ModifiedAsc => EntrySort::ModifiedDesc,
 
-                    EntrySort::ModifiedDesc | EntrySort::Custom(_) => EntrySort::NameAsc,
+                    EntrySort::ModifiedDesc | EntrySort::Custom => EntrySort::NameAsc,
                 };
 
                 let sort_criteria: String = active_pane.sort.to_string();

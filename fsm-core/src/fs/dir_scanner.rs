@@ -592,7 +592,7 @@ impl DirectoryScanner {
     fn start_background_metadata_loading(&self, light_entries: Vec<LightObjectInfo>) {
         if !light_entries.is_empty() {
             batch_load_metadata_task(
-                self.path.clone().into(),
+                self.path.clone(),
                 light_entries,
                 self.action_tx.clone(),
                 5, // Metadata batch size

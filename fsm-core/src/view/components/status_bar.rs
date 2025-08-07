@@ -21,31 +21,132 @@ use ratatui::{
 pub struct StatusBar;
 
 impl StatusBar {
-    pub fn render(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
+    pub fn render_with_degradation(frame: &mut Frame<'_>, app: &AppState, area: Rect)
+    {
+        match area.width
+        {
+            0..=19 => Self::render_ultra_minimal(frame, app, area),
+
+            20..=39 => Self::render_compact(frame, app, area),
+
+            40..=79 => Self::render_normal(frame, app, area),
+
+            _ => Self::render_full(frame, app, area),
+        }
+    }
+
+    fn render_ultra_minimal(frame: &mut Frame<'_>, app: &AppState, area: Rect)
+    {
+        // 0-20 chars: Show only critical errors, no borders
+        if let Some(error) = &app.last_error
+        {
+            let para: Paragraph<'_> = Paragraph::new(
+                format!(
+                    "ERR: {}", 
+                    error
+                        .chars()
+                        .take(area.width as usize - 5)
+                        .collect::<String>()
+                    )
+                )
+                .style(Style::default().fg(theme::RED));
+
+            frame.render_widget(para, area);
+        } 
+        else 
+        {
+            let para: Paragraph<'_> = Paragraph::new("OK")
+                .style(Style::default().fg(theme::GREEN));
+
+            frame.render_widget(para, area);
+        }
+    }
+
+    fn render_compact(frame: &mut Frame<'_>, app: &AppState, area: Rect)
+    {
+        let block: Block<'_> = if area.height > 1
+        {
+            Block::default().borders(Borders::TOP)
+        }
+        else
+        {
+            Block::default()
+        };
+
+        frame.render_widget(block, area);
+
+        let (msg, style) = Self::get_status_message(app);
+        let truncated: String = msg
+            .chars()
+            .take(
+                (area.width as usize).saturating_sub(2)
+            )
+            .collect::<String>();
+
+        let para: Paragraph<'_> = Paragraph::new(
+            format!(" {truncated}")
+        )
+        .style(style)
+        .alignment(Alignment::Left);
+        
+        frame.render_widget(para, area);
+    }
+
+    fn render_normal(frame: &mut Frame<'_>, app: &AppState, area: Rect)
+    {
+        // 20-40 chars: Status + item count, simple layout
+        let block: Block<'_> = Block::default().borders(Borders::TOP);
+        frame.render_widget(block, area);
+
+        let (msg, style) = Self::get_status_message(app);
+        let item_count: String = format!("{} items", app.fs.active_pane().entries.len());
+
+        let combined: String = format!(
+            " {} | {}", 
+            msg.chars().take(30).collect::<String>(), 
+            item_count
+        );
+
+        let para: Paragraph<'_> = Paragraph::new(combined).style(style);
+        frame.render_widget(para, area);
+    }
+
+    pub fn render_full(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
         let status_block: Block<'_> = Block::default()
             .borders(Borders::TOP)
             .border_style(Style::default().fg(theme::COMMENT));
+        
         frame.render_widget(status_block, area);
 
         let (msg, style) = app
             .last_error
             .as_ref()
             .map_or_else(
-                || 
-                app
+                || -> (String, Style) 
+                { 
+                    app
                     .ui
                     .last_status
                     .as_ref()
                     .map_or_else(
-                        || 
-                        ("Ready".to_string(), Style::default().fg(theme::COMMENT)),
-                            |status: &String| -> (String, Style) 
-                            {(status.clone(), Style::default().fg(theme::GREEN))}), 
-                            |err: &String| -> (String, Style) 
-                            {(    
-                                format!("🔥 Error: {err}"),
-                                Style::default().fg(theme::RED).bold(),
-                            )}
+                        || -> (String, Style) 
+                        {
+                            ("Ready".to_string(), Style::default().fg(theme::COMMENT))
+                        },
+                
+                        |status: &String| -> (String, Style) 
+                        {
+                            (status.clone(), Style::default().fg(theme::GREEN))
+                        }
+                    ) 
+                }, 
+                |err: &String| -> (String, Style) 
+                {
+                    (    
+                        format!("🔥 Error: {err}"),
+                        Style::default().fg(theme::RED).bold(),
+                    )
+                }
             );
 
         let chunks: Rc<[Rect]> = Layout::default()
@@ -64,13 +165,61 @@ impl StatusBar {
             .alignment(Alignment::Left);
 
         let right_text: String = format!("{} items ", app.fs.active_pane().entries.len());
-        let right_para: Paragraph<'_> = Paragraph::new(Line::from(Span::styled(
-            right_text,
-            Style::default().fg(theme::PURPLE),
-        )))
+        let right_para: Paragraph<'_> = Paragraph::new(
+            Line::from(
+                Span::styled(
+                    right_text,
+                    Style::default().fg(theme::PURPLE),
+                )
+            )
+        )
         .alignment(Alignment::Right);
 
         frame.render_widget(left_para, chunks[0]);
         frame.render_widget(right_para, chunks[1]);
+    }
+
+    fn get_status_message(app: &AppState) -> (String, Style)
+    {
+        // Extrat existing message logic
+        app
+        .last_error
+        .as_ref()
+        .map_or_else(
+            || -> (String, Style) 
+            {
+                app
+                .ui
+                .last_status
+                .as_ref()
+                .map_or_else(
+                    || -> (String, Style) 
+                    {
+                        (
+                            "Ready".to_string(), 
+                            Style::default()
+                                .fg(theme::COMMENT)
+                        )
+                    },
+                    |status: &String| -> (String, Style)
+                    {
+                        (
+                            status.clone(), 
+                            Style::default()
+                                .fg(theme::GREEN)
+                        )
+                    }
+                ) 
+            },
+            |err: &String| -> (String, Style)
+            {
+                (
+                    format!("Error: {err}"), 
+                    Style::default()
+                        .fg(theme::RED)
+                        .bold()
+                )
+            }
+        )
     }
 }
