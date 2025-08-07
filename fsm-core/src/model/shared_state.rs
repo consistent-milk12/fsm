@@ -267,7 +267,12 @@ impl SharedState {
 
         let file_path = current_dir.join(&name);
 
-        match std::fs::File::create(&file_path) {
+        // Use spawn_blocking to avoid blocking the async runtime
+        let file_path_clone = file_path.clone();
+        let result =
+            tokio::task::spawn_blocking(move || std::fs::File::create(&file_path_clone)).await?;
+
+        match result {
             Ok(_) => {
                 if let Ok(mut ui_guard) = self.ui_state.try_lock() {
                     ui_guard.show_info(format!("Created file: {}", name));
@@ -296,7 +301,12 @@ impl SharedState {
 
         let dir_path = current_dir.join(&name);
 
-        match std::fs::create_dir(&dir_path) {
+        // Use spawn_blocking to avoid blocking the async runtime
+        let dir_path_clone = dir_path.clone();
+        let result =
+            tokio::task::spawn_blocking(move || std::fs::create_dir(&dir_path_clone)).await?;
+
+        match result {
             Ok(_) => {
                 if let Ok(mut ui_guard) = self.ui_state.try_lock() {
                     ui_guard.show_info(format!("Created directory: {}", name));
@@ -332,11 +342,17 @@ impl SharedState {
         {
             let path = obj_info.path.as_ref();
 
-            let result = if obj_info.is_dir {
-                std::fs::remove_dir_all(path)
-            } else {
-                std::fs::remove_file(path)
-            };
+            // Use spawn_blocking to avoid blocking the async runtime
+            let path_clone = path.to_path_buf();
+            let is_dir = obj_info.is_dir;
+            let result = tokio::task::spawn_blocking(move || {
+                if is_dir {
+                    std::fs::remove_dir_all(&path_clone)
+                } else {
+                    std::fs::remove_file(&path_clone)
+                }
+            })
+            .await?;
 
             match result {
                 Ok(_) => {
@@ -385,7 +401,15 @@ impl SharedState {
                 .unwrap_or_else(|| std::path::Path::new("."))
                 .join(&new_name);
 
-            match std::fs::rename(old_path, &new_path) {
+            // Use spawn_blocking to avoid blocking the async runtime
+            let old_path_clone = old_path.to_path_buf();
+            let new_path_clone = new_path.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                std::fs::rename(&old_path_clone, &new_path_clone)
+            })
+            .await?;
+
+            match result {
                 Ok(_) => {
                     if let Ok(mut ui_guard) = self.ui_state.try_lock() {
                         ui_guard.show_info(format!("Renamed to: {}", new_name));
@@ -426,9 +450,8 @@ impl SharedState {
             ui_guard.mark_dirty(crate::model::ui_state::Component::All);
         }
 
-        // TODO: Implement directory scanning and loading
-        // This would involve scanning the directory and updating the entries
-        // For now, just mark as dirty to trigger a re-render
+        // Perform directory scanning and populate entries
+        self.scan_directory_and_update_entries(&path).await?;
 
         Ok(())
     }
@@ -476,6 +499,84 @@ impl SharedState {
                 }
             }
         }
+
+        Ok(())
+    }
+
+    /// Scan directory and update entries using the metadata manager
+    pub async fn scan_directory_and_update_entries(
+        &self,
+        path: &std::path::Path,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut entries: Vec<crate::model::object_registry::SortableEntry> = Vec::new();
+
+        // Read directory entries using tokio::fs for async operation
+        let mut read_dir = tokio::fs::read_dir(path).await?;
+
+        while let Some(entry) = read_dir.next_entry().await? {
+            let entry_path = entry.path();
+
+            // Skip hidden files for now (could be configurable later)
+            if let Some(file_name) = entry_path.file_name()
+                && file_name.to_string_lossy().starts_with('.')
+            {
+                continue;
+            }
+
+            // Create ObjectInfo from path and insert into metadata manager
+            match crate::fs::object_info::ObjectInfo::from_path_async(&entry_path).await {
+                Ok(object_info) => {
+                    // Insert into metadata manager and get SortableEntry
+                    let (_object_id, sortable_entry) = self.metadata.insert(object_info);
+                    entries.push(sortable_entry);
+                }
+                Err(e) => {
+                    // Log error but continue with other entries
+                    tracing::debug!(
+                        "Failed to create ObjectInfo for {}: {}",
+                        entry_path.display(),
+                        e
+                    );
+                }
+            }
+        }
+
+        // Sort entries: directories first, then alphabetically
+        entries.sort_by(|a, b| {
+            let a_info = self.metadata.get_by_id(a.id);
+            let b_info = self.metadata.get_by_id(b.id);
+
+            match (a_info, b_info) {
+                (Some(a_obj), Some(b_obj)) => {
+                    if a_obj.is_dir && !b_obj.is_dir {
+                        std::cmp::Ordering::Less
+                    } else if !a_obj.is_dir && b_obj.is_dir {
+                        std::cmp::Ordering::Greater
+                    } else {
+                        a_obj.name.cmp(&b_obj.name)
+                    }
+                }
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => std::cmp::Ordering::Equal,
+            }
+        });
+
+        // Update FS state with the new entries
+        {
+            let mut fs_guard = self.lock_fs();
+            let active_pane = fs_guard.active_pane_mut();
+            active_pane.set_entries(entries);
+            active_pane.is_loading = false;
+        }
+
+        // Mark UI as dirty to trigger re-render
+        {
+            let mut ui_guard = self.lock_ui();
+            ui_guard.mark_dirty(crate::model::ui_state::Component::All);
+        }
+
+        tracing::info!("Directory scan completed for: {}", path.display());
 
         Ok(())
     }

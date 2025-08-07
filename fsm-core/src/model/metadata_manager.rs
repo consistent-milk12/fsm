@@ -1,10 +1,10 @@
 //! `metadata_manager.rs`
 //!
-//! Simplified metadata layer using only ObjectRegistry (no cache redundancy).
+//! Simplified metadata layer using only `ObjectRegistry` (no cache redundancy).
 //!
 //! Key design points
 //! -----------------
-//! • **ObjectRegistry only** – eliminates cache redundancy and synchronization complexity
+//! • **`ObjectRegistry` only** – eliminates cache redundancy and synchronization complexity
 //! • **DashMap-backed registry** – lock-free reads, shard-level writes
 //! • **Arc<PathBuf> / Arc<ObjectInfo>** – zero-clone sharing
 //! • **Single source of truth** – no cache-registry divergence possible
@@ -123,7 +123,7 @@ impl MetadataManager {
         self.registry.get(&id).map(|entry| entry.value().clone())
     }
 
-    /// Insert ObjectInfo and return ObjectId + SortableEntry
+    /// Insert `ObjectInfo` and return `ObjectId` + `SortableEntry`
     pub fn insert(&self, info: ObjectInfo) -> (ObjectId, SortableEntry) {
         let id = Self::make_id(&info.path);
         let info_arc = Arc::new(info);

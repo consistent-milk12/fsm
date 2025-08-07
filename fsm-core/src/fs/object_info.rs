@@ -313,9 +313,12 @@ impl ObjectInfo {
 
         let size: u64 = if is_dir { 0 } else { meta.len() };
 
-        // Lazy item counting optimization - avoid extra read_dir() syscall
-        // Item count loaded on-demand when needed for display
-        let items: u64 = 0;
+        // Load directory item count immediately for UI display
+        let items: u64 = if is_dir {
+            fs::read_dir(&path).map_or(0, |read_dir| read_dir.count() as u64)
+        } else {
+            0
+        };
 
         let mod_time: SystemTime = meta.modified().unwrap_or(UNIX_EPOCH);
 
@@ -350,9 +353,12 @@ impl ObjectInfo {
     pub fn from_light_common(light: LightObjectInfo, meta: &Metadata) -> Result<Self, CoreError> {
         let size: u64 = if light.is_dir { 0 } else { meta.len() };
 
-        // Lazy item counting optimization - avoid extra read_dir() syscall
-        // Item count loaded on-demand when needed for display
-        let items: u64 = 0;
+        // Load directory item count immediately for UI display
+        let items: u64 = if light.is_dir {
+            fs::read_dir(&*light.path).map_or(0, |read_dir| read_dir.count() as u64)
+        } else {
+            0
+        };
 
         let mod_time: SystemTime = meta.modified().unwrap_or(UNIX_EPOCH);
 

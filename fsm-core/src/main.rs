@@ -133,7 +133,7 @@ impl App {
         // Initialize current directory in FS state
         {
             let mut fs_guard = shared_state.lock_fs();
-            fs_guard.active_pane_mut().cwd = current_dir;
+            fs_guard.active_pane_mut().cwd = current_dir.clone();
         }
 
         // Mark UI for initial render
@@ -141,6 +141,17 @@ impl App {
             let mut ui_guard = shared_state.lock_ui();
             ui_guard.mark_dirty(Component::All);
         }
+
+        // Trigger initial directory scan
+        let shared_state_clone = shared_state.clone();
+        tokio::spawn(async move {
+            if let Err(e) = shared_state_clone
+                .scan_directory_and_update_entries(&current_dir)
+                .await
+            {
+                tracing::error!("Failed to scan initial directory: {}", e);
+            }
+        });
 
         Tracer::info!("Application initialization complete");
 
@@ -242,33 +253,33 @@ impl App {
         Ok(())
     }
 
-    // Optimized non-blocking render function
-    #[expect(clippy::manual_let_else, reason = "False Positive")]
+    // Optimized non-blocking render function with fine-grained locking
     async fn render(&mut self) -> Result<()> {
-        // Use try_lock to avoid blocking - if state is busy, skip the frame
-        let mut state_guard = if let Some(guard) = self.state.try_lock() {
-            guard
-        } else {
-            // State is busy with background operations - yield and retry
-            tokio::task::yield_now().await;
-            return Ok(());
+        // Check if UI needs rendering without blocking
+        let needs_render = {
+            if let Some(ui_guard) = self.state.try_lock_ui() {
+                ui_guard.is_dirty()
+            } else {
+                // UI state is busy - yield and skip this frame
+                tokio::task::yield_now().await;
+                return Ok(());
+            }
         };
 
-        // Double-check if redraw is still needed (may have changed)
-        if state_guard.ui.is_dirty() {
+        if needs_render {
             let start: Instant = Instant::now();
 
-            // Render with minimal mutex hold time - use deprecated interface temporarily
+            // Render using fine-grained locking - View::redraw handles its own locking
             self.terminal
                 .draw(|frame: &mut Frame<'_>| {
                     View::redraw(frame, &self.state);
                 })
                 .context("Failed to draw terminal")?;
 
-            state_guard.ui.clear_dirty();
-
-            // Release mutex immediately after render
-            drop(state_guard);
+            // Clear dirty flag after successful render
+            if let Some(mut ui_guard) = self.state.try_lock_ui() {
+                ui_guard.clear_dirty();
+            }
 
             let duration: Duration = start.elapsed();
 
