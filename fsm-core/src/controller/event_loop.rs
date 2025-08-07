@@ -256,9 +256,7 @@ impl EventLoop {
 
                 // Global Escape handling - highest priority
                 if key_event.code == KeyCode::Esc {
-                    return self
-                        .handle_escape_key(current_mode, current_overlay, has_notification)
-                        .await;
+                    return self.handle_escape_key(current_mode, current_overlay, has_notification);
                 }
 
                 // Auto-dismiss notifications on any key
@@ -276,19 +274,15 @@ impl EventLoop {
                     _ => match current_overlay {
                         UIOverlay::None => self.handle_navigation_mode_keys(key_event).await,
 
-                        UIOverlay::FileNameSearch => {
-                            self.handle_filename_search_keys(key_event).await
-                        }
+                        UIOverlay::FileNameSearch => self.handle_filename_search_keys(key_event),
 
                         UIOverlay::ContentSearch => {
                             self.handle_content_search_keys(key_event).await
                         }
 
-                        UIOverlay::Prompt => self.handle_prompt_keys(key_event).await,
+                        UIOverlay::Prompt => self.handle_prompt_keys(key_event),
 
-                        UIOverlay::SearchResults => {
-                            self.handle_search_results_keys(key_event).await
-                        }
+                        UIOverlay::SearchResults => self.handle_search_results_keys(key_event),
 
                         _ => {
                             debug!("Ignoring key in overlay mode: {:?}", current_overlay);
@@ -316,7 +310,7 @@ impl EventLoop {
     }
 
     /// Enhanced escape key handling with context awareness
-    async fn handle_escape_key(
+    fn handle_escape_key(
         &self,
         mode: UIMode,
         overlay: UIOverlay,
@@ -579,7 +573,7 @@ impl EventLoop {
     }
 
     /// Enhanced filename search with better UX
-    async fn handle_filename_search_keys(&self, key: crossterm::event::KeyEvent) -> Action {
+    fn handle_filename_search_keys(&self, key: crossterm::event::KeyEvent) -> Action {
         trace!("Filename search key: {:?}", key.code);
 
         match key.code {
@@ -781,16 +775,6 @@ impl EventLoop {
         Action::ContentSearch(input_pattern)
     }
 
-    /// Helper to clear search results
-    fn clear_search_results(shared_state: &SharedState) {
-        let mut ui_guard = shared_state.lock_ui();
-        ui_guard.search_results.clear();
-        ui_guard.rich_search_results.clear();
-        ui_guard.raw_search_results = None;
-        ui_guard.last_query = None;
-        ui_guard.selected = None;
-    }
-
     #[allow(clippy::unused_async)]
     /// Enhanced raw search result processing
     async fn process_raw_search_line(
@@ -854,7 +838,7 @@ impl EventLoop {
     }
 
     /// Enhanced prompt handling
-    async fn handle_prompt_keys(&self, key: crossterm::event::KeyEvent) -> Action {
+    fn handle_prompt_keys(&self, key: crossterm::event::KeyEvent) -> Action {
         trace!("Prompt key: {:?}", key.code);
 
         match key.code {
@@ -890,7 +874,7 @@ impl EventLoop {
     }
 
     /// Enhanced search results navigation
-    async fn handle_search_results_keys(&self, key: crossterm::event::KeyEvent) -> Action {
+    fn handle_search_results_keys(&self, key: crossterm::event::KeyEvent) -> Action {
         trace!("Search results key: {:?}", key.code);
 
         match key.code {
@@ -1047,7 +1031,7 @@ impl EventLoop {
             | Action::ToggleContentSearch
             | Action::CloseOverlay
             | Action::ToggleShowHidden
-            | Action::SimulateLoading => self.dispatch_ui_action(action).await,
+            | Action::SimulateLoading => self.dispatch_ui_action(action),
             // Navigation
             Action::MoveSelectionUp
             | Action::MoveSelectionDown
@@ -1090,7 +1074,7 @@ impl EventLoop {
             | Action::CancelFileOperation { .. } => self.dispatch_file_op_action(action).await,
             // Legacy/Misc
             Action::Sort(_) | Action::Filter(_) => {
-                self.dispatch_legacy_action(action).await;
+                self.dispatch_legacy_action(action);
             }
             Action::Quit => {
                 info!("Quit action - handled in main loop");
@@ -1120,8 +1104,8 @@ impl EventLoop {
         }
     }
 
-    #[expect(clippy::cognitive_complexity, reason = "Probably refactor later")]
-    async fn dispatch_ui_action(&self, action: Action) {
+    #[allow(clippy::cognitive_complexity, reason = "Probably refactor later")]
+    fn dispatch_ui_action(&self, action: Action) {
         match action {
             Action::ToggleHelp => {
                 debug!("Toggling help overlay");
@@ -1259,11 +1243,19 @@ impl EventLoop {
             }
             Action::EnterSelected => {
                 debug!("Entering selected item");
-                self.app.enter_selected_directory().await;
+                if let Err(e) = self.app.enter_selected_directory().await {
+                    warn!("Failed to enter selected directory: {}", e);
+                    let mut ui_guard = self.app.lock_ui();
+                    ui_guard.show_error(format!("Failed to enter directory: {}", e));
+                }
             }
             Action::GoToParent => {
                 info!("Going to parent directory");
-                self.app.go_to_parent_directory().await;
+                if let Err(e) = self.app.go_to_parent_directory().await {
+                    warn!("Failed to go to parent directory: {}", e);
+                    let mut ui_guard = self.app.lock_ui();
+                    ui_guard.show_error(format!("Failed to go to parent directory: {}", e));
+                }
             }
             _ => unreachable!(),
         }
@@ -1277,35 +1269,67 @@ impl EventLoop {
         match action {
             Action::CreateFile => {
                 info!("Creating new file (command-driven)");
-                self.app.create_file().await;
+                if let Err(e) = self.app.create_file().await {
+                    warn!("Failed to create file: {}", e);
+                    let mut ui_guard = self.app.lock_ui();
+                    ui_guard.show_error(format!("Failed to create file: {}", e));
+                }
             }
             Action::CreateDirectory => {
                 info!("Creating new directory (command-driven)");
-                self.app.create_directory().await;
+                if let Err(e) = self.app.create_directory().await {
+                    warn!("Failed to create directory: {}", e);
+                    let mut ui_guard = self.app.lock_ui();
+                    ui_guard.show_error(format!("Failed to create directory: {}", e));
+                }
             }
             Action::CreateFileWithName(name) => {
                 info!("Creating new file '{}' (command-driven)", name);
-                self.app.create_file_with_name(name).await;
+                if let Err(e) = self.app.create_file_with_name(name).await {
+                    warn!("Failed to create file: {}", e);
+                    let mut ui_guard = self.app.lock_ui();
+                    ui_guard.show_error(format!("Failed to create file: {}", e));
+                }
             }
             Action::CreateDirectoryWithName(name) => {
                 info!("Creating new directory '{}' (command-driven)", name);
-                self.app.create_directory_with_name(name).await;
+                if let Err(e) = self.app.create_directory_with_name(name).await {
+                    warn!("Failed to create directory: {}", e);
+                    let mut ui_guard = self.app.lock_ui();
+                    ui_guard.show_error(format!("Failed to create directory: {}", e));
+                }
             }
             Action::ReloadDirectory => {
                 info!("Reloading directory (command-driven)");
-                self.app.reload_directory().await;
+                if let Err(e) = self.app.reload_directory().await {
+                    warn!("Failed to reload directory: {}", e);
+                    let mut ui_guard = self.app.lock_ui();
+                    ui_guard.show_error(format!("Failed to reload directory: {}", e));
+                }
             }
             Action::Delete => {
                 info!("Delete action triggered - this should now be command-driven");
-                self.app.delete_entry().await;
+                if let Err(e) = self.app.delete_entry().await {
+                    warn!("Failed to delete entry: {}", e);
+                    let mut ui_guard = self.app.lock_ui();
+                    ui_guard.show_error(format!("Failed to delete entry: {}", e));
+                }
             }
             Action::RenameEntry(new_name) => {
                 info!("Renaming selected entry to '{}'", new_name);
-                self.app.rename_selected_entry(new_name).await;
+                if let Err(e) = self.app.rename_selected_entry(new_name).await {
+                    warn!("Failed to rename entry: {}", e);
+                    let mut ui_guard = self.app.lock_ui();
+                    ui_guard.show_error(format!("Failed to rename entry: {}", e));
+                }
             }
             Action::GoToPath(path_str) => {
                 info!("Navigating to path: '{}'", path_str);
-                self.app.navigate_to_path(path_str).await;
+                if let Err(e) = self.app.navigate_to_path(path_str).await {
+                    warn!("Failed to navigate to path: {}", e);
+                    let mut ui_guard = self.app.lock_ui();
+                    ui_guard.show_error(format!("Failed to navigate to path: {}", e));
+                }
             }
             _ => unreachable!(),
         }
@@ -1454,7 +1478,6 @@ impl EventLoop {
 
     async fn handle_task_result(&self, task_result: TaskResult) {
         debug!("Processing task result: {:?}", task_result);
-        let mut ui_guard = self.app.lock_ui();
 
         match task_result {
             TaskResult::Legacy {
@@ -1465,6 +1488,7 @@ impl EventLoop {
                 completed,
                 ..
             } => {
+                let mut ui_guard = self.app.lock_ui();
                 self.handle_legacy_task(
                     &mut ui_guard,
                     task_id,
@@ -1472,15 +1496,14 @@ impl EventLoop {
                     progress,
                     current_item,
                     completed,
-                )
-                .await;
+                );
             }
             TaskResult::FileOperationComplete {
                 operation_id,
                 result,
             } => {
-                self.handle_file_op_complete(&mut ui_guard, operation_id, result)
-                    .await;
+                let mut ui_guard = self.app.lock_ui();
+                self.handle_file_op_complete(&mut ui_guard, operation_id, result);
                 ui_guard.mark_dirty(Component::Overlay);
                 ui_guard.mark_dirty(Component::Notification);
             }
@@ -1495,6 +1518,7 @@ impl EventLoop {
                 start_time,
                 throughput_bps,
             } => {
+                let mut ui_guard = self.app.lock_ui();
                 self.handle_file_op_progress(
                     &mut ui_guard,
                     operation_id,
@@ -1506,15 +1530,13 @@ impl EventLoop {
                     total_files,
                     start_time,
                     throughput_bps,
-                )
-                .await;
+                );
                 ui_guard.mark_dirty(Component::Overlay);
             }
         }
     }
 
-    #[allow(clippy::unused_async)]
-    async fn handle_legacy_task(
+    fn handle_legacy_task(
         &self,
         ui: &mut UIState,
         _task_id: u64,
@@ -1548,8 +1570,7 @@ impl EventLoop {
         // TODO: complete_task logic must be moved to a new location using SharedState
     }
 
-    #[allow(clippy::unused_async)]
-    async fn handle_file_op_complete(
+    fn handle_file_op_complete(
         &self,
         ui: &mut UIState,
         operation_id: String,
@@ -1572,12 +1593,8 @@ impl EventLoop {
         }
     }
 
-    #[allow(
-        clippy::unused_async,
-        clippy::cast_precision_loss,
-        clippy::too_many_arguments
-    )]
-    async fn handle_file_op_progress(
+    #[allow(clippy::cast_precision_loss, clippy::too_many_arguments)]
+    fn handle_file_op_progress(
         &self,
         ui: &mut UIState,
         operation_id: String,
@@ -1639,7 +1656,9 @@ impl EventLoop {
                     ui_guard.mark_dirty(Component::Main);
                 }
                 ScanUpdate::Completed(count) => {
-                    self.handle_scan_completed_new(count).await;
+                    drop(fs_guard);
+                    drop(ui_guard);
+                    self.handle_scan_completed_new(count);
                 }
                 ScanUpdate::Error(e) => {
                     warn!("Directory scan error: {}", e);
@@ -1675,32 +1694,7 @@ impl EventLoop {
         ui_guard.mark_dirty(Component::All);
     }
 
-    #[allow(clippy::unused_async)]
-    async fn handle_scan_completed(&self, path: Arc<PathBuf>, count: usize) {
-        info!("Directory scan completed with {} entries", count);
-        let mut fs_guard = self.app.lock_fs();
-        let mut ui_guard = self.app.lock_ui();
-        let sortable_entries: Vec<crate::model::object_registry::SortableEntry> =
-            fs_guard.active_pane().entries.clone();
-        fs_guard
-            .active_pane_mut()
-            .complete_incremental_loading(sortable_entries);
-        fs_guard.add_recent_dir(path.clone());
-
-        // TODO: action_tx logic must be moved to a new location using SharedState
-        // TODO: Temporarily disabled size calculation until we implement action_tx properly
-        // let entries_for_size: Vec<crate::model::object_registry::SortableEntry> = fs_guard.active_pane().entries.clone();
-        // for sortable_entry in entries_for_size {
-        //     if let Some(object_info) = self.app.metadata.get_by_id(sortable_entry.id)
-        //         && object_info.is_dir {
-        //             // FileSizeOperator::calculate_size_task needs to be updated for new architecture
-        //         }
-        // }
-
-        ui_guard.mark_dirty(Component::All);
-    }
-
-    async fn handle_scan_completed_new(&self, count: usize) {
+    fn handle_scan_completed_new(&self, count: usize) {
         info!(
             "Directory scan completed with {} entries (new method)",
             count
@@ -2068,7 +2062,7 @@ impl EventLoop {
         });
     }
 
-    async fn dispatch_legacy_action(&self, action: Action) {
+    fn dispatch_legacy_action(&self, action: Action) {
         match action {
             Action::Sort(_) => {
                 info!("Sort action should now be command-driven (:sort)");

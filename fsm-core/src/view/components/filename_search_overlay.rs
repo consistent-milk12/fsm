@@ -249,17 +249,22 @@ impl FileNameSearchOverlay {
         fields(marker = "UI_DRAW_INPUT", operation_type = "ui_draw")
     )]
     fn draw_input(f: &mut Frame<'_>, shared_state: &SharedState, r: Rect) {
-        let ui_guard = shared_state.lock_ui();
+        let input = {
+            let ui_guard = shared_state.lock_ui();
+            ui_guard.input.clone()
+        };
 
-        let (ttl, col) = match ui_guard.input.len() {
+        let (ttl, col) = match input.len() {
             0 => {
                 trace!("Drawing empty input state");
                 (" File Search ", theme::CYAN)
             }
+
             n if n < MIN_LEN => {
                 trace!(chars_needed = %(MIN_LEN - n), "Drawing 'type more' state");
                 (" File Search (type more) ", theme::COMMENT)
             }
+
             n => {
                 trace!(input_length = %n, "Drawing active search state");
                 (" File Search ", theme::YELLOW)
@@ -273,7 +278,7 @@ impl FileNameSearchOverlay {
             .border_style(Style::default().fg(col))
             .style(Style::default().bg(theme::BACKGROUND));
 
-        let p = Paragraph::new(ui_guard.input.as_str())
+        let p = Paragraph::new(input.as_str())
             .block(block)
             .style(Style::default().fg(theme::FOREGROUND))
             .wrap(Wrap { trim: false });
@@ -281,8 +286,7 @@ impl FileNameSearchOverlay {
         f.render_widget(p, r);
 
         // Set cursor position
-        let cursor_x: u16 =
-            (r.x + ui_guard.input.len() as u16 + 1).min(r.x + r.width.saturating_sub(2));
+        let cursor_x: u16 = (r.x + input.len() as u16 + 1).min(r.x + r.width.saturating_sub(2));
         f.set_cursor_position((cursor_x, r.y + 1));
 
         trace!(cursor_x = %cursor_x, cursor_y = %(r.y + 1), "Input cursor positioned");

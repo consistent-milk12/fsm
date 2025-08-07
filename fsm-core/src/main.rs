@@ -29,7 +29,7 @@ use crossterm::{
 use ratatui::{Frame, Terminal, backend::CrosstermBackend as Backend};
 use tokio::{
     signal,
-    sync::{Mutex, MutexGuard, Notify, mpsc},
+    sync::{Notify, mpsc},
     task::JoinHandle,
 };
 
@@ -154,6 +154,7 @@ impl App {
         })
     }
 
+    #[allow(clippy::future_not_send)]
     async fn run(mut self) -> Result<()> {
         self.setup_shutdown_handler().await;
 

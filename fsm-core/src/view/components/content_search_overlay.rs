@@ -198,7 +198,7 @@ impl ContentSearchOverlay {
         let is_searching = ui_guard
             .loading
             .as_ref()
-            .map_or(false, |loading| loading.message.contains("Searching"));
+            .is_some_and(|loading| loading.message.contains("Searching"));
 
         // Show enhanced loading state if searching
         if is_searching {
@@ -362,7 +362,10 @@ impl ContentSearchOverlay {
 
     /// Render enhanced loading state with spinner and progress
     fn render_loading_state(frame: &mut Frame<'_>, shared_state: &SharedState, area: Rect) {
-        let ui_guard = shared_state.lock_ui();
+        let input = {
+            let ui_guard = shared_state.lock_ui();
+            ui_guard.input.clone()
+        };
 
         let spinner_chars = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
         let spinner_frame =
@@ -373,7 +376,7 @@ impl ContentSearchOverlay {
             Line::from(vec![
                 Span::styled(format!("{spinner} "), Style::default().fg(theme::YELLOW)),
                 Span::styled(
-                    format!("Searching for '{}'", ui_guard.input),
+                    format!("Searching for '{}'", input),
                     Style::default().fg(theme::FOREGROUND),
                 ),
             ]),
@@ -400,45 +403,46 @@ impl ContentSearchOverlay {
 
     /// Render enhanced empty state with helpful tips
     fn render_empty_state(frame: &mut Frame<'_>, shared_state: &SharedState, area: Rect) {
-        let ui_guard = shared_state.lock_ui();
-
-        let (title, message_lines, border_color) = if ui_guard.input.is_empty() {
-            (
-                " Ready to Search ",
-                vec![
-                    Line::from("Enter a search pattern to find content in files"),
-                    Line::from(""),
-                    Line::from("Tips:"),
-                    Line::from("• Use regex patterns for advanced matching"),
-                    Line::from("• Quote exact phrases: \"hello world\""),
-                    Line::from("• Search is case-sensitive by default"),
-                    Line::from("• Results show file path and line context"),
-                ],
-                theme::CYAN,
-            )
-        } else if ui_guard.last_query.is_some() {
-            (
-                " No Results Found ",
-                vec![
-                    Line::from(format!("No matches found for '{}'", ui_guard.input)),
-                    Line::from(""),
-                    Line::from("Try:"),
-                    Line::from("• Different search terms"),
-                    Line::from("• Simpler patterns"),
-                    Line::from("• Check spelling and case"),
-                ],
-                theme::RED,
-            )
-        } else {
-            (
-                " Press Enter to Search ",
-                vec![
-                    Line::from(format!("Ready to search for '{}'", ui_guard.input)),
-                    Line::from(""),
-                    Line::from("Press Enter to start searching"),
-                ],
-                theme::GREEN,
-            )
+        let (title, message_lines, border_color) = {
+            let ui_guard = shared_state.lock_ui();
+            if ui_guard.input.is_empty() {
+                (
+                    " Ready to Search ",
+                    vec![
+                        Line::from("Enter a search pattern to find content in files"),
+                        Line::from(""),
+                        Line::from("Tips:"),
+                        Line::from("• Use regex patterns for advanced matching"),
+                        Line::from("• Quote exact phrases: \"hello world\""),
+                        Line::from("• Search is case-sensitive by default"),
+                        Line::from("• Results show file path and line context"),
+                    ],
+                    theme::CYAN,
+                )
+            } else if ui_guard.last_query.is_some() {
+                (
+                    " No Results Found ",
+                    vec![
+                        Line::from(format!("No matches found for '{}'", ui_guard.input)),
+                        Line::from(""),
+                        Line::from("Try:"),
+                        Line::from("• Different search terms"),
+                        Line::from("• Simpler patterns"),
+                        Line::from("• Check spelling and case"),
+                    ],
+                    theme::RED,
+                )
+            } else {
+                (
+                    " Press Enter to Search ",
+                    vec![
+                        Line::from(format!("Ready to search for '{}'", ui_guard.input)),
+                        Line::from(""),
+                        Line::from("Press Enter to start searching"),
+                    ],
+                    theme::GREEN,
+                )
+            }
         };
 
         let empty_state = Paragraph::new(message_lines)

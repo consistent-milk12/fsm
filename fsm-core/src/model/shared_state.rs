@@ -69,39 +69,39 @@ impl SharedState {
     }
 
     /// Try to lock app state without blocking (for render path)
-    pub fn try_lock_app(&self) -> Option<std::sync::MutexGuard<AppState>> {
+    pub fn try_lock_app(&self) -> Option<std::sync::MutexGuard<'_, AppState>> {
         self.app_state.try_lock().ok()
     }
 
     /// Try to lock UI state without blocking (for background tasks)
-    pub fn try_lock_ui(&self) -> Option<std::sync::MutexGuard<UIState>> {
+    pub fn try_lock_ui(&self) -> Option<std::sync::MutexGuard<'_, UIState>> {
         self.ui_state.try_lock().ok()
     }
 
     /// Try to lock FS state without blocking (for UI renders)
-    pub fn try_lock_fs(&self) -> Option<std::sync::MutexGuard<FSState>> {
+    pub fn try_lock_fs(&self) -> Option<std::sync::MutexGuard<'_, FSState>> {
         self.fs_state.try_lock().ok()
     }
 
     /// Lock app state (for business logic operations)
-    pub fn lock_app(&self) -> std::sync::MutexGuard<AppState> {
+    pub fn lock_app(&self) -> std::sync::MutexGuard<'_, AppState> {
         self.app_state.lock().unwrap()
     }
 
     /// Lock UI state (for rendering operations)
-    pub fn lock_ui(&self) -> std::sync::MutexGuard<UIState> {
+    pub fn lock_ui(&self) -> std::sync::MutexGuard<'_, UIState> {
         self.ui_state.lock().unwrap()
     }
 
     /// Lock FS state (for navigation operations)
-    pub fn lock_fs(&self) -> std::sync::MutexGuard<FSState> {
+    pub fn lock_fs(&self) -> std::sync::MutexGuard<'_, FSState> {
         self.fs_state.lock().unwrap()
     }
 
     /// Try to lock entire shared state - DEPRECATED: Use fine-grained locking instead
     /// This method exists for compatibility with main.rs render function
     /// Returns None if any component is locked (promotes concurrent architecture)
-    pub fn try_lock(&self) -> Option<DeprecatedSharedStateGuard> {
+    pub fn try_lock(&self) -> Option<DeprecatedSharedStateGuard<'_>> {
         // Try all locks non-blocking - if any fail, return None
         let app_guard = self.app_state.try_lock().ok()?;
         let ui_guard = self.ui_state.try_lock().ok()?;
@@ -181,14 +181,14 @@ impl SharedState {
             }
         };
 
-        if let Some(entry) = selected_entry {
-            if let Some(obj_info) = self.metadata.get_by_id(entry.id) {
-                if obj_info.is_dir {
-                    self.enter_directory(obj_info.path.as_ref().clone()).await?;
-                } else {
-                    self.open_file_with_editor(obj_info.path.as_ref().clone())
-                        .await?;
-                }
+        if let Some(entry) = selected_entry
+            && let Some(obj_info) = self.metadata.get_by_id(entry.id)
+        {
+            if obj_info.is_dir {
+                self.enter_directory(obj_info.path.as_ref().clone()).await?;
+            } else {
+                self.open_file_with_editor(obj_info.path.as_ref().clone())
+                    .await?;
             }
         }
 
@@ -204,10 +204,8 @@ impl SharedState {
 
         if let Some(parent) = current_dir.parent() {
             self.enter_directory(parent.to_path_buf()).await?;
-        } else {
-            if let Ok(mut ui_guard) = self.ui_state.try_lock() {
-                ui_guard.show_info("Already at root.".to_string());
-            }
+        } else if let Ok(mut ui_guard) = self.ui_state.try_lock() {
+            ui_guard.show_info("Already at root.".to_string());
         }
 
         Ok(())
@@ -232,10 +230,8 @@ impl SharedState {
         let path = std::path::PathBuf::from(path_str);
         if path.exists() && path.is_dir() {
             self.enter_directory(path).await?;
-        } else {
-            if let Ok(mut ui_guard) = self.ui_state.try_lock() {
-                ui_guard.show_error(format!("Invalid directory path: {}", path.display()));
-            }
+        } else if let Ok(mut ui_guard) = self.ui_state.try_lock() {
+            ui_guard.show_error(format!("Invalid directory path: {}", path.display()));
         }
         Ok(())
     }
@@ -331,30 +327,30 @@ impl SharedState {
             }
         };
 
-        if let Some(entry) = selected_entry {
-            if let Some(obj_info) = self.metadata.get_by_id(entry.id) {
-                let path = obj_info.path.as_ref();
+        if let Some(entry) = selected_entry
+            && let Some(obj_info) = self.metadata.get_by_id(entry.id)
+        {
+            let path = obj_info.path.as_ref();
 
-                let result = if obj_info.is_dir {
-                    std::fs::remove_dir_all(path)
-                } else {
-                    std::fs::remove_file(path)
-                };
+            let result = if obj_info.is_dir {
+                std::fs::remove_dir_all(path)
+            } else {
+                std::fs::remove_file(path)
+            };
 
-                match result {
-                    Ok(_) => {
-                        if let Ok(mut ui_guard) = self.ui_state.try_lock() {
-                            ui_guard.show_info(format!(
-                                "Deleted: {}",
-                                path.file_name().unwrap_or_default().to_string_lossy()
-                            ));
-                        }
-                        self.reload_directory().await?;
+            match result {
+                Ok(_) => {
+                    if let Ok(mut ui_guard) = self.ui_state.try_lock() {
+                        ui_guard.show_info(format!(
+                            "Deleted: {}",
+                            path.file_name().unwrap_or_default().to_string_lossy()
+                        ));
                     }
-                    Err(e) => {
-                        if let Ok(mut ui_guard) = self.ui_state.try_lock() {
-                            ui_guard.show_error(format!("Failed to delete: {}", e));
-                        }
+                    self.reload_directory().await?;
+                }
+                Err(e) => {
+                    if let Ok(mut ui_guard) = self.ui_state.try_lock() {
+                        ui_guard.show_error(format!("Failed to delete: {}", e));
                     }
                 }
             }
@@ -380,25 +376,25 @@ impl SharedState {
             }
         };
 
-        if let Some(entry) = selected_entry {
-            if let Some(obj_info) = self.metadata.get_by_id(entry.id) {
-                let old_path = obj_info.path.as_ref();
-                let new_path = old_path
-                    .parent()
-                    .unwrap_or_else(|| std::path::Path::new("."))
-                    .join(&new_name);
+        if let Some(entry) = selected_entry
+            && let Some(obj_info) = self.metadata.get_by_id(entry.id)
+        {
+            let old_path = obj_info.path.as_ref();
+            let new_path = old_path
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("."))
+                .join(&new_name);
 
-                match std::fs::rename(old_path, &new_path) {
-                    Ok(_) => {
-                        if let Ok(mut ui_guard) = self.ui_state.try_lock() {
-                            ui_guard.show_info(format!("Renamed to: {}", new_name));
-                        }
-                        self.reload_directory().await?;
+            match std::fs::rename(old_path, &new_path) {
+                Ok(_) => {
+                    if let Ok(mut ui_guard) = self.ui_state.try_lock() {
+                        ui_guard.show_info(format!("Renamed to: {}", new_name));
                     }
-                    Err(e) => {
-                        if let Ok(mut ui_guard) = self.ui_state.try_lock() {
-                            ui_guard.show_error(format!("Failed to rename: {}", e));
-                        }
+                    self.reload_directory().await?;
+                }
+                Err(e) => {
+                    if let Ok(mut ui_guard) = self.ui_state.try_lock() {
+                        ui_guard.show_error(format!("Failed to rename: {}", e));
                     }
                 }
             }

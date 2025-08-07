@@ -723,7 +723,7 @@ impl ObjectInfoCache {
                                 }
 
                                 Err(e) => {
-                                    warn!("Failed to warm entry {}: {}", entry_path.display(), e)
+                                    warn!("Failed to warm entry {}: {}", entry_path.display(), e);
                                 }
                             }
                         }

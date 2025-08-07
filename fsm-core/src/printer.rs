@@ -902,8 +902,7 @@ where
     let total_size: usize = non_empty_chunks
         .par_iter()
         .map(|chunk| chunk.len())
-        .sum::<usize>() + 
-        non_empty_chunks.len() * 2 + // commas and newlines
+        .sum::<usize>() + non_empty_chunks.len() * 2 + // commas and newlines
         4; // [ ] and final newline
 
     // Write with optimized buffer size

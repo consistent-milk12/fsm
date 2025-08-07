@@ -79,7 +79,7 @@ impl View {
 
             let overlay_type = {
                 let ui_guard = shared_state.lock_ui();
-                ui_guard.overlay.clone()
+                ui_guard.overlay
             };
 
             match overlay_type {
@@ -102,11 +102,11 @@ impl View {
                 }
 
                 UIOverlay::ContentSearch => {
-                    ContentSearchOverlay::render(frame, shared_state, overlay_area)
+                    ContentSearchOverlay::render(frame, shared_state, overlay_area);
                 }
 
                 UIOverlay::SearchResults => {
-                    SearchResultsOverlay::render(frame, shared_state, overlay_area)
+                    SearchResultsOverlay::render(frame, shared_state, overlay_area);
                 }
 
                 UIOverlay::Loading => LoadingOverlay::render(frame, shared_state, overlay_area),
