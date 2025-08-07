@@ -983,12 +983,12 @@ impl JsonLayer {
 
     // PERFORMANCE OPTIMIZED: Granular profiling control
     fn should_collect_profiling(&self, level: Level) -> bool {
-        self.profiling_config.enabled && level >= Level::WARN // Only profile warnings and errors
+        self.profiling_config.enabled && level >= Level::TRACE // Only profile warnings and errors
     }
 
     // PERFORMANCE OPTIMIZED: Skip span events for trace/debug levels
     fn should_emit_span_event(level: Level) -> bool {
-        level >= Level::WARN // Only emit span events for INFO and above
+        level >= Level::TRACE // Only emit span events for INFO and above
     }
 
     /// PERFORMANCE OPTIMIZED: Minimal span lifecycle events

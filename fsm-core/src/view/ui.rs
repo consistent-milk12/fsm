@@ -5,7 +5,7 @@
 
 use std::rc::Rc;
 
-use crate::model::ui_state::UIOverlay;
+use crate::model::ui_state::{Component, UIOverlay};
 use crate::{
     AppState, ContentSearchOverlay, FileNameSearchOverlay, FileOperationsOverlay, HelpOverlay,
     InputPromptOverlay, LoadingOverlay, NotificationOverlay, ObjectTable, SearchOverlay,
@@ -22,27 +22,19 @@ use tracing::{instrument, span::EnteredSpan};
 pub struct View;
 
 impl View {
-    /// Draws the full UI for one frame.
+    /// Draws the full UI for one frame, only rendering components marked as dirty.
     #[instrument(skip_all, fields(operation_type = "ui_redraw"))]
     pub fn redraw(frame: &mut Frame<'_>, app: &mut AppState) {
         let area: Rect = frame.area();
 
-        let (content_constraint, status_constraint) = match area.height
-        {
-            // Cannot render anything
+        let (content_constraint, status_constraint) = match area.height {
             0 => return,
-            
-            // Content only
             1 => (Constraint::Fill(1), None),
-            
-            // Normal
             _ => (Constraint::Fill(1), Some(Constraint::Length(1))),
         };
 
         let mut constraints: Vec<Constraint> = vec![content_constraint];
-
-        if let Some(status) = status_constraint
-        {
+        if let Some(status) = status_constraint {
             constraints.push(status);
         }
 
@@ -51,68 +43,62 @@ impl View {
             .constraints(constraints)
             .split(area);
 
-        if !main_layout.is_empty() && main_layout[0].height > 0
-        {
-            ObjectTable::render(frame, app, main_layout[0]);
-        }
-
-        if main_layout.len() > 1 && main_layout[1].height > 0
-        {
-            StatusBar::render_with_degradation(frame, app, main_layout[1]);
-        }
-
-        // Overlays are rendered on top of the main UI
-        if app.ui.overlay != UIOverlay::None && area.height > 2 && area.width > 20 {
-            let _overlay_span: EnteredSpan =
-                tracing::info_span!("overlay_render", operation_type = "overlay_render")
-                    .entered();
-            let overlay_area: Rect = frame.area();
-
-            match app.ui.overlay {
-                UIOverlay::Help => HelpOverlay::render(frame, app, overlay_area),
-
-                UIOverlay::Search => SearchOverlay::render(frame, app, overlay_area),
-
-                UIOverlay::FileNameSearch => {
-                    let x: &mut FileNameSearchOverlay = &mut app
-                        .ui
-                        .filename_search_overlay
-                        .clone();
-
-                    FileNameSearchOverlay::render(x, frame, app, overlay_area);
-                }
-
-                UIOverlay::ContentSearch => ContentSearchOverlay::render(frame, app, overlay_area),
-
-                UIOverlay::SearchResults => SearchResultsOverlay::render(frame, app, overlay_area),
-
-                UIOverlay::Loading => LoadingOverlay::render(frame, app, overlay_area),
-
-                UIOverlay::Prompt => InputPromptOverlay::render(frame, app, overlay_area),
-
-                _ => {}
+        if !main_layout.is_empty() && main_layout[0].height > 0 {
+            if app.ui.is_dirty_component(Component::Main) {
+                ObjectTable::render(frame, app, main_layout[0]);
             }
         }
 
-        // Render file operations progress overlay if operations are active
-        if !app.ui.active_file_operations.is_empty() {
-            let _file_ops_span: EnteredSpan =
-                tracing::info_span!("file_ops_render", operation_type = "file_ops_render")
-                    .entered();
-            let overlay_area = Self::calculate_progress_overlay_area(
-                frame.area(),
-                app.ui.active_file_operations.len(),
-            );
-
-            FileOperationsOverlay::render(frame, overlay_area, &app.ui.active_file_operations);
+        if main_layout.len() > 1 && main_layout[1].height > 0 {
+            if app.ui.is_dirty_component(Component::StatusBar) {
+                StatusBar::render_with_degradation(frame, app, main_layout[1]);
+            }
         }
 
-        // Always render notifications on top of everything
-        if app.ui.notification.is_some() {
-            let _notification_span =
-                tracing::info_span!("notification_render", operation_type = "notification_render")
-                    .entered();
-            NotificationOverlay::render(frame, app, frame.area());
+        // Overlays are rendered on top of the main UI only if the overlay component is dirty
+        if app.ui.is_dirty_component(Component::Overlay) {
+            if app.ui.overlay != UIOverlay::None && area.height > 2 && area.width > 20 {
+                let _overlay_span: EnteredSpan =
+                    tracing::info_span!("overlay_render", operation_type = "overlay_render")
+                        .entered();
+                let overlay_area: Rect = frame.area();
+
+                match app.ui.overlay {
+                    UIOverlay::Help => HelpOverlay::render(frame, app, overlay_area),
+                    UIOverlay::Search => SearchOverlay::render(frame, app, overlay_area),
+                    UIOverlay::FileNameSearch => {
+                        let x: &mut FileNameSearchOverlay = &mut app.ui.filename_search_overlay.clone();
+                        FileNameSearchOverlay::render(x, frame, app, overlay_area);
+                    }
+                    UIOverlay::ContentSearch => ContentSearchOverlay::render(frame, app, overlay_area),
+                    UIOverlay::SearchResults => SearchResultsOverlay::render(frame, app, overlay_area),
+                    UIOverlay::Loading => LoadingOverlay::render(frame, app, overlay_area),
+                    UIOverlay::Prompt => InputPromptOverlay::render(frame, app, overlay_area),
+                    _ => {}
+                }
+            }
+
+            // Render file operations progress overlay if operations are active
+            if !app.ui.active_file_operations.is_empty() {
+                let _file_ops_span: EnteredSpan =
+                    tracing::info_span!("file_ops_render", operation_type = "file_ops_render")
+                        .entered();
+                let overlay_area = Self::calculate_progress_overlay_area(
+                    frame.area(),
+                    app.ui.active_file_operations.len(),
+                );
+                FileOperationsOverlay::render(frame, overlay_area, &app.ui.active_file_operations);
+            }
+        }
+
+        // Always render notifications on top of everything if the notification component is dirty
+        if app.ui.is_dirty_component(Component::Notification) {
+            if app.ui.notification.is_some() {
+                let _notification_span =
+                    tracing::info_span!("notification_render", operation_type = "notification_render")
+                        .entered();
+                NotificationOverlay::render(frame, app, frame.area());
+            }
         }
     }
 

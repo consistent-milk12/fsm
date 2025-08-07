@@ -22,9 +22,9 @@ use crate::model::command_palette::{Command, CommandAction, CommandPaletteState}
 use crate::model::object_registry::SortableEntry;
 use crate::tasks::search_task::RawSearchResult;
 
-/// Granular redraw flags for selective UI updates
+/// Granular component flags for selective UI updates
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RedrawFlag {
+pub enum Component {
     Main,
     StatusBar,
     Overlay,
@@ -35,7 +35,7 @@ pub enum RedrawFlag {
     All,
 }
 
-impl RedrawFlag {
+impl Component {
     #[must_use]
     pub const fn bits(self) -> u8 {
         match self {
@@ -255,7 +255,7 @@ pub enum ClipBoardViewMode {
 /// Main UI state structure
 #[derive(Debug, Default, Clone)]
 pub struct UIState {
-    pub redraw_flags: u8,
+    pub dirty_components: u8,
     // --- Selection and Navigation State ---
     /// Current selected entry in the active pane.
     pub selected: Option<usize>,
@@ -350,7 +350,7 @@ impl UIState {
     /// Construct a new UI state with default values.
     pub fn new() -> Self {
         Self {
-            redraw_flags: RedrawFlag::All.bits(),
+            dirty_components: Component::All.bits(),
             // Selection and Navigation State
             selected: Some(0),
             marked_indices: HashSet::new(),
@@ -408,35 +408,35 @@ impl UIState {
     // --- Selection/marking ---
     pub const fn set_selected(&mut self, idx: Option<usize>) {
         self.selected = idx;
-        self.request_redraw(RedrawFlag::Main);
+        self.mark_dirty(Component::Main);
     }
 
     pub fn mark_index(&mut self, idx: usize) {
         self.marked_indices.insert(idx);
-        self.request_redraw(RedrawFlag::Main);
+        self.mark_dirty(Component::Main);
     }
 
     pub fn unmark_index(&mut self, idx: usize) {
         self.marked_indices.remove(&idx);
-        self.request_redraw(RedrawFlag::Main);
+        self.mark_dirty(Component::Main);
     }
 
     pub fn clear_marks(&mut self) {
         self.marked_indices.clear();
         self.visual_range = None;
-        self.request_redraw(RedrawFlag::Main);
+        self.mark_dirty(Component::Main);
     }
 
     pub const fn set_visual_range(&mut self, start: usize, end: usize) {
         self.visual_range = Some((start, end));
-        self.request_redraw(RedrawFlag::Main);
+        self.mark_dirty(Component::Main);
     }
 
     pub fn move_selection_up<T>(&mut self, entries: &[T]) {
         if !entries.is_empty() {
             let new_selected = self.selected.map_or(0, |s| s.saturating_sub(1));
             self.selected = Some(new_selected);
-            self.request_redraw(RedrawFlag::Main);
+            self.mark_dirty(Component::Main);
         }
     }
 
@@ -446,19 +446,19 @@ impl UIState {
                 .selected
                 .map_or(0, |s| s.saturating_add(1).min(entries.len() - 1));
             self.selected = Some(new_selected);
-            self.request_redraw(RedrawFlag::Main);
+            self.mark_dirty(Component::Main);
         }
     }
 
     // --- Modes/overlay management ---
     pub const fn set_mode(&mut self, mode: UIMode) {
         self.mode = mode;
-        self.request_redraw_all();
+        self.mark_dirty_all();
     }
 
     pub const fn set_overlay(&mut self, overlay: UIOverlay) {
         self.overlay = overlay;
-        self.request_redraw_all();
+        self.mark_dirty_all();
     }
 
     pub const fn toggle_help_overlay(&mut self) {
@@ -467,7 +467,7 @@ impl UIState {
             _ => UIOverlay::Help,
         };
 
-        self.request_redraw_all();
+        self.mark_dirty_all();
     }
 
     /// Enter vim-style command mode
@@ -504,7 +504,7 @@ impl UIState {
         if self.overlay == UIOverlay::FileNameSearch {
             self.input.clear();
         }
-        self.request_redraw(RedrawFlag::Overlay);
+        self.mark_dirty(Component::Overlay);
     }
 
     pub fn toggle_content_search_overlay(&mut self) {
@@ -515,12 +515,12 @@ impl UIState {
         if self.overlay == UIOverlay::ContentSearch {
             self.input.clear();
         }
-        self.request_redraw(RedrawFlag::Overlay);
+        self.mark_dirty(Component::Overlay);
     }
 
     pub const fn close_all_overlays(&mut self) {
         self.overlay = UIOverlay::None;
-        self.request_redraw(RedrawFlag::Overlay);
+        self.mark_dirty(Component::Overlay);
     }
 
     /// Show a notification with auto-dismiss
@@ -536,7 +536,7 @@ impl UIState {
             timestamp: std::time::Instant::now(),
             auto_dismiss_ms,
         });
-        self.request_redraw(RedrawFlag::Notification);
+        self.mark_dirty(Component::Notification);
     }
 
     /// Show an info notification
@@ -562,7 +562,7 @@ impl UIState {
     /// Dismiss the current notification
     pub fn dismiss_notification(&mut self) {
         self.notification = None;
-        self.request_redraw(RedrawFlag::Notification);
+        self.mark_dirty(Component::Notification);
     }
 
     /// Check if notification should auto-dismiss and do so if needed
@@ -572,7 +572,7 @@ impl UIState {
             && notification.timestamp.elapsed().as_millis() > u128::from(auto_dismiss_ms)
         {
             self.notification = None;
-            self.request_redraw(RedrawFlag::Notification);
+            self.mark_dirty(Component::Notification);
             return true; // Notification was dismissed
         }
         false
@@ -580,30 +580,30 @@ impl UIState {
 
     // --- Redraw and State Management ---
     /// Mark specific UI components for redraw.
-    pub const fn request_redraw(&mut self, flag: RedrawFlag) {
-        self.redraw_flags |= flag.bits();
+    pub const fn mark_dirty(&mut self, flag: Component) {
+        self.dirty_components |= flag.bits();
     }
 
     /// Mark the entire UI for redraw.
-    pub const fn request_redraw_all(&mut self) {
-        self.redraw_flags = RedrawFlag::All.bits();
+    pub const fn mark_dirty_all(&mut self) {
+        self.dirty_components = Component::All.bits();
     }
 
     #[must_use]
     /// Check if any redraw is needed.
-    pub const fn needs_redraw(&self) -> bool {
-        self.redraw_flags != 0
+    pub const fn is_dirty(&self) -> bool {
+        self.dirty_components != 0
     }
 
     #[must_use]
     /// Check if a specific component needs redraw.
-    pub const fn needs_redraw_for(&self, flag: RedrawFlag) -> bool {
-        (self.redraw_flags & flag.bits()) != 0
+    pub const fn is_dirty_component(&self, flag: Component) -> bool {
+        (self.dirty_components & flag.bits()) != 0
     }
 
     /// Clear redraw flags (called after rendering).
-    pub const fn clear_redraw(&mut self) {
-        self.redraw_flags = 0;
+    pub const fn clear_dirty(&mut self) {
+        self.dirty_components = 0;
     }
 
     /// Check if there are pending changes that might benefit from a render
@@ -611,18 +611,18 @@ impl UIState {
     #[must_use]
     pub const fn has_pending_changes(&self) -> bool {
         // Consider pending changes if any redraw flags are set or overlay is active
-        self.redraw_flags != 0 || !matches!(self.overlay, UIOverlay::None)
+        self.dirty_components != 0 || !matches!(self.overlay, UIOverlay::None)
     }
 
     /// Clear a specific redraw flag.
-    pub const fn clear_redraw_for(&mut self, flag: RedrawFlag) {
-        self.redraw_flags &= !flag.bits();
+    pub const fn clear_dirty_component(&mut self, flag: Component) {
+        self.dirty_components &= !flag.bits();
     }
 
     /// Set status message
     pub fn set_status(&mut self, status: Option<String>) {
         self.last_status = status;
-        self.request_redraw(RedrawFlag::StatusBar);
+        self.mark_dirty(Component::StatusBar);
     }
 
     /// Clear search results
@@ -632,7 +632,7 @@ impl UIState {
         self.rich_search_results.clear();
         self.raw_search_results = None;
         self.raw_search_selected = 0;
-        self.request_redraw(RedrawFlag::Main);
+        self.mark_dirty(Component::Main);
     }
 
     /// Show input prompt for the given type
@@ -640,7 +640,7 @@ impl UIState {
         self.input_prompt_type = Some(prompt_type);
         self.overlay = UIOverlay::Prompt;
         self.input.clear();
-        self.request_redraw(RedrawFlag::Overlay);
+        self.mark_dirty(Component::Overlay);
     }
 
     /// Hide input prompt
@@ -648,33 +648,33 @@ impl UIState {
         self.input_prompt_type = None;
         self.overlay = UIOverlay::None;
         self.input.clear();
-        self.request_redraw(RedrawFlag::Overlay);
+        self.mark_dirty(Component::Overlay);
     }
 
     // --- Input/query ---
     pub fn set_input(&mut self, s: impl Into<String>) {
         self.input = s.into();
-        self.request_redraw(RedrawFlag::Overlay);
+        self.mark_dirty(Component::Overlay);
     }
     pub fn set_last_query(&mut self, query: Option<String>) {
         self.last_query = query;
-        self.request_redraw(RedrawFlag::Overlay);
+        self.mark_dirty(Component::Overlay);
     }
 
     // --- UI toggles/theme/panes ---
     pub const fn toggle_show_hidden(&mut self) {
         self.show_hidden = !self.show_hidden;
-        self.request_redraw(RedrawFlag::Main);
+        self.mark_dirty(Component::Main);
     }
 
     pub fn set_theme(&mut self, theme: impl Into<CompactString>) {
         self.theme = theme.into();
-        self.request_redraw_all();
+        self.mark_dirty_all();
     }
     
     pub const fn set_active_pane(&mut self, pane: usize) {
         self.active_pane = pane;
-        self.request_redraw_all();
+        self.mark_dirty_all();
     }
 
     // --- Quick actions ---
@@ -723,12 +723,12 @@ impl UIState {
 
     pub const fn show_clipboard_overlay(&mut self) {
         self.clipboard_overlay_active = true;
-        self.request_redraw(RedrawFlag::Overlay);
+        self.mark_dirty(Component::Overlay);
     }
 
     pub fn close_clipboard_overlay(&mut self) {
         self.clipboard_overlay_active = false;
         self.selected_clipboard_item = None;
-        self.request_redraw(RedrawFlag::Overlay);
+        self.mark_dirty(Component::Overlay);
     }
 }

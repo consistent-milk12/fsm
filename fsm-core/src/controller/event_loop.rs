@@ -18,7 +18,7 @@ use crate::model::app_state::AppState;
 use crate::model::object_registry::SortableEntry;
 use crate::model::command_palette::CommandAction;
 use crate::model::fs_state::{EntryFilter, EntrySort, PaneState};
-use crate::model::ui_state::{LoadingState, NotificationLevel, RedrawFlag, UIMode, UIOverlay};
+use crate::model::ui_state::{LoadingState, NotificationLevel, Component, UIMode, UIOverlay};
 use crate::tasks::file_ops_task::{FileOperation, FileOperationTask};
 use crate::tasks::search_task::RawSearchResult;
 use crate::tasks::size_task as FileSizeOperator; 
@@ -268,7 +268,7 @@ impl EventLoop {
                     debug!("Auto-dismissing notification on key press");
                     let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
                     app.ui.dismiss_notification();
-                    app.ui.request_redraw(RedrawFlag::All);
+                    app.ui.mark_dirty(Component::Notification);
                     // Continue processing the key event
                 }
 
@@ -337,7 +337,8 @@ impl EventLoop {
 
                     info!("User cancelled {cancelled_count} file operations via ESC key");
 
-                    app.ui.request_redraw(RedrawFlag::All);
+                    app.ui.mark_dirty(Component::Overlay);
+                    app.ui.mark_dirty(Component::Notification);
 
                     drop(app);
 
@@ -356,7 +357,7 @@ impl EventLoop {
             debug!("Escape: dismissing notification");
             let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
             app.ui.dismiss_notification();
-            app.ui.request_redraw(RedrawFlag::All);
+            app.ui.mark_dirty(Component::Notification);
             
             drop(app);
 
@@ -375,7 +376,7 @@ impl EventLoop {
             if app.ui.command_palette.show_completions {
                 debug!("Escape: hiding command completions");
                 app.ui.command_palette.hide_completions();
-                app.ui.request_redraw(RedrawFlag::All);
+                app.ui.mark_dirty(Component::Command);
 
                 drop(app);
 
@@ -712,7 +713,7 @@ impl EventLoop {
 
                 // Clear previous results for real-time search
                 Self::clear_search_results(&mut app);
-                app.ui.request_redraw(RedrawFlag::All);
+                app.ui.mark_dirty(Component::Main);
                 trace!("Content search input: '{}' (results cleared)", app.ui.input);
                 
                 drop(app);
@@ -727,7 +728,7 @@ impl EventLoop {
                 app.ui.input.pop();
                 Self::clear_search_results(&mut app);
 
-                app.ui.request_redraw(RedrawFlag::All);
+                app.ui.mark_dirty(Component::Main);
                 trace!("Content search input: '{}' (after backspace)", app.ui.input);
 
                 drop(app);
@@ -745,7 +746,7 @@ impl EventLoop {
                 if result_count > 0 {
                     let new_idx = app.ui.selected.unwrap_or(0).saturating_sub(1);
                     app.ui.selected = Some(new_idx);
-                    app.ui.request_redraw(RedrawFlag::All);
+                    app.ui.mark_dirty(Component::Main);
                     
                     drop(app);
 
@@ -763,7 +764,7 @@ impl EventLoop {
                     let current = app.ui.selected.unwrap_or(0);
                     let new_idx = (current + 1).min(result_count.saturating_sub(1));
                     app.ui.selected = Some(new_idx);
-                    app.ui.request_redraw(RedrawFlag::All);
+                    app.ui.mark_dirty(Component::Main);
                     
                     drop(app);
 
@@ -983,7 +984,7 @@ impl EventLoop {
                 if !app.ui.search_results.is_empty() {
                     let current = app.ui.selected.unwrap_or(0);
                     app.ui.selected = Some(current.saturating_sub(1));
-                    app.ui.request_redraw(RedrawFlag::All);
+                    app.ui.mark_dirty(Component::Main);
                 }
                 Action::NoOp
             }
@@ -996,7 +997,7 @@ impl EventLoop {
                 if result_count > 0 {
                     let current = app.ui.selected.unwrap_or(0);
                     app.ui.selected = Some((current + 1).min(result_count.saturating_sub(1)));
-                    app.ui.request_redraw(RedrawFlag::All);
+                    app.ui.mark_dirty(Component::Main);
                 }
 
                 Action::NoOp
@@ -1091,7 +1092,7 @@ impl EventLoop {
                 let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
 
                 app.update_object_info_batch(&parent_dir, objects).await;
-                app.ui.request_redraw(RedrawFlag::Main);
+                app.ui.mark_dirty(Component::Main);
             }
 
             // UI actions
@@ -1170,13 +1171,13 @@ impl EventLoop {
                 }
 
                 if redraw_needed {
-                    app.ui.request_redraw(RedrawFlag::All);
+                    app.ui.mark_dirty(Component::All);
                 }
             }
 
             Action::Key(_) | Action::Mouse(_) | Action::Resize(..) | Action::NoOp => {
                 let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-                app.ui.request_redraw(RedrawFlag::All);
+                app.ui.mark_dirty(Component::All);
             }
         }
 
@@ -1193,7 +1194,7 @@ impl EventLoop {
                 debug!("Toggling help overlay");
                 let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
                 app.ui.toggle_help_overlay();
-                app.ui.request_redraw(RedrawFlag::All);
+                app.ui.mark_dirty(Component::All);
 
                 info!("Help overlay toggled to: {:?}", app.ui.overlay);
                 
@@ -1204,7 +1205,7 @@ impl EventLoop {
                 debug!("Entering command mode");
                 let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
                 app.ui.enter_command_mode();
-                app.ui.request_redraw(RedrawFlag::All);
+                app.ui.mark_dirty(Component::All);
 
                 info!("Command mode activated");
                 
@@ -1215,7 +1216,7 @@ impl EventLoop {
                 debug!("Exiting command mode");
                 let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
                 app.ui.exit_command_mode();
-                app.ui.request_redraw(RedrawFlag::All);
+                app.ui.mark_dirty(Component::All);
             
                 info!("Command mode deactivated");
                 
@@ -1226,7 +1227,7 @@ impl EventLoop {
                 debug!("Toggling filename search overlay");
                 let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
                 app.ui.toggle_filename_search_overlay();
-                app.ui.request_redraw(RedrawFlag::All);
+                app.ui.mark_dirty(Component::All);
 
                 info!("Filename search overlay toggled to: {:?}", app.ui.overlay);
                 
@@ -1245,7 +1246,7 @@ impl EventLoop {
                     info!("Content search overlay closed");
                 }
 
-                app.ui.request_redraw(RedrawFlag::All);
+                app.ui.mark_dirty(Component::All);
                 
                 drop(app);
             }
@@ -1255,7 +1256,7 @@ impl EventLoop {
                 let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
                 let previous_overlay = app.ui.overlay;
                 app.ui.close_all_overlays();
-                app.ui.request_redraw(RedrawFlag::All);
+                app.ui.mark_dirty(Component::All);
                 
                 drop(app);
 
@@ -1266,7 +1267,7 @@ impl EventLoop {
                 debug!("Toggling hidden files visibility");
                 let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
                 app.ui.toggle_show_hidden();
-                app.ui.request_redraw(RedrawFlag::All);
+                app.ui.mark_dirty(Component::All);
             }
             Action::SimulateLoading => {
                 debug!("Simulating loading state");
@@ -1282,7 +1283,7 @@ impl EventLoop {
                 });
 
                 app.ui.overlay = UIOverlay::Loading;
-                app.ui.request_redraw(RedrawFlag::All);
+                app.ui.mark_dirty(Component::All);
             }
             _ => unreachable!(),
         }
@@ -1331,7 +1332,7 @@ impl EventLoop {
             }
             _ => unreachable!(),
         }
-        app.ui.request_redraw(RedrawFlag::All);
+        app.ui.mark_dirty(Component::Main);
     }
 
     async fn dispatch_command_action(&self, action: Action) {
@@ -1375,7 +1376,7 @@ impl EventLoop {
         if app.ui.is_in_command_mode() {
             app.ui.exit_command_mode();
         }
-        app.ui.request_redraw(RedrawFlag::All);
+        app.ui.mark_dirty(Component::All);
     }
 
     async fn dispatch_search_action(&self, action: Action) {
@@ -1384,13 +1385,13 @@ impl EventLoop {
                 info!("Starting filename search for pattern: '{}'", pattern);
                 let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
                 app.filename_search(&pattern);
-                app.ui.request_redraw(RedrawFlag::All);
+                app.ui.mark_dirty(Component::All);
             }
             Action::ContentSearch(pattern) => {
                 info!("Starting content search for pattern: '{}'", pattern);
                 let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
                 app.start_content_search(pattern);
-                app.ui.request_redraw(RedrawFlag::All);
+                app.ui.mark_dirty(Component::All);
             }
             Action::DirectContentSearch(pattern) => {
                 info!("Starting direct content search for pattern: '{}'", pattern);
@@ -1399,7 +1400,7 @@ impl EventLoop {
                 app.ui.input.clear();
                 app.start_content_search(pattern);
                 app.ui.exit_command_mode();
-                app.ui.request_redraw(RedrawFlag::All);
+                app.ui.mark_dirty(Component::All);
             }
             Action::ShowSearchResults(results) => {
                 self.handle_show_search_results(results).await;
@@ -1408,7 +1409,7 @@ impl EventLoop {
                 info!("Showing {} filename search results", results.len());
                 let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
                 app.ui.filename_search_results = results;
-                app.ui.request_redraw(RedrawFlag::All);
+                app.ui.mark_dirty(Component::All);
             }
             Action::ShowRichSearchResults(results) => {
                 self.handle_show_rich_search_results(results).await;
@@ -1434,7 +1435,7 @@ impl EventLoop {
             app.ui.selected = Some(0);
         }
 
-        app.ui.request_redraw(RedrawFlag::All);
+        app.ui.mark_dirty(Component::All);
     }
 
     async fn handle_show_rich_search_results(&self, results: Vec<String>) {
@@ -1446,7 +1447,7 @@ impl EventLoop {
             app.ui.selected = Some(0);
         }
 
-        app.ui.request_redraw(RedrawFlag::All);
+        app.ui.mark_dirty(Component::All);
     }
 
     async fn handle_show_raw_search_results(&self, results: RawSearchResult) {
@@ -1459,7 +1460,7 @@ impl EventLoop {
             app.ui.selected = Some(0);
         }
 
-        app.ui.request_redraw(RedrawFlag::All);
+        app.ui.mark_dirty(Component::All);
     }
 
     async fn handle_open_file(&self, path: Arc<PathBuf>, line_number: Option<usize>) {
@@ -1482,13 +1483,13 @@ impl EventLoop {
                 info!("Successfully launched VS Code for file: {}", path_str);
                 let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
                 app.ui.close_all_overlays();
-                app.ui.request_redraw(RedrawFlag::All);
+                app.ui.mark_dirty(Component::All);
             }
             Err(e) => {
                 warn!("Failed to open file with VS Code: {}", e);
                 let mut app = self.app.lock().await;
                 app.ui.show_error(format!("Failed to open file: {e}"));
-                app.ui.request_redraw(RedrawFlag::All);
+                app.ui.mark_dirty(Component::All);
             }
         }
     }
@@ -1505,7 +1506,7 @@ impl EventLoop {
                 trace!("Updating object info for {:?}", info.path);
                 let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
                 app.update_object_info(&parent_dir, &info);
-                app.ui.request_redraw(RedrawFlag::All);
+                app.ui.mark_dirty(Component::Main);
             }
             _ => unreachable!(),
         }
@@ -1540,6 +1541,8 @@ impl EventLoop {
             } => {
                 self.handle_file_op_complete(&mut app, operation_id, result)
                     .await;
+                app.ui.mark_dirty(Component::Overlay);
+                app.ui.mark_dirty(Component::Notification);
             }
             TaskResult::FileOperationProgress {
                 operation_id,
@@ -1565,10 +1568,9 @@ impl EventLoop {
                     throughput_bps,
                 )
                 .await;
+                app.ui.mark_dirty(Component::Overlay);
             }
         }
-
-        app.ui.request_redraw(RedrawFlag::All);
     }
 
     #[allow(clippy::unused_async)]
@@ -1704,7 +1706,7 @@ impl EventLoop {
                     let object_id = app.registry.insert(entry);
                     let sortable_entry = crate::model::object_registry::SortableEntry::from_object_info(&app.registry.get(object_id).unwrap(), object_id);
                     app.fs.active_pane_mut().add_incremental_entry(sortable_entry);
-                    app.ui.request_redraw(RedrawFlag::All);
+                    app.ui.mark_dirty(Component::Main);
                 }
                 ScanUpdate::Completed(count) => {
                     self.handle_scan_completed(&mut app, path, count).await;
@@ -1717,7 +1719,8 @@ impl EventLoop {
                     let err_msg: String = format!("Error scanning directory: {e}");
                     current_pane.last_error = Some(err_msg.clone());
                     app.set_error(err_msg);
-                    app.ui.request_redraw(RedrawFlag::All);
+                    app.ui.mark_dirty(Component::Main);
+                    app.ui.mark_dirty(Component::StatusBar);
                 }
             }
         }
@@ -1739,7 +1742,7 @@ impl EventLoop {
         info!("Showing input prompt: {:?}", prompt_type);
         let mut app = self.app.lock().await;
         app.ui.show_input_prompt(prompt_type);
-        app.ui.request_redraw(RedrawFlag::All);
+        app.ui.mark_dirty(Component::All);
     }
 
     #[allow(clippy::unused_async)]
@@ -1768,7 +1771,7 @@ impl EventLoop {
                 }
         }
 
-        app.ui.request_redraw(RedrawFlag::All);
+        app.ui.mark_dirty(Component::All);
     }
 
     async fn handle_submit_input_prompt(&self, input: String) {
@@ -1864,7 +1867,7 @@ impl EventLoop {
             Some(3000),
         );
 
-        app.ui.request_redraw(RedrawFlag::All);
+        app.ui.mark_dirty(Component::All);
     }
 
     async fn process_copy_destination_prompt(&self, app: MutexGuard<'_, AppState>, input: String) {
@@ -1969,7 +1972,7 @@ impl EventLoop {
         let mut app = self.app.lock().await;
         app.ui
             .show_error("No file selected for copy operation".to_string());
-        app.ui.request_redraw(RedrawFlag::All);
+        app.ui.mark_dirty(Component::All);
     }
 
     #[allow(clippy::unused_async)]
@@ -1977,7 +1980,7 @@ impl EventLoop {
         let mut app = self.app.lock().await;
         app.ui
             .show_error("No file selected for move operation".to_string());
-        app.ui.request_redraw(RedrawFlag::All);
+        app.ui.mark_dirty(Component::All);
     }
 
     #[allow(clippy::unused_async)]
@@ -1985,14 +1988,14 @@ impl EventLoop {
         let mut app = self.app.lock().await;
         app.ui
             .show_error("No file selected for rename operation".to_string());
-        app.ui.request_redraw(RedrawFlag::All);
+        app.ui.mark_dirty(Component::All);
     }
 
     #[allow(clippy::unused_async)]
     async fn handle_missing_prompt_type(&self) {
         info!("No prompt type set when submitting input");
         let mut app = self.app.lock().await;
-        app.ui.request_redraw(RedrawFlag::All);
+        app.ui.mark_dirty(Component::All);
     }
 
     async fn dispatch_file_op_action(&self, action: Action) {
@@ -2087,7 +2090,7 @@ impl EventLoop {
         let mut app = self.app.lock().await;
         app.ui
             .show_info(format!("Cancellation operations {operation_id}"));
-        app.ui.request_redraw(RedrawFlag::All);
+        app.ui.mark_dirty(Component::All);
     }
 
     async fn create_and_spawn_file_operation_task(
@@ -2131,7 +2134,7 @@ impl EventLoop {
     async fn show_operation_info(&self, message: String) {
         let mut app = self.app.lock().await;
         app.ui.show_info(message);
-        app.ui.request_redraw(RedrawFlag::All);
+        app.ui.mark_dirty(Component::All);
     }
 
     #[allow(clippy::unused_async)]
@@ -2168,7 +2171,7 @@ impl EventLoop {
 
                 let sort_criteria: String = active_pane.sort.to_string();
                 app.sort_entries(&sort_criteria);
-                app.ui.request_redraw(RedrawFlag::All);
+                app.ui.mark_dirty(Component::All);
             }
 
             Action::Filter(_) => {
@@ -2187,7 +2190,7 @@ impl EventLoop {
 
                 let filter_criteria: String = active_pane.filter.to_string();
                 app.filter_entries(&filter_criteria);
-                app.ui.request_redraw(RedrawFlag::All);
+                app.ui.mark_dirty(Component::All);
             }
             _ => unreachable!(),
         }

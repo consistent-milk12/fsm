@@ -28,7 +28,7 @@ use crate::controller::event_loop::TaskResult;
 use crate::fs::object_info::ObjectInfo;
 use crate::model::fs_state::{FSState, PaneState};
 use crate::model::object_registry::{ObjectRegistry, SortableEntry};
-use crate::model::ui_state::{RedrawFlag, UIState};
+use crate::model::ui_state::{Component, UIState};
 use crate::tasks::filename_search_task::FilenameSearchTask;
 
 use std::{cmp::Ordering, collections::{HashMap, HashSet, VecDeque}, path::PathBuf};
@@ -158,21 +158,21 @@ impl AppState {
     pub fn mark_entry(&mut self, path: impl Into<PathBuf>) {
         self.marked.insert(path.into());
         
-        self.ui.request_redraw(RedrawFlag::All); // Use UI state for redraw management
+        self.ui.mark_dirty(Component::Main); // Use UI state for redraw management
     }
 
     /// Unmark a previously marked entry.
     pub fn unmark_entry(&mut self, path: &Path) {
         self.marked.remove(path);
         
-        self.ui.request_redraw(RedrawFlag::All);
+        self.ui.mark_dirty(Component::Main);
     }
 
     /// Clear all marked entries.
     pub fn clear_marks(&mut self) {
         self.marked.clear();
         
-        self.ui.request_redraw(RedrawFlag::All);
+        self.ui.mark_dirty(Component::All);
     }
 
     /// Add a reversible event to the history stack (for undo/redo).
@@ -183,14 +183,14 @@ impl AppState {
             self.history.pop_front();
         }
         
-        self.ui.request_redraw(RedrawFlag::All);
+        self.ui.mark_dirty(Component::All);
     }
 
     /// Register a plugin for later use.
     pub fn register_plugin(&mut self, info: PluginInfo) {
         self.plugins.insert(info.name.clone(), info);
         
-        self.ui.request_redraw(RedrawFlag::All);
+        self.ui.mark_dirty(Component::All);
     }
 
     /// Add or update a running/pending async task.
@@ -199,7 +199,7 @@ impl AppState {
         
         self.tasks.insert(task.task_id, task);
         
-        self.ui.request_redraw(RedrawFlag::All);
+        self.ui.mark_dirty(Component::All);
     }
 
     /// Update task completion/result.
@@ -210,7 +210,7 @@ impl AppState {
             task.is_completed = true;
             task.result = result;
         
-            self.ui.request_redraw(RedrawFlag::All);
+            self.ui.mark_dirty(Component::All);
         }
     }
 
@@ -222,7 +222,7 @@ impl AppState {
         
         self.last_error = Some(msg_str.clone());
         self.ui.show_error(msg_str);
-        self.ui.request_redraw(RedrawFlag::All);
+        self.ui.mark_dirty(Component::All);
     }
 
     /// Set the latest info/status message (display in UI).
@@ -233,7 +233,7 @@ impl AppState {
         
         self.ui.last_status = Some(msg_str.clone());
         self.ui.show_info(msg_str);
-        self.ui.request_redraw(RedrawFlag::All);
+        self.ui.mark_dirty(Component::All);
     }
 
     /// Show a success notification
@@ -242,7 +242,7 @@ impl AppState {
         self.ui.show_success(success_msg.clone());
         
         info!("Success: {}", success_msg);
-        self.ui.request_redraw(RedrawFlag::All);
+        self.ui.mark_dirty(Component::All);
     }
 
     /// Show a warning notification
@@ -251,14 +251,14 @@ impl AppState {
         self.ui.show_warning(warning_msg.clone());
         
         info!("Warning: {}", warning_msg);
-        self.ui.request_redraw(RedrawFlag::All);
+        self.ui.mark_dirty(Component::All);
     }
 
     /// Clear error and status messages.
     pub fn clear_msgs(&mut self) {
         self.last_error = None;
         self.ui.last_status = None;
-        self.ui.request_redraw(RedrawFlag::All);
+        self.ui.mark_dirty(Component::All);
     }
 
     /// Navigate to a new directory, updating the active pane.
@@ -290,7 +290,7 @@ impl AppState {
         
             Err(e) => {
                 self.set_error(format!("Invalid path: {}: {}", path.display(), e));
-                self.ui.request_redraw(RedrawFlag::All);
+                self.ui.mark_dirty(Component::All);
         
                 return;
             }
@@ -300,7 +300,7 @@ impl AppState {
         current_pane.cwd.clone_from(&canonical_path);
         current_pane.is_loading = true;
         
-        self.ui.request_redraw(RedrawFlag::All);
+        self.ui.mark_dirty(Component::All);
 
         // Use streaming directory scan for better responsiveness
         self.enter_directory_streaming(canonical_path).await;
@@ -320,7 +320,7 @@ impl AppState {
             self.set_status("Already at root.");
         }
         
-        self.ui.request_redraw(RedrawFlag::All);
+        self.ui.mark_dirty(Component::All);
     }
 
     pub async fn reload_directory(&mut self) {
@@ -369,7 +369,7 @@ impl AppState {
             )),
         );
 
-        self.ui.request_redraw(RedrawFlag::All);
+        self.ui.mark_dirty(Component::All);
     }
 
     /// Enter the currently selected directory or open the file.
@@ -401,7 +401,7 @@ impl AppState {
             }
         }
 
-        self.ui.request_redraw(RedrawFlag::All);
+        self.ui.mark_dirty(Component::All);
     }
 
     /// Open a file with external editor (VS Code)
@@ -683,7 +683,7 @@ impl AppState {
             self.registry.clone(),
         );
 
-        self.ui.request_redraw(RedrawFlag::All);
+        self.ui.mark_dirty(Component::All);
         debug!("Filename search task {} initiated successfully", task_id);
     }
 
@@ -753,7 +753,7 @@ impl AppState {
             info.format_date("%Y-%m-%d")
         );
         
-        self.ui.request_redraw(RedrawFlag::All);
+        self.ui.mark_dirty(Component::All);
     }
 
     /// Process batch of `ObjectInfo` updates efficiently (single mutex lock per batch) 
@@ -830,7 +830,7 @@ impl AppState {
             _ => {}
         }
       
-        self.ui.request_redraw(RedrawFlag::All);
+        self.ui.mark_dirty(Component::All);
     }
 
     pub fn filter_entries(&mut self, filter_criteria: &str) {
@@ -852,7 +852,7 @@ impl AppState {
             )
             .collect();
         
-        self.ui.request_redraw(RedrawFlag::All);
+        self.ui.mark_dirty(Component::All);
     }
 }
 

@@ -37,7 +37,7 @@ pub mod model {
 
     pub mod ui_state;
     pub use ui_state::{
-        FileOperationProgress, LoadingState, Notification, NotificationLevel, RedrawFlag,
+        FileOperationProgress, LoadingState, Notification, NotificationLevel, Component,
         SearchType, UIMode, UIOverlay, UIState,
     };
 

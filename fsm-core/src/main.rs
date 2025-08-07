@@ -45,7 +45,7 @@ use fsm_core::{
         app_state::AppState,
         fs_state::FSState,
         object_registry::ObjectRegistry,
-        ui_state::{RedrawFlag, UIState},
+        ui_state::{Component, UIState},
     },
     printer::finalize_logs,
     view::ui::View,
@@ -88,7 +88,7 @@ struct App {
 impl App {
     /// Initialize the application with all necessary components
     async fn new() -> Result<Self> {
-        let tracer_guard: WorkerGuard = init_logging_with_level("INFO").await?;
+        let tracer_guard: WorkerGuard = init_logging_with_level("TRACE").await?;
 
         Tracer::info!("Starting File Manager TUI");
 
@@ -152,7 +152,7 @@ impl App {
         {
             let mut state: MutexGuard<'_, AppState> = app_state.lock().await;
             state.enter_directory(current_dir).await;
-            state.ui.request_redraw(RedrawFlag::All); // Use UI state for redraw management
+            state.ui.mark_dirty(Component::All); // Use UI state for redraw management
         }
 
         Tracer::info!("Application initialization complete");
@@ -192,7 +192,7 @@ impl App {
                     continue;
                 };
                 
-                state.ui.needs_redraw() 
+                state.ui.is_dirty() 
                     || (now.duration_since(last_render) > FORCE_RENDER_INTERVAL)
                     || (now.duration_since(last_render) > MIN_FRAME_TIME && state.ui.has_pending_changes())
             };
@@ -268,7 +268,7 @@ impl App {
         };
 
         // Double-check if redraw is still needed (may have changed)
-        if state.ui.needs_redraw() {
+        if state.ui.is_dirty() {
             let start: Instant = Instant::now();
 
             // Render with minimal mutex hold time
@@ -278,7 +278,7 @@ impl App {
                 })
                 .context("Failed to draw terminal")?;
 
-            state.ui.clear_redraw();
+            state.ui.clear_dirty();
 
             // Release mutex immediately after render
             drop(state);
