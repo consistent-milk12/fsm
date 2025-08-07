@@ -5,8 +5,11 @@
 //! Spawns an async ripgrep child process, captures raw output line‑by‑line,
 //! and reports the result set back to the UI for direct display without blocking.
 
-use std::{process::Stdio, time::{Duration, Instant}};
 use std::{path::PathBuf, process::ExitStatus};
+use std::{
+    process::Stdio,
+    time::{Duration, Instant},
+};
 
 use ansi_to_tui::IntoText;
 use compact_str::CompactString;
@@ -20,7 +23,7 @@ use tokio::{
 use crate::{
     config::Config,
     controller::{actions::Action, event_loop::TaskResult},
-    logging::{ProfilingData}
+    logging::ProfilingData,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,14 +36,12 @@ pub struct RawSearchResult {
 
 impl RawSearchResult {
     /// High-performance ANSI escape code stripping using optimized external crate (25-35% faster)
-    #[must_use] 
+    #[must_use]
     pub fn strip_ansi_codes(input: &str) -> CompactString {
         // Use optimized strip-ansi-escapes crate for 25-35% performance improvement
         // and CompactString for stack allocation of small results (<23 chars)
         let stripped = strip_ansi_escapes::strip(input);
-        CompactString::from(
-            std::str::from_utf8(&stripped).unwrap_or(input)
-        )
+        CompactString::from(std::str::from_utf8(&stripped).unwrap_or(input))
     }
 
     /// Parse file information from a ripgrep output line with optimized ANSI stripping
@@ -87,20 +88,21 @@ impl RawSearchResult {
         } else if parts.len() == 2 {
             // This might be "line_number:content" format - we need context
             parts[0].trim().parse::<u32>().map_or_else(
-                |_| -> Option<(PathBuf, Option<u32>)> 
-            {
-                // This might be "filename:something"
-                let file_path: PathBuf = PathBuf::from(parts[0].trim());
-                tracing::debug!("PARSE: Parsed partial - file: {:?}", file_path);
-                Some((file_path, None))
-            }, |line_num: u32| -> Option<(PathBuf, Option<u32>)> {
-                tracing::debug!(
-                    "PARSE: Found line:content format without filename - line: {}",
-                    line_num
-                );
-                // Return None because we need filename context
-                None
-            })
+                |_| -> Option<(PathBuf, Option<u32>)> {
+                    // This might be "filename:something"
+                    let file_path: PathBuf = PathBuf::from(parts[0].trim());
+                    tracing::debug!("PARSE: Parsed partial - file: {:?}", file_path);
+                    Some((file_path, None))
+                },
+                |line_num: u32| -> Option<(PathBuf, Option<u32>)> {
+                    tracing::debug!(
+                        "PARSE: Found line:content format without filename - line: {}",
+                        line_num
+                    );
+                    // Return None because we need filename context
+                    None
+                },
+            )
         } else {
             tracing::debug!("PARSE: Failed to parse - insufficient parts");
             None
@@ -188,7 +190,7 @@ impl RawSearchResult {
             }
 
             let path: PathBuf = PathBuf::from(clean_line.trim());
-            
+
             let absolute_path: PathBuf = if path.is_absolute() {
                 path
             } else {
@@ -225,164 +227,165 @@ pub struct SearchTask;
 
 ///
 /// # Panics
-/// 
+///
 /// If the stdout out is not piped (which is always handled by helpper functions).
-/// 
+///
 #[expect(clippy::too_many_lines, reason = "Marked for refactor")]
 #[expect(clippy::cast_sign_loss, reason = "Expected")]
 pub fn search_task(
-      task_id: u64,
-      pattern: String,
-      path: PathBuf,
-      task_tx: UnboundedSender<TaskResult>,
-      action_tx: UnboundedSender<Action>,
-  ) {
-      tokio::spawn(async move {
-          let start_time = Instant::now();
-          let start_memory_kb = ProfilingData::get_current_memory_kb();
+    task_id: u64,
+    pattern: String,
+    path: PathBuf,
+    task_tx: UnboundedSender<TaskResult>,
+    action_tx: UnboundedSender<Action>,
+) {
+    tokio::spawn(async move {
+        let start_time = Instant::now();
+        let start_memory_kb = ProfilingData::get_current_memory_kb();
 
-          let mut output_lines: Vec<String> = Vec::new();
-          let mut parsed_lines: Vec<Text<'static>> = Vec::new();
+        let mut output_lines: Vec<String> = Vec::new();
+        let mut parsed_lines: Vec<Text<'static>> = Vec::new();
 
-          // Build simple `rg` command with line numbers and color
-          let mut child: Child = match Command::new("rg")
-              .arg("--line-number")
-              .arg("--with-filename")
-              .arg("--color=always")
-              .arg("--heading")
-              .arg("--context=1")
-              .arg(&pattern)
-              .arg(&path)
-              .kill_on_drop(true)
-              .stdout(Stdio::piped())
-              .stderr(Stdio::piped())
-              .spawn()
-          {
-              Ok(c) => c,
-              Err(e) => {
-                  let duration: Duration = start_time.elapsed();
-                  let config: Config = Config::load().await.unwrap();
-                  let profiling_data: ProfilingData = ProfilingData::collect_profiling_data_conditional(
-                      start_memory_kb,
-                      duration,
-                      &config.profiling
-                  );
+        // Build simple `rg` command with line numbers and color
+        let mut child: Child = match Command::new("rg")
+            .arg("--line-number")
+            .arg("--with-filename")
+            .arg("--color=always")
+            .arg("--heading")
+            .arg("--context=1")
+            .arg(&pattern)
+            .arg(&path)
+            .kill_on_drop(true)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+        {
+            Ok(c) => c,
+            Err(e) => {
+                let duration: Duration = start_time.elapsed();
+                let config: Config = Config::load().await.unwrap();
+                let profiling_data: ProfilingData =
+                    ProfilingData::collect_profiling_data_conditional(
+                        start_memory_kb,
+                        duration,
+                        &config.profiling,
+                    );
 
-                  let _ = task_tx.send(TaskResult::Legacy {
-                      task_id,
-                      result: Err(format!("failed to spawn ripgrep: {e}")),
-                      progress: Some(1.0),
-                      current_item: None,
-                      completed: None,
-                      total: None,
-                      message: None,
-                      execution_time: Some(duration),
-                      memory_usage: Some(profiling_data.memory_delta_kb.unwrap() as u64),
-                  });
-                  return;
-              }
-          };
+                let _ = task_tx.send(TaskResult::Legacy {
+                    task_id,
+                    result: Err(format!("failed to spawn ripgrep: {e}")),
+                    progress: Some(1.0),
+                    current_item: None,
+                    completed: None,
+                    total: None,
+                    message: None,
+                    execution_time: Some(duration),
+                    memory_usage: Some(profiling_data.memory_delta_kb.unwrap() as u64),
+                });
+                return;
+            }
+        };
 
-          // Stream ripgrep stdout line‑by‑line
-          let stdout: ChildStdout = child.stdout.take().expect("stdout must be piped");
-          let mut reader: Lines<BufReader<ChildStdout>> = BufReader::new(stdout).lines();
+        // Stream ripgrep stdout line‑by‑line
+        let stdout: ChildStdout = child.stdout.take().expect("stdout must be piped");
+        let mut reader: Lines<BufReader<ChildStdout>> = BufReader::new(stdout).lines();
 
-          while let Ok(Some(line)) = reader.next_line().await {
-              if !line.trim().is_empty() {
-                  output_lines.push(line.clone());
-                  match line.as_bytes().to_vec().into_text() {
-                      Ok(parsed_text) => parsed_lines.push(parsed_text),
-                      Err(_) => parsed_lines.push(Text::raw(line)),
-                  }
-              }
-          }
+        while let Ok(Some(line)) = reader.next_line().await {
+            if !line.trim().is_empty() {
+                output_lines.push(line.clone());
+                match line.as_bytes().to_vec().into_text() {
+                    Ok(parsed_text) => parsed_lines.push(parsed_text),
+                    Err(_) => parsed_lines.push(Text::raw(line)),
+                }
+            }
+        }
 
-          // Wait for rg to exit and check status
-          let status: ExitStatus = match child.wait().await {
-              Ok(status) => status,
-              Err(e) => {
-                  let duration: Duration = start_time.elapsed();
-                  let config: Config = Config::load().await.unwrap();
-                  let profiling_data: ProfilingData = ProfilingData::collect_profiling_data_conditional(
-                      start_memory_kb,
-                      duration,
-                      &config.profiling
-                  );
+        // Wait for rg to exit and check status
+        let status: ExitStatus = match child.wait().await {
+            Ok(status) => status,
+            Err(e) => {
+                let duration: Duration = start_time.elapsed();
+                let config: Config = Config::load().await.unwrap();
+                let profiling_data: ProfilingData =
+                    ProfilingData::collect_profiling_data_conditional(
+                        start_memory_kb,
+                        duration,
+                        &config.profiling,
+                    );
 
-                  let _ = task_tx.send(TaskResult::Legacy {
-                      task_id,
-                      result: Err(format!("failed to wait for ripgrep: {e}")),
-                      progress: Some(1.0),
-                      current_item: None,
-                      completed: None,
-                      total: None,
-                      message: None,
-                      execution_time: Some(duration),
-                      memory_usage: Some(profiling_data.memory_delta_kb.unwrap() as u64),
-                  });
-                  return;
-              }
-          };
+                let _ = task_tx.send(TaskResult::Legacy {
+                    task_id,
+                    result: Err(format!("failed to wait for ripgrep: {e}")),
+                    progress: Some(1.0),
+                    current_item: None,
+                    completed: None,
+                    total: None,
+                    message: None,
+                    execution_time: Some(duration),
+                    memory_usage: Some(profiling_data.memory_delta_kb.unwrap() as u64),
+                });
+                return;
+            }
+        };
 
-          if !status.success() && status.code() != Some(1) {
-              let duration: Duration = start_time.elapsed();
-              let config: Config = Config::load().await.unwrap();
-              let profiling_data: ProfilingData = ProfilingData::collect_profiling_data_conditional(
-                      start_memory_kb,
-                      duration,
-                      &config.profiling
-              );
+        if !status.success() && status.code() != Some(1) {
+            let duration: Duration = start_time.elapsed();
+            let config: Config = Config::load().await.unwrap();
+            let profiling_data: ProfilingData = ProfilingData::collect_profiling_data_conditional(
+                start_memory_kb,
+                duration,
+                &config.profiling,
+            );
 
-              let _ = task_tx.send(TaskResult::Legacy {
-                  task_id,
-                  result: Err(format!("ripgrep failed with status: {status}")),
-                  progress: Some(1.0),
-                  current_item: None,
-                  completed: None,
-                  total: None,
-                  message: None,
-                  execution_time: Some(duration),
-                  memory_usage: Some(profiling_data.memory_delta_kb.unwrap() as u64),
-              });
-              return;
-          }
+            let _ = task_tx.send(TaskResult::Legacy {
+                task_id,
+                result: Err(format!("ripgrep failed with status: {status}")),
+                progress: Some(1.0),
+                current_item: None,
+                completed: None,
+                total: None,
+                message: None,
+                execution_time: Some(duration),
+                memory_usage: Some(profiling_data.memory_delta_kb.unwrap() as u64),
+            });
+            return;
+        }
 
-          let match_count: usize = output_lines.len();
+        let match_count: usize = output_lines.len();
 
-          // Calculate final profiling data
-          let duration: Duration = start_time.elapsed();
-          let config: Config = Config::load().await.unwrap();
-          let profiling_data: ProfilingData = ProfilingData::collect_profiling_data_conditional(
-                      start_memory_kb,
-                      duration,
-                      &config.profiling
-          );
+        // Calculate final profiling data
+        let duration: Duration = start_time.elapsed();
+        let config: Config = Config::load().await.unwrap();
+        let profiling_data: ProfilingData = ProfilingData::collect_profiling_data_conditional(
+            start_memory_kb,
+            duration,
+            &config.profiling,
+        );
 
-          // Report completion with profiling data
-          let _ = task_tx.send(TaskResult::Legacy {
-              task_id,
-              result: Ok(format!("found {match_count} line(s) matching pattern")),
-              progress: Some(1.0),
-              current_item: None,
-              completed: None,
-              total: None,
-              message: None,
-              execution_time: Some(duration),
-              memory_usage: Some(profiling_data.memory_delta_kb.unwrap() as u64)
-          });
+        // Report completion with profiling data
+        let _ = task_tx.send(TaskResult::Legacy {
+            task_id,
+            result: Ok(format!("found {match_count} line(s) matching pattern")),
+            progress: Some(1.0),
+            current_item: None,
+            completed: None,
+            total: None,
+            message: None,
+            execution_time: Some(duration),
+            memory_usage: Some(profiling_data.memory_delta_kb.unwrap() as u64),
+        });
 
-          // Send raw results to UI
-          let raw_result: RawSearchResult = RawSearchResult {
-              lines: output_lines,
-              parsed_lines,
-              total_matches: match_count,
-              base_directory: path.clone(),
-          };
+        // Send raw results to UI
+        let raw_result: RawSearchResult = RawSearchResult {
+            lines: output_lines,
+            parsed_lines,
+            total_matches: match_count,
+            base_directory: path.clone(),
+        };
 
-          let _ =
-  action_tx.send(Action::ShowRawSearchResults(raw_result));
-      });
-  }
+        let _ = action_tx.send(Action::ShowRawSearchResults(raw_result));
+    });
+}
 
 // ---- helper impls for brevity ---------------------------------------------
 pub trait TaskResultExt {
@@ -404,7 +407,7 @@ impl TaskResultExt for TaskResult {
             memory_usage: None,   // No memory usage tracking in helper methods
         }
     }
-    
+
     fn error(id: u64, msg: String) -> Self {
         Self::Legacy {
             task_id: id,

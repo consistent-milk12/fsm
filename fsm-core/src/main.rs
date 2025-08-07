@@ -11,15 +11,15 @@
 #![allow(clippy::multiple_crate_versions)]
 
 use std::{
-    io::{self, Stdout}, 
+    io::{self, Stdout},
     panic::PanicHookInfo,
     path::PathBuf,
     result::Result as StdResult,
     sync::Arc,
-    time::{Duration, Instant}
+    time::{Duration, Instant},
 };
 
-use fsm_core::logging::{init_logging_with_level, ProfilingData};
+use fsm_core::logging::{ProfilingData, init_logging_with_level};
 
 use anyhow::{Context, Error, Result};
 use crossterm::{
@@ -29,22 +29,21 @@ use crossterm::{
 use ratatui::{Frame, Terminal, backend::CrosstermBackend as Backend};
 use tokio::{
     signal,
-    sync::{mpsc, Mutex, MutexGuard, Notify}, task::JoinHandle,
+    sync::{Mutex, MutexGuard, Notify, mpsc},
+    task::JoinHandle,
 };
 
 use fsm_core::{
-    cache::cache_manager::ObjectInfoCache,
-    model::metadata_manager::MetadataManager,
     config::Config,
     controller::{
         actions::Action,
         event_loop::{EventLoop, TaskResult},
     },
     logging::shutdown_logging,
+    model::metadata_manager::MetadataManager,
     model::{
-        app_state::AppState,
         fs_state::FSState,
-        object_registry::ObjectRegistry,
+        shared_state::SharedState,
         ui_state::{Component, UIState},
     },
     printer::finalize_logs,
@@ -79,7 +78,7 @@ async fn main() -> Result<()> {
 struct App {
     terminal: AppTerminal,
     controller: EventLoop,
-    state: Arc<Mutex<AppState>>,
+    state: Arc<SharedState>,
     shutdown: Arc<Notify>,
     last_memory_check: Instant,
     _tracer_guard: WorkerGuard,
@@ -96,63 +95,51 @@ impl App {
 
         // Concurrently load configuration and determine the current directory to improve startup time.
         let config_handle: JoinHandle<StdResult<Config, Error>> = tokio::spawn(Config::load());
-        let dir_handle: JoinHandle<StdResult<PathBuf, io::Error>> = tokio::spawn(tokio::fs::canonicalize("."));
+        let dir_handle: JoinHandle<StdResult<PathBuf, io::Error>> =
+            tokio::spawn(tokio::fs::canonicalize("."));
 
-        let config: Arc<Config> = Arc::new(
-            config_handle
-                .await?
-                .unwrap_or_else(
-                    |e| -> Config 
-                    {
-                        Tracer::info!("Failed to load config, using defaults: {e}");
-                        Config::default()
-                    }
-                )
-            );
+        let config: Arc<Config> = Arc::new(config_handle.await?.unwrap_or_else(|e| -> Config {
+            Tracer::info!("Failed to load config, using defaults: {e}");
+            Config::default()
+        }));
 
-        let cache: Arc<ObjectInfoCache> =
-            Arc::new(ObjectInfoCache::with_config(config.cache.clone()));
-        
-        // UNIFIED METADATA MANAGER: Replaces separate cache + registry architecture
-        let metadata_manager: Arc<MetadataManager> = 
-            Arc::new(MetadataManager::new(config.cache.max_capacity));
-        
+        // UNIFIED METADATA MANAGER: Single source of truth for all metadata
+        let metadata_manager: Arc<MetadataManager> = Arc::new(MetadataManager::new());
+
         let fs_state: FSState = FSState::default();
         let ui_state: UIState = UIState::default();
 
-        let (
-            task_tx,
-            task_rx
-        ) = mpsc::unbounded_channel::<TaskResult>();
- 
-        let (
-            action_tx, 
-            action_rx
-        ) = mpsc::unbounded_channel::<Action>();
+        let (task_tx, task_rx) = mpsc::unbounded_channel::<TaskResult>();
 
-        let registry = Arc::new(ObjectRegistry::new());
-        let app_state: Arc<Mutex<AppState>> = Arc::new(Mutex::new(AppState::new(
+        let (action_tx, action_rx) = mpsc::unbounded_channel::<Action>();
+
+        // SHARED STATE: Fine-grained locking architecture
+        let shared_state = Arc::new(SharedState::new(
             config,
-            cache,
-            registry,
             metadata_manager,
-            fs_state,
             ui_state,
+            fs_state,
             task_tx.clone(),
             action_tx,
-        )));
+        ));
 
-        let controller: EventLoop = EventLoop::new(app_state.clone(), task_rx, action_rx);
+        let controller: EventLoop = EventLoop::new(shared_state.clone(), task_rx, action_rx);
         let shutdown: Arc<Notify> = Arc::new(Notify::new());
 
         let current_dir: PathBuf = dir_handle
             .await?
             .context("Failed to get current directory")?;
 
+        // Initialize current directory in FS state
         {
-            let mut state: MutexGuard<'_, AppState> = app_state.lock().await;
-            state.enter_directory(current_dir).await;
-            state.ui.mark_dirty(Component::All); // Use UI state for redraw management
+            let mut fs_guard = shared_state.lock_fs();
+            fs_guard.active_pane_mut().cwd = current_dir;
+        }
+
+        // Mark UI for initial render
+        {
+            let mut ui_guard = shared_state.lock_ui();
+            ui_guard.mark_dirty(Component::All);
         }
 
         Tracer::info!("Application initialization complete");
@@ -160,7 +147,7 @@ impl App {
         Ok(Self {
             terminal,
             controller,
-            state: app_state,
+            state: shared_state,
             shutdown,
             last_memory_check: Instant::now(),
             _tracer_guard: tracer_guard,
@@ -181,22 +168,19 @@ impl App {
 
         loop {
             self.check_memory_usage();
-            
+
             // Smart redraw: only render when needed or forced refresh
             let now: Instant = Instant::now();
             let should_render: bool = {
-                let state: MutexGuard<'_, AppState> = if let Ok(state) = self.state.try_lock() { state } else {
-                    // Don't block on render - skip this frame if state is busy
-                    tokio::task::yield_now().await;
-
-                    continue;
-                };
-                
-                state.ui.is_dirty() 
-                    || (now.duration_since(last_render) > FORCE_RENDER_INTERVAL)
-                    || (now.duration_since(last_render) > MIN_FRAME_TIME && state.ui.has_pending_changes())
+                // Try to lock UI state non-blocking - concurrent architecture allows this
+                self.state.try_lock_ui().is_some_and(|ui_guard| {
+                    ui_guard.is_dirty()
+                        || (now.duration_since(last_render) > FORCE_RENDER_INTERVAL)
+                        || (now.duration_since(last_render) > MIN_FRAME_TIME
+                            && ui_guard.has_pending_changes())
+                })
             };
-            
+
             if should_render {
                 self.render().await?;
                 last_render = now;
@@ -261,27 +245,29 @@ impl App {
     #[expect(clippy::manual_let_else, reason = "False Positive")]
     async fn render(&mut self) -> Result<()> {
         // Use try_lock to avoid blocking - if state is busy, skip the frame
-        let mut state = if let Ok(state) = self.state.try_lock() { state } else {
+        let mut state_guard = if let Some(guard) = self.state.try_lock() {
+            guard
+        } else {
             // State is busy with background operations - yield and retry
             tokio::task::yield_now().await;
             return Ok(());
         };
 
         // Double-check if redraw is still needed (may have changed)
-        if state.ui.is_dirty() {
+        if state_guard.ui.is_dirty() {
             let start: Instant = Instant::now();
 
-            // Render with minimal mutex hold time
+            // Render with minimal mutex hold time - use deprecated interface temporarily
             self.terminal
                 .draw(|frame: &mut Frame<'_>| {
-                    View::redraw(frame, &mut state);
+                    View::redraw(frame, &self.state);
                 })
                 .context("Failed to draw terminal")?;
 
-            state.ui.clear_dirty();
+            state_guard.ui.clear_dirty();
 
             // Release mutex immediately after render
-            drop(state);
+            drop(state_guard);
 
             let duration: Duration = start.elapsed();
 
@@ -289,11 +275,9 @@ impl App {
             let duration_us: u64 = duration.as_micros() as u64;
 
             // Collect profiling data for render operations
-            let profiling_data: ProfilingData = ProfilingData::collect_profiling_data(
-                None, 
-                duration
-            );
-            
+            let profiling_data: ProfilingData =
+                ProfilingData::collect_profiling_data(None, duration);
+
             if duration.as_millis() > 16 {
                 tracing::warn!(
                     marker = "PERF_FRAME_RENDER",

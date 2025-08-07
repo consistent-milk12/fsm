@@ -11,16 +11,20 @@
 //! - Proper error handling without poisoning cache
 
 use std::{
-    collections::VecDeque, path::{Path, PathBuf}, sync::{
-        atomic::{AtomicU64, Ordering}, Arc
-    }, time::{Duration, Instant}
+    collections::VecDeque,
+    path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::{Duration, Instant},
 };
 
 use compact_str::ToCompactString;
 use moka::future::Cache;
 // Serde traits now imported via config module
 use thiserror::Error;
-use tracing::{debug, error, info, warn, instrument};
+use tracing::{debug, error, info, instrument, warn};
 
 use crate::{config::CacheConfig, error_core::CoreError, fs::object_info::ObjectInfo};
 
@@ -32,10 +36,10 @@ pub type ObjectKey = Arc<str>;
 pub enum CacheError {
     #[error("Cache loader failed: {0}")]
     LoaderFailed(String),
-    
+
     #[error("Invalid cache key: {0}")]
     InvalidKey(String),
-    
+
     #[error("Cache operation timed out")]
     Timeout,
 }
@@ -74,7 +78,7 @@ impl CacheStats {
         self.loads.fetch_add(1, Ordering::Relaxed);
         self.total_load_time_ns
             .fetch_add(duration.as_nanos() as u64, Ordering::Relaxed);
-       
+
         if !success {
             self.load_exceptions.fetch_add(1, Ordering::Relaxed);
         }
@@ -119,7 +123,7 @@ pub struct CacheStatsSnapshot {
 
 impl CacheStatsSnapshot {
     #[expect(clippy::cast_precision_loss, reason = "Expected precision loss")]
-    #[must_use] 
+    #[must_use]
     pub fn hit_rate(&self) -> f64 {
         let total = self.hits + self.misses;
         if total == 0 {
@@ -129,11 +133,11 @@ impl CacheStatsSnapshot {
         }
     }
 
-    #[must_use] 
+    #[must_use]
     pub const fn load_count(&self) -> u64 {
         self.loads
     }
-    
+
     #[expect(clippy::cast_precision_loss, reason = "Expected precision loss")]
     #[must_use]
     pub fn exception_rate(&self) -> f64 {
@@ -165,7 +169,7 @@ pub struct ObjectInfoCache {
 
 impl ObjectInfoCache {
     /// Create a new cache with custom configuration
-    #[must_use] 
+    #[must_use]
     pub fn with_config(config: CacheConfig) -> Self {
         let mut cache_builder = Cache::builder()
             .max_capacity(config.max_capacity)
@@ -190,7 +194,7 @@ impl ObjectInfoCache {
         } else {
             cache_builder.build()
         };
-        
+
         Self {
             inner,
             config,
@@ -200,13 +204,13 @@ impl ObjectInfoCache {
     }
 
     /// Create cache with default configuration
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self::with_config(CacheConfig::default())
     }
 
     /// Get cache configuration
-    #[must_use] 
+    #[must_use]
     pub const fn config(&self) -> &CacheConfig {
         &self.config
     }
@@ -249,7 +253,7 @@ impl ObjectInfoCache {
                 Some(CacheEntry::Failed) => {
                     self.stats.record_miss();
                     warn!(
-                        marker = "CACHE_OPERATION", 
+                        marker = "CACHE_OPERATION",
                         operation_type = "cache_failed_entry",
                         cache_key = %key,
                         "Cache contained failed entry"
@@ -259,7 +263,7 @@ impl ObjectInfoCache {
                     self.stats.record_miss();
                     debug!(
                         marker = "CACHE_OPERATION",
-                        operation_type = "cache_miss", 
+                        operation_type = "cache_miss",
                         cache_key = %key,
                         lookup_time_us = lookup_duration.as_micros(),
                         "Cache miss - key not found"
@@ -353,7 +357,7 @@ impl ObjectInfoCache {
                     cache_key = %key_clone,
                     "Starting loader function execution"
                 );
-                
+
                 let load_result: Result<ObjectInfo, CoreError> = loader().await;
                 let load_duration: Duration = load_start.elapsed();
 
@@ -364,7 +368,7 @@ impl ObjectInfoCache {
                 match load_result {
                     Ok(info) => {
                         info!(
-                            marker = "CACHE_OPERATION", 
+                            marker = "CACHE_OPERATION",
                             operation_type = "loader_success",
                             cache_key = %key_clone,
                             load_duration_ms = load_duration.as_millis(),
@@ -375,7 +379,7 @@ impl ObjectInfoCache {
                     Err(e) => {
                         error!(
                             marker = "CACHE_OPERATION",
-                            operation_type = "loader_failure", 
+                            operation_type = "loader_failure",
                             cache_key = %key_clone,
                             load_duration_ms = load_duration.as_millis(),
                             error = %e,
@@ -401,7 +405,7 @@ impl ObjectInfoCache {
             }
             Ok(CacheEntry::Failed) => {
                 error!(
-                    marker = "CACHE_OPERATION", 
+                    marker = "CACHE_OPERATION",
                     operation_type = "get_or_load_failed_entry",
                     cache_key = %key,
                     "get_or_load returned failed entry"
@@ -411,12 +415,12 @@ impl ObjectInfoCache {
             Err(e) => {
                 error!(
                     marker = "CACHE_OPERATION",
-                    operation_type = "get_or_load_error", 
+                    operation_type = "get_or_load_error",
                     cache_key = %key,
                     error = %e,
                     "get_or_load encountered error"
                 );
-            
+
                 Err(CoreError::Other(e.to_compact_string()))
             }
         }
@@ -441,9 +445,11 @@ impl ObjectInfoCache {
     #[instrument(skip(self, info), fields(cache_key = %key))]
     pub async fn insert(&self, key: ObjectKey, info: ObjectInfo) {
         let insert_start: Instant = Instant::now();
-        self.inner.insert(key.clone(), CacheEntry::Success(info.clone())).await;
+        self.inner
+            .insert(key.clone(), CacheEntry::Success(info.clone()))
+            .await;
         let insert_duration: Duration = insert_start.elapsed();
-        
+
         info!(
             marker = "CACHE_OPERATION",
             operation_type = "cache_insert",
@@ -527,19 +533,19 @@ impl ObjectInfoCache {
     }
 
     /// Get current cache entry count
-    #[must_use] 
+    #[must_use]
     pub fn entry_count(&self) -> u64 {
         self.inner.entry_count()
     }
 
     /// Get weighted size (approximate memory usage)
-    #[must_use] 
+    #[must_use]
     pub fn weighted_size(&self) -> u64 {
         self.inner.weighted_size()
     }
 
     /// Get cache statistics snapshot
-    #[must_use] 
+    #[must_use]
     pub fn stats(&self) -> CacheStatsSnapshot {
         if self.config.enable_stats {
             self.stats.snapshot()
@@ -641,7 +647,7 @@ impl ObjectInfoCache {
     /// Get approximate memory usage per entry
     pub fn avg_entry_size(&self) -> usize {
         let entry_count: u64 = self.entry_count();
-        
+
         if entry_count == 0 {
             0
         } else {
@@ -663,7 +669,7 @@ impl ObjectInfoCache {
     pub async fn warm_directory_relationships<P: AsRef<Path>>(
         &self,
         base_path: P,
-        depth: usize
+        depth: usize,
     ) -> Result<usize, CoreError> {
         let base_path: &Path = base_path.as_ref();
         let mut warmed_count: usize = 0;
@@ -681,8 +687,9 @@ impl ObjectInfoCache {
                     }
 
                     Err(e) => warn!(
-                        "Failed to warm parent directory {}: {}", 
-                        parent.display(), e
+                        "Failed to warm parent directory {}: {}",
+                        parent.display(),
+                        e
                     ),
                 }
             }
@@ -710,24 +717,23 @@ impl ObjectInfoCache {
                                     warmed_count += 1;
 
                                     // Add subdirectories to queue for next level
-                                    if info.is_dir && remaining_depth > 1
-                                    {
+                                    if info.is_dir && remaining_depth > 1 {
                                         work_queue.push_back((entry_path, remaining_depth - 1));
                                     }
                                 }
 
-                                Err(e) => warn!(
-                                    "Failed to warm entry {}: {}", 
-                                    entry_path.display(), e
-                                ),
+                                Err(e) => {
+                                    warn!("Failed to warm entry {}: {}", entry_path.display(), e)
+                                }
                             }
                         }
                     }
                 }
 
                 Err(e) => warn!(
-                    "Failed to read directory for warming {}: {}", 
-                    current_path.display(), e
+                    "Failed to read directory for warming {}: {}",
+                    current_path.display(),
+                    e
                 ),
             }
         }
@@ -772,14 +778,16 @@ impl ObjectInfoCache {
     }
 }
 
-
 impl Default for ObjectInfoCache {
     fn default() -> Self {
         Self::new()
     }
 }
 
-#[expect(clippy::missing_fields_in_debug, reason = "Intended loss of debug data")]
+#[expect(
+    clippy::missing_fields_in_debug,
+    reason = "Intended loss of debug data"
+)]
 // Implement Debug manually to avoid exposing internal cache state
 impl std::fmt::Debug for ObjectInfoCache {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

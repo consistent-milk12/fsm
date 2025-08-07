@@ -6,7 +6,7 @@
 //! - Integrates with `UIState`'s input buffer and `last_query`
 //! - Themed, keyboard-centric, and visually distinct
 
-use crate::AppState;
+use crate::model::shared_state::SharedState;
 use crate::view::theme;
 use ratatui::{
     Frame,
@@ -19,9 +19,14 @@ use ratatui::{
 pub struct SearchOverlay;
 
 impl SearchOverlay {
-    pub fn render(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
-        let input = &app.ui.input;
-        let last_query = app.ui.last_query.as_deref().unwrap_or("");
+    pub fn render(frame: &mut Frame<'_>, shared_state: &SharedState, area: Rect) {
+        let (input, last_query) = {
+            let ui_guard = shared_state.lock_ui();
+            (
+                ui_guard.input.clone(),
+                ui_guard.last_query.as_deref().unwrap_or("").to_string(),
+            )
+        };
         let match_count: Option<usize> = None; // Placeholder
 
         let mut lines = vec![Line::from(vec![

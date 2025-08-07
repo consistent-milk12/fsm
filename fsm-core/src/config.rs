@@ -32,13 +32,13 @@ use tokio::fs as TokioFs;
 pub enum Theme {
     #[default]
     Default,
-    
+
     Light,
-    
+
     Dark,
-    
+
     Solarized,
-    
+
     Custom(String),
 }
 
@@ -47,12 +47,12 @@ pub enum Theme {
 #[serde(rename_all = "lowercase")]
 pub enum Keymap {
     Vim,
-    
+
     Emacs,
-    
+
     #[default]
     Standard,
-    
+
     Custom(String),
 }
 
@@ -61,16 +61,16 @@ pub enum Keymap {
 pub struct ProfilingConfig {
     /// Enable profiling data collection
     pub enabled: bool,
-    
+
     /// Sample rate for profiling (0.0 to 1.0, where 1.0 = 100%)
     pub sample_rate: f32,
-    
+
     /// Enable memory tracking (may have performance impact)
     pub memory_tracking: bool,
-    
+
     /// Enable CPU usage tracking (may have performance impact)
     pub cpu_tracking: bool,
-    
+
     /// Minimum duration (ms) to trigger profiling for an operation
     pub min_duration_ms: u64,
 }
@@ -78,7 +78,7 @@ pub struct ProfilingConfig {
 impl Default for ProfilingConfig {
     fn default() -> Self {
         Self {
-            enabled: true, // Disabled by default for performance
+            enabled: true,    // Disabled by default for performance
             sample_rate: 0.1, // 10% sampling
             memory_tracking: true,
             cpu_tracking: true,
@@ -92,21 +92,21 @@ impl Default for ProfilingConfig {
 pub struct CacheConfig {
     /// Maximum number of entries
     pub max_capacity: u64,
-    
+
     /// Time-to-live for entries
     #[serde(with = "humantime_serde")]
     pub ttl: Duration,
-    
+
     /// Time-to-idle (evict if not accessed)
     #[serde(with = "humantime_serde")]
     pub tti: Duration,
-    
+
     /// Maximum memory usage estimate (MB)
     pub max_memory_mb: u64,
-    
+
     /// Enable cache statistics
     pub enable_stats: bool,
-    
+
     /// Number of shards for concurrent access (power of 2)
     pub num_shards: usize,
 }
@@ -128,16 +128,16 @@ impl Default for CacheConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub theme: Theme,
-    
+
     pub keymap: Keymap,
-    
+
     pub cache: CacheConfig, // Centralized cache configuration
-    
+
     #[serde(default)] // Backward compatibility - use default if missing
     pub profiling: ProfilingConfig, // Performance profiling configuration
-    
+
     pub show_hidden: bool,
-    
+
     pub editor_cmd: String,
 }
 
@@ -165,14 +165,14 @@ impl Config {
             info!("Loading config from {}", path.display());
             let text = TokioFs::read_to_string(&path).await?;
             let cfg: Self = toml::from_str(&text)?;
-        
+
             Ok(cfg)
         } else {
             info!(
                 "No config file found at {}, using default configuration. Creating it now.",
                 path.display()
             );
-        
+
             let default_config = Self::default();
             default_config.save().await?;
 
@@ -183,16 +183,16 @@ impl Config {
     /// Saves config to TOML file at the XDG-compliant app config dir.
     pub async fn save(&self) -> anyhow::Result<()> {
         let path = Self::config_path()?;
-        
+
         info!("Saving config to {}", path.display());
-        
+
         if let Some(parent) = path.parent() {
             TokioFs::create_dir_all(parent).await?;
         }
-        
+
         let toml_str = toml::to_string_pretty(self)?;
         TokioFs::write(&path, toml_str).await?;
-        
+
         Ok(())
     }
 

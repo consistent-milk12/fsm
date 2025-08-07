@@ -1,6 +1,6 @@
 //!
 //!  ``src/model/command_palette.rs``
-//! 
+//!
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandPaletteState {

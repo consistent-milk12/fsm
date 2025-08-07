@@ -37,7 +37,7 @@ pub mod model {
 
     pub mod ui_state;
     pub use ui_state::{
-        FileOperationProgress, LoadingState, Notification, NotificationLevel, Component,
+        Component, FileOperationProgress, LoadingState, Notification, NotificationLevel,
         SearchType, UIMode, UIOverlay, UIState,
     };
 
@@ -47,6 +47,9 @@ pub mod model {
     pub use loading_strategy::SmoothedKStrategy;
 
     pub mod object_registry;
+
+    pub mod shared_state;
+    pub use shared_state::SharedState;
 }
 
 pub mod view {

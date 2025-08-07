@@ -1,10 +1,13 @@
 //! Enhanced Filename Search Task: Background recursive filename search
-//! 
+//!
 //! Spawns async find/fd process, converts hits to `ObjectInfo`, reports to UI.
 //! Expert-level implementation following all 20 MANDATORY RULES.
-use std::{path::{Path, PathBuf}, sync::Arc};
 use std::process::{ExitStatus, Stdio};
 use std::time::{Duration, Instant};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use compact_str::CompactString;
 use smallvec::{SmallVec, smallvec};
@@ -16,10 +19,13 @@ use tokio::{
     sync::mpsc::UnboundedSender,
     time::timeout,
 };
-use tracing::{Span, instrument, warn};
 use tracing::field::Empty as EmptyTraceField;
+use tracing::{Span, instrument, warn};
 
-use crate::{cache::cache_manager::ObjectInfoCache, error_core::{CoreError, CoreResult}};
+use crate::{
+    cache::cache_manager::ObjectInfoCache,
+    error_core::{CoreError, CoreResult},
+};
 use crate::{
     controller::{actions::Action, event_loop::TaskResult},
     fs::object_info::ObjectInfo,
@@ -60,20 +66,15 @@ impl FilenameSearchTask {
             let task_start: Instant = Instant::now();
 
             // Input validation
-            if let Err(err) = Self::validate_search_inputs(
-                    &pattern, 
-                    &search_path)
-                    .await 
-            {
+            if let Err(err) = Self::validate_search_inputs(&pattern, &search_path).await {
                 let _ = task_tx.send(TaskResult::from_core_error(task_id, &err));
                 return;
             }
 
             // Command selection
-            let selected_command: CompactString = match Self::select_search_command().await 
-            {
+            let selected_command: CompactString = match Self::select_search_command().await {
                 Ok(cmd) => cmd,
-            
+
                 Err(err) => {
                     let _ = task_tx.send(TaskResult::from_core_error(task_id, &err));
                     return;
@@ -81,36 +82,31 @@ impl FilenameSearchTask {
             };
 
             // Process execution
-            let child: Child = match Self::spawn_search_command(
-                &selected_command,
-                &pattern,
-                &search_path,
-            ).await {
-                Ok(child) => child,
-                
-                Err(err) => {
-                    let _ = task_tx.send(TaskResult::from_core_error(task_id, &err));
-                    return;
-                }
-            };
+            let child: Child =
+                match Self::spawn_search_command(&selected_command, &pattern, &search_path).await {
+                    Ok(child) => child,
+
+                    Err(err) => {
+                        let _ = task_tx.send(TaskResult::from_core_error(task_id, &err));
+                        return;
+                    }
+                };
 
             // Stream processing
-            let (results, processed_count, error_count) = match 
-                Self::
-                    process_search_stream(
-                        task_id,
-                        child,
-                        &search_path,
-                        &task_tx,
-                        cache.clone()
-                    )
-                    .await 
+            let (results, processed_count, error_count) = match Self::process_search_stream(
+                task_id,
+                child,
+                &search_path,
+                &task_tx,
+                cache.clone(),
+            )
+            .await
             {
                 Ok(results) => {
                     // Extract metrics from span - simplified approach
                     (results, 0u64, 0u64)
                 }
-            
+
                 Err(err) => {
                     let _ = task_tx.send(TaskResult::from_core_error(task_id, &err));
                     return;
@@ -127,8 +123,7 @@ impl FilenameSearchTask {
                 &task_tx,
                 &action_tx,
                 &registry,
-            )
-            {
+            ) {
                 let _ = task_tx.send(TaskResult::from_core_error(task_id, &err));
             }
         });
@@ -161,10 +156,7 @@ impl FilenameSearchTask {
             is_valid = EmptyTraceField,
         )
     )]
-    async fn validate_search_inputs(
-        pattern: &str,
-        search_path: &Path,
-    ) -> CoreResult<()> {
+    async fn validate_search_inputs(pattern: &str, search_path: &Path) -> CoreResult<()> {
         if pattern.trim().is_empty() {
             let err: CoreError = CoreError::invalid_input("pattern", "empty");
 
@@ -203,10 +195,8 @@ impl FilenameSearchTask {
     )]
     async fn select_search_command() -> CoreResult<CompactString> {
         // RULE 8: SmallVec for stack allocation
-        let candidates: SmallVec<[(&str, &str); 2]> = smallvec![
-            ("fd", "preferred"),
-            ("find", "fallback"),
-        ];
+        let candidates: SmallVec<[(&str, &str); 2]> =
+            smallvec![("fd", "preferred"), ("find", "fallback"),];
 
         for (cmd, priority) in &candidates {
             if Self::check_command_availability(cmd).await {
@@ -242,21 +232,25 @@ impl FilenameSearchTask {
 
         match command {
             "fd" => {
-                cmd.arg("--type").arg("f")
-                    .arg("--type").arg("d")
+                cmd.arg("--type")
+                    .arg("f")
+                    .arg("--type")
+                    .arg("d")
                     .arg("--hidden")
                     .arg("--follow")
                     .arg("--case-sensitive")
                     .arg(pattern)
                     .arg(search_path);
             }
-            
+
             "find" => {
                 cmd.arg(search_path)
                     .arg("(")
-                    .arg("-type").arg("f")
+                    .arg("-type")
+                    .arg("f")
                     .arg("-o")
-                    .arg("-type").arg("d")
+                    .arg("-type")
+                    .arg("d")
                     .arg(")")
                     .arg("-iname")
                     .arg(format!("*{pattern}*"));
@@ -264,8 +258,7 @@ impl FilenameSearchTask {
             _ => return Err(CoreError::invalid_input("command", command).trace()),
         }
 
-        cmd
-            .kill_on_drop(true)
+        cmd.kill_on_drop(true)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -318,11 +311,13 @@ impl FilenameSearchTask {
 
             // Read next line with timeout
             let line_result = timeout(Duration::from_secs(5), reader.next_line()).await;
-            
+
             match line_result {
                 Ok(Ok(Some(line))) => {
                     let line: &str = line.trim();
-                    if line.is_empty() { continue; }
+                    if line.is_empty() {
+                        continue;
+                    }
 
                     processed_count += 1;
                     let file_path: PathBuf = PathBuf::from(line);
@@ -333,10 +328,10 @@ impl FilenameSearchTask {
                     }
 
                     // OPTIMIZED: Use get_or_load_path with proper async loader
-                    match cache.get_or_load_path(
-                        &file_path, 
-                        || ObjectInfo::from_path_async(&file_path)
-                    ).await {
+                    match cache
+                        .get_or_load_path(&file_path, || ObjectInfo::from_path_async(&file_path))
+                        .await
+                    {
                         Ok(info) => {
                             results.push(info);
 
@@ -366,7 +361,7 @@ impl FilenameSearchTask {
                     error_count += 1;
                     break;
                 }
-                
+
                 Err(_) => {
                     // Line read timeout - check if child is still alive
                     match child.try_wait() {
@@ -374,7 +369,7 @@ impl FilenameSearchTask {
                             // Child has exited, break the loop
                             break;
                         }
-                        
+
                         Ok(None) => {
                             // Child still running, continue but log warning
                             warn!("Line read timeout but child still running");
@@ -420,11 +415,9 @@ impl FilenameSearchTask {
         error_count: u64,
     ) {
         // RULE 5: CompactString for efficient string handling
-        let progress_msg: CompactString = CompactString::new(
-            format!(
-                "Found {results_count} matches (processed {processed_count}, {error_count} errors)",
-            )
-        );
+        let progress_msg: CompactString = CompactString::new(format!(
+            "Found {results_count} matches (processed {processed_count}, {error_count} errors)",
+        ));
 
         let _ = task_tx.send(TaskResult::Legacy {
             task_id,
@@ -443,7 +436,10 @@ impl FilenameSearchTask {
     // Completion handling - RULE 9: Forward compatibility
     // ------------------------------------------------------------------------
 
-    #[expect(clippy::cast_possible_truncation, reason = "Current precision is enough in this context.")]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "Current precision is enough in this context."
+    )]
     #[expect(clippy::too_many_arguments, reason = "Necessary")]
     #[instrument(
         fields(
@@ -480,11 +476,9 @@ impl FilenameSearchTask {
             .record("execution_time_ms", total_duration.as_millis() as u64)
             .record("performance_category", perf_category);
 
-        let completion_message = CompactString::new(
-            format!(
-                "Found {results_count} matches in {total_duration:?} (processed {processed_count} entries, {error_count} errors)"
-             )
-        );
+        let completion_message = CompactString::new(format!(
+            "Found {results_count} matches in {total_duration:?} (processed {processed_count} entries, {error_count} errors)"
+        ));
 
         // Send completion result
         let _ = task_tx.send(TaskResult::Legacy {

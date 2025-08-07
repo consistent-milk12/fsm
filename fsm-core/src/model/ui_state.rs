@@ -17,10 +17,10 @@ use tokio_util::sync::CancellationToken;
 
 use compact_str::CompactString;
 
-use crate::{controller::actions::InputPromptType, FileNameSearchOverlay};
 use crate::model::command_palette::{Command, CommandAction, CommandPaletteState};
 use crate::model::object_registry::SortableEntry;
 use crate::tasks::search_task::RawSearchResult;
+use crate::{FileNameSearchOverlay, controller::actions::InputPromptType};
 
 /// Granular component flags for selective UI updates
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -671,7 +671,7 @@ impl UIState {
         self.theme = theme.into();
         self.mark_dirty_all();
     }
-    
+
     pub const fn set_active_pane(&mut self, pane: usize) {
         self.active_pane = pane;
         self.mark_dirty_all();

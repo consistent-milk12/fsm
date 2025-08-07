@@ -1,4 +1,4 @@
-use crate::AppState;
+use crate::model::shared_state::SharedState;
 use crate::view::theme;
 use ratatui::{
     Frame,
@@ -11,7 +11,7 @@ use ratatui::{
 pub struct HelpOverlay;
 
 impl HelpOverlay {
-    pub fn render(frame: &mut Frame<'_>, _app: &AppState, area: Rect) {
+    pub fn render(frame: &mut Frame<'_>, _shared_state: &SharedState, area: Rect) {
         let help_text = vec![
             Line::from(Span::styled(
                 "File Manager — Help",

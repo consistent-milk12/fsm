@@ -30,7 +30,7 @@ use std::ffi::OsStr;
 use std::fs::{self, FileType, Metadata};
 
 // Handle time values safely.
-use std::time::{SystemTime, UNIX_EPOCH, Duration};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 // ------------------------------------------------------------
 // Third-party crate imports
@@ -46,7 +46,7 @@ use bytesize::ByteSize;
 use chrono::{DateTime, Local, TimeZone};
 
 // Serde traits for (de)serialization.
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 // Tokio FS for optional async constructors.
 use tokio::fs as tokio_fs;
@@ -56,7 +56,7 @@ use tokio::fs as tokio_fs;
 // ------------------------------------------------------------
 
 // Application-level error enum.
-use crate::{error_core::CoreError};
+use crate::error_core::CoreError;
 
 // ------------------------------------------------------------
 // ObjectType — file, directory, or symlink.
@@ -73,9 +73,9 @@ pub enum ObjectType {
 impl std::fmt::Display for ObjectType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Dir      => write!(f, "Dir"),
-            Self::File     => write!(f, "File"),
-            Self::Symlink  => write!(f, "Symlink"),
+            Self::Dir => write!(f, "Dir"),
+            Self::File => write!(f, "File"),
+            Self::Symlink => write!(f, "Symlink"),
         }
     }
 }
@@ -88,19 +88,19 @@ impl std::fmt::Display for ObjectType {
 pub struct ObjectInfo {
     // Cache line 1 (64 bytes) - Hot path fields accessed together
     // Shared absolute path - registry lookup hot path
-    pub path: Arc<PathBuf>,        // 8 bytes
+    pub path: Arc<PathBuf>, // 8 bytes
 
     // Byte length - sorting hot path
-    pub size: u64,                 // 8 bytes
+    pub size: u64, // 8 bytes
 
     // Children count - directory operations
-    pub items_count: u64,          // 8 bytes
+    pub items_count: u64, // 8 bytes
 
-    // Last-modification timestamp - sorting hot path  
-    pub modified: SystemTime,      // 16 bytes (u64 + u32)
+    // Last-modification timestamp - sorting hot path
+    pub modified: SystemTime, // 16 bytes (u64 + u32)
 
     // File or directory name - rendering hot path
-    pub name: CompactString,       // 24 bytes
+    pub name: CompactString, // 24 bytes
     // Total: 64 bytes - exactly one cache line
 
     // Cache line 2 - Less frequently accessed fields
@@ -108,10 +108,10 @@ pub struct ObjectInfo {
     pub extension: Option<CompactString>, // 32 bytes
 
     // Object classification bits - frequent but small
-    pub is_dir: bool,              // 1 byte
-    pub is_symlink: bool,          // 1 byte  
-    pub metadata_loaded: bool,     // 1 byte
-    // 29 bytes padding to cache line boundary
+    pub is_dir: bool,     // 1 byte
+    pub is_symlink: bool, // 1 byte
+    pub metadata_loaded: bool, // 1 byte
+                          // 29 bytes padding to cache line boundary
 }
 
 // ------------------------------------------------------------
@@ -121,12 +121,12 @@ pub struct ObjectInfo {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LightObjectInfo {
     // Hot path fields - accessed during directory scanning
-    pub path: Arc<PathBuf>,        // 8 bytes - most accessed
-    pub name: CompactString,       // 24 bytes - frequent rendering
-    pub extension: Option<CompactString>, // 32 bytes - occasional  
-    pub is_dir: bool,              // 1 byte - frequent classification
-    pub is_symlink: bool,          // 1 byte - less frequent
-    // 6 bytes padding - but fields in optimal access order
+    pub path: Arc<PathBuf>,               // 8 bytes - most accessed
+    pub name: CompactString,              // 24 bytes - frequent rendering
+    pub extension: Option<CompactString>, // 32 bytes - occasional
+    pub is_dir: bool,                     // 1 byte - frequent classification
+    pub is_symlink: bool,                 // 1 byte - less frequent
+                                          // 6 bytes padding - but fields in optimal access order
 }
 
 // ------------------------------------------------------------
@@ -136,7 +136,7 @@ pub struct LightObjectInfo {
 impl LightObjectInfo {
     // Constant-time type check.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub const fn object_type(&self) -> ObjectType {
         if self.is_dir {
             ObjectType::Dir
@@ -152,11 +152,7 @@ impl LightObjectInfo {
         let meta: Metadata = fs::symlink_metadata(path)?;
         let ftype: FileType = meta.file_type();
 
-        let name = CompactString::new(
-            path.file_name()
-                .and_then(OsStr::to_str)
-                .unwrap_or(""),
-        );
+        let name = CompactString::new(path.file_name().and_then(OsStr::to_str).unwrap_or(""));
 
         let ext = if ftype.is_file() {
             path.extension()
@@ -181,11 +177,7 @@ impl LightObjectInfo {
         let meta: Metadata = fs::symlink_metadata(path)?;
         let ftype: FileType = meta.file_type();
 
-        let name = CompactString::new(
-            path.file_name()
-                .and_then(OsStr::to_str)
-                .unwrap_or(""),
-        );
+        let name = CompactString::new(path.file_name().and_then(OsStr::to_str).unwrap_or(""));
 
         let ext = if ftype.is_file() {
             path.extension()
@@ -211,11 +203,8 @@ impl LightObjectInfo {
         let meta: Metadata = tokio_fs::symlink_metadata(path).await?;
         let ftype: FileType = meta.file_type();
 
-        let name: CompactString = CompactString::new(
-            path.file_name()
-                .and_then(OsStr::to_str)
-                .unwrap_or(""),
-        );
+        let name: CompactString =
+            CompactString::new(path.file_name().and_then(OsStr::to_str).unwrap_or(""));
 
         let ext: Option<CompactString> = if ftype.is_file() {
             path.extension()
@@ -252,7 +241,7 @@ impl LightObjectInfo {
 impl ObjectInfo {
     // Quick object-type check.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub const fn object_type(&self) -> ObjectType {
         if self.is_dir {
             ObjectType::Dir
@@ -265,16 +254,17 @@ impl ObjectInfo {
 
     // Human-readable size string.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn size_human(&self) -> String {
         ByteSize::b(self.size).to_string()
     }
 
     // Format the modification date.
     #[expect(clippy::cast_possible_wrap, reason = "Expected")]
-    #[must_use] 
+    #[must_use]
     pub fn format_date(&self, fmt: &str) -> String {
-        let dur: Duration = self.modified
+        let dur: Duration = self
+            .modified
             .duration_since(UNIX_EPOCH)
             .unwrap_or_else(|_| -> Duration { Duration::from_secs(0) });
 
@@ -289,29 +279,29 @@ impl ObjectInfo {
     // Synchronous cold-path constructor.
     pub fn from_path_sync(path: &Path) -> Result<Self, CoreError> {
         let meta: Metadata = fs::symlink_metadata(path)?;
-        
+
         Self::from_meta(path, &meta)
     }
 
     // Asynchronous cold-path constructor.
     pub async fn from_path_async(path: &Path) -> Result<Self, CoreError> {
         let meta: Metadata = tokio_fs::symlink_metadata(path).await?;
-        
+
         Self::from_meta(path, &meta)
     }
 
     // Internal builder shared by both entry points.
-    #[expect(clippy::unnecessary_wraps, reason = "Actually necessary for '?' propagation")]
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "Actually necessary for '?' propagation"
+    )]
     fn from_meta(path: &Path, meta: &Metadata) -> Result<Self, CoreError> {
         let ftype: FileType = meta.file_type();
         let is_dir: bool = ftype.is_dir();
         let is_link: bool = ftype.is_symlink();
 
-        let name: CompactString = CompactString::new(
-            path.file_name()
-                .and_then(OsStr::to_str)
-                .unwrap_or(""),
-        );
+        let name: CompactString =
+            CompactString::new(path.file_name().and_then(OsStr::to_str).unwrap_or(""));
 
         let ext: Option<CompactString> = if ftype.is_file() {
             path.extension()
@@ -345,15 +335,14 @@ impl ObjectInfo {
     // Promote from LightObjectInfo synchronously.
     fn from_light_sync(light: LightObjectInfo) -> Result<Self, CoreError> {
         let meta: Metadata = fs::symlink_metadata(&*light.path)?;
-        
+
         Self::from_light_common(light, &meta)
     }
 
     // Promote from LightObjectInfo asynchronously.
-    async fn from_light_async(light: LightObjectInfo) -> Result<Self, CoreError>
-    {
+    async fn from_light_async(light: LightObjectInfo) -> Result<Self, CoreError> {
         let meta: Metadata = tokio_fs::symlink_metadata(&*light.path).await?;
-        
+
         Self::from_light_common(light, &meta)
     }
 
@@ -361,7 +350,7 @@ impl ObjectInfo {
     pub fn from_light_common(light: LightObjectInfo, meta: &Metadata) -> Result<Self, CoreError> {
         let size: u64 = if light.is_dir { 0 } else { meta.len() };
 
-        // Lazy item counting optimization - avoid extra read_dir() syscall  
+        // Lazy item counting optimization - avoid extra read_dir() syscall
         // Item count loaded on-demand when needed for display
         let items: u64 = 0;
 
@@ -383,8 +372,8 @@ impl ObjectInfo {
     /// Lazy load directory item count on-demand (avoids syscall during construction)
     pub fn load_items_count(&mut self) -> Result<u64, CoreError> {
         if self.is_dir && self.items_count == 0 {
-            self.items_count = fs::read_dir(&*self.path)
-                .map_or(0, |r: ReadDir| -> u64 { r.count() as u64 });
+            self.items_count =
+                fs::read_dir(&*self.path).map_or(0, |r: ReadDir| -> u64 { r.count() as u64 });
         }
         Ok(self.items_count)
     }

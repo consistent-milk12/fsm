@@ -7,7 +7,7 @@
 //! This is a core feature for command-line driven interaction.
 
 use crate::{
-    model::{app_state::AppState, command_palette::get_command_description},
+    model::{command_palette::get_command_description, shared_state::SharedState},
     view::theme,
 };
 use ratatui::{
@@ -50,11 +50,12 @@ impl CommandCompletion {
     /// Returns the area used for the command line
     pub fn render_command_interface(
         frame: &mut Frame<'_>,
-        app: &AppState,
+        shared_state: &SharedState,
         area: Rect,
         config: &CompletionConfig,
     ) -> Rect {
-        let palette = &app.ui.command_palette;
+        let ui_guard = shared_state.lock_ui();
+        let palette = &ui_guard.command_palette;
         let input = &palette.input;
         let command_text = format!(":{input}");
 
@@ -80,7 +81,8 @@ impl CommandCompletion {
             frame.set_cursor_position((cursor_x, layout[0].y));
 
             // Render completions
-            Self::render_completions(frame, app, layout[1], config);
+            Self::render_completions(frame, &ui_guard, layout[1], config);
+            drop(ui_guard); // Release the guard early
 
             area // Return full area used
         } else {
@@ -130,11 +132,11 @@ impl CommandCompletion {
     /// Render completion suggestions with advanced UI
     fn render_completions(
         frame: &mut Frame<'_>,
-        app: &AppState,
+        ui_guard: &crate::model::ui_state::UIState,
         area: Rect,
         config: &CompletionConfig,
     ) {
-        let palette = &app.ui.command_palette;
+        let palette = &ui_guard.command_palette;
 
         // Early return check with debug
         if palette.completions.is_empty() {
@@ -264,12 +266,10 @@ impl CommandCompletion {
         };
 
         let display_text: String = if config.show_descriptions {
-            get_command_description(completion)
-            .map_or_else(
-                || -> String 
-                {format!("{prefix}{completion}")},
-                 |desc: &'static str| -> String 
-                 {format!("{prefix}{completion:<12} - {desc}")})
+            get_command_description(completion).map_or_else(
+                || -> String { format!("{prefix}{completion}") },
+                |desc: &'static str| -> String { format!("{prefix}{completion:<12} - {desc}") },
+            )
         } else {
             format!("{prefix}{completion}")
         };
@@ -336,7 +336,11 @@ impl CommandCompletion {
 }
 
 /// Convenience function for default completion rendering
-pub fn render_command_with_completions(frame: &mut Frame<'_>, app: &AppState, area: Rect) -> Rect {
+pub fn render_command_with_completions(
+    frame: &mut Frame<'_>,
+    shared_state: &SharedState,
+    area: Rect,
+) -> Rect {
     let config = CompletionConfig::default();
-    CommandCompletion::render_command_interface(frame, app, area, &config)
+    CommandCompletion::render_command_interface(frame, shared_state, area, &config)
 }

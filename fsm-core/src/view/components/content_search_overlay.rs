@@ -6,7 +6,7 @@
 //! and comprehensive search result display with context and navigation.
 
 use crate::view::theme;
-use crate::{model::app_state::AppState, view::icons};
+use crate::{model::shared_state::SharedState, view::icons};
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
@@ -19,8 +19,8 @@ use std::time::Instant;
 pub struct ContentSearchOverlay;
 
 impl ContentSearchOverlay {
-    pub fn render(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
-        let render_start = Instant::now();
+    pub fn render(frame: &mut Frame<'_>, shared_state: &SharedState, area: Rect) {
+        let _render_start = Instant::now();
 
         // Use larger overlay for production quality
         let overlay_area = Self::centered_rect(85, 80, area);
@@ -30,49 +30,65 @@ impl ContentSearchOverlay {
         let layout = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(3), // Input box
-                Constraint::Length(1), // Status/stats bar
-                Constraint::Fill(1),   // Results or loading
-                Constraint::Length(1), // Help text
+                Constraint::Length(3), // Input area
+                Constraint::Length(3), // Status area
+                Constraint::Length(2), // Help text
+                Constraint::Fill(1),   // Results
             ])
             .split(overlay_area);
 
-        // Render enhanced input box with search state
-        Self::render_search_input(frame, app, layout[0]);
+        // Render components with shared state
+        Self::render_search_input(frame, shared_state, layout[0]);
+        Self::render_search_status(frame, shared_state, layout[1]);
+        Self::render_help_text(frame, shared_state, layout[2]);
 
-        // Render search statistics and status
-        Self::render_search_status(frame, app, layout[1]);
+        // Choose result renderer based on current data
+        let ui_guard = shared_state.lock_ui();
+        let has_raw_results = ui_guard.raw_search_results.is_some();
+        let has_rich_results = !ui_guard.rich_search_results.is_empty();
+        let has_simple_results = !ui_guard.search_results.is_empty();
+        drop(ui_guard);
 
-        // Render search results or status
-        Self::render_content_results(frame, app, layout[2]);
-
-        // Render enhanced help text
-        Self::render_help_text(frame, app, layout[3]);
-
-        // Performance monitoring
-        let render_time = render_start.elapsed();
-        if render_time.as_millis() > 16 {
-            tracing::info!(
-                "Content search overlay render took {:?} (slow)",
-                render_time
-            );
+        if has_raw_results {
+            Self::render_raw_results(frame, shared_state, layout[3]);
+        } else if has_rich_results {
+            Self::render_rich_results(frame, shared_state, layout[3]);
+        } else if has_simple_results {
+            Self::render_content_results(frame, shared_state, layout[3]);
+        } else {
+            let ui_guard = shared_state.lock_ui();
+            if ui_guard.input.is_empty() {
+                drop(ui_guard);
+                Self::render_empty_state(frame, shared_state, layout[3]);
+            } else {
+                drop(ui_guard);
+                Self::render_loading_state(frame, shared_state, layout[3]);
+            }
         }
     }
 
     #[allow(clippy::cast_possible_truncation)]
     /// Render enhanced search input with visual feedback
-    fn render_search_input(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
+    fn render_search_input(frame: &mut Frame<'_>, shared_state: &SharedState, area: Rect) {
         // Determine input state for visual feedback
-        let is_searching = app
-            .tasks
-            .values()
-            .any(|task| task.description.contains("Content search") && !task.is_completed);
+        let (input, is_searching, has_raw_results, has_simple_results) = {
+            let ui_guard = shared_state.lock_ui();
+            (
+                ui_guard.input.clone(),
+                ui_guard
+                    .loading
+                    .as_ref()
+                    .is_some_and(|loading| loading.message.contains("Searching")),
+                ui_guard.raw_search_results.is_some(),
+                !ui_guard.search_results.is_empty(),
+            )
+        };
 
         let (title, border_color) = if is_searching {
             (" 🔍 Searching... ", theme::YELLOW)
-        } else if app.ui.input.is_empty() {
+        } else if input.is_empty() {
             (" Content Search (ripgrep) ", theme::CYAN)
-        } else if app.ui.raw_search_results.is_some() || !app.ui.search_results.is_empty() {
+        } else if has_raw_results || has_simple_results {
             (" Content Search - Results Found ", theme::GREEN)
         } else {
             (" Content Search - Type to Search ", theme::CYAN)
@@ -85,7 +101,7 @@ impl ContentSearchOverlay {
             .border_style(Style::default().fg(border_color))
             .style(Style::default().bg(theme::BACKGROUND));
 
-        let input_paragraph = Paragraph::new(app.ui.input.as_str())
+        let input_paragraph = Paragraph::new(input.as_str())
             .block(input_block)
             .style(Style::default().fg(theme::FOREGROUND))
             .wrap(Wrap { trim: false });
@@ -93,16 +109,17 @@ impl ContentSearchOverlay {
         frame.render_widget(input_paragraph, area);
 
         // Enhanced cursor positioning with bounds checking
-        let cursor_x = (area.x + app.ui.input.len() as u16 + 1).min(area.x + area.width - 2);
+        let cursor_x = (area.x + input.len() as u16 + 1).min(area.x + area.width - 2);
         let cursor_y = area.y + 1;
         frame.set_cursor_position((cursor_x, cursor_y));
     }
 
     /// Render search statistics and current status
-    fn render_search_status(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
-        let status_text = if app.ui.input.is_empty() {
+    fn render_search_status(frame: &mut Frame<'_>, shared_state: &SharedState, area: Rect) {
+        let ui_guard = shared_state.lock_ui();
+        let status_text = if ui_guard.input.is_empty() {
             "Ready to search • Type pattern and press Enter".to_string()
-        } else if let Some(ref raw_results) = app.ui.raw_search_results {
+        } else if let Some(ref raw_results) = ui_guard.raw_search_results {
             // Count files by looking for lines without colons (file headings in --heading mode)
             // and lines with line numbers (actual matches)
             let file_count = raw_results
@@ -128,24 +145,24 @@ impl ContentSearchOverlay {
                 .count();
             format!(
                 "Found {} matches in {} files for '{}'",
-                match_count, file_count, app.ui.input
+                match_count, file_count, ui_guard.input
             )
-        } else if !app.ui.search_results.is_empty() {
+        } else if !ui_guard.search_results.is_empty() {
             format!(
                 "Found {} files matching '{}'",
-                app.ui.search_results.len(),
-                app.ui.input
+                ui_guard.search_results.len(),
+                ui_guard.input
             )
-        } else if app
-            .tasks
-            .values()
-            .any(|task| task.description.contains("Content search") && !task.is_completed)
+        } else if ui_guard
+            .loading
+            .as_ref()
+            .is_some_and(|loading| loading.message.contains("Searching"))
         {
-            format!("Searching for '{}'...", app.ui.input)
-        } else if app.ui.last_query.is_some() {
-            format!("No matches found for '{}'", app.ui.input)
+            format!("Searching for '{}'...", ui_guard.input)
+        } else if ui_guard.last_query.is_some() {
+            format!("No matches found for '{}'", ui_guard.input)
         } else {
-            format!("Press Enter to search for '{}'", app.ui.input)
+            format!("Press Enter to search for '{}'", ui_guard.input)
         };
 
         let status_paragraph = Paragraph::new(status_text)
@@ -156,10 +173,12 @@ impl ContentSearchOverlay {
     }
 
     /// Render enhanced help text with context
-    fn render_help_text(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
-        let help_text = if app.ui.input.is_empty() {
+    fn render_help_text(frame: &mut Frame<'_>, shared_state: &SharedState, area: Rect) {
+        let ui_guard = shared_state.lock_ui();
+
+        let help_text = if ui_guard.input.is_empty() {
             "Type search pattern • Enter to search • Esc to close • Use regex for advanced patterns"
-        } else if app.ui.raw_search_results.is_some() || !app.ui.search_results.is_empty() {
+        } else if ui_guard.raw_search_results.is_some() || !ui_guard.search_results.is_empty() {
             "↑↓ Navigate • Enter to open file • Shift+Enter to jump to match • Esc to close"
         } else {
             "Enter to search • Esc to close • Use quotes for exact phrases • Case sensitive by default"
@@ -172,45 +191,46 @@ impl ContentSearchOverlay {
         frame.render_widget(help_paragraph, area);
     }
 
-    fn render_content_results(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
+    fn render_content_results(frame: &mut Frame<'_>, shared_state: &SharedState, area: Rect) {
+        let ui_guard = shared_state.lock_ui();
+
         // Check if there's an active search task
-        let is_searching = app
-            .tasks
-            .values()
-            .any(|task| task.description.contains("Content search") && !task.is_completed);
+        let is_searching = ui_guard
+            .loading
+            .as_ref()
+            .map_or(false, |loading| loading.message.contains("Searching"));
 
         // Show enhanced loading state if searching
         if is_searching {
-            Self::render_loading_state(frame, app, area);
+            Self::render_loading_state(frame, shared_state, area);
             return;
         }
 
         // Check if we have raw search results first (preferred)
-        if let Some(ref raw_results) = app.ui.raw_search_results
+        if let Some(ref raw_results) = ui_guard.raw_search_results
             && !raw_results.lines.is_empty()
         {
-            Self::render_raw_results(frame, app, area);
+            Self::render_raw_results(frame, shared_state, area);
             return;
         }
 
         // Check if we have rich search results, then fallback to simple results
-        if !app.ui.rich_search_results.is_empty() {
-            Self::render_rich_results(frame, app, area);
+        if !ui_guard.rich_search_results.is_empty() {
+            Self::render_rich_results(frame, shared_state, area);
             return;
         }
 
         // Check if we have simple search results
-        if app.ui.search_results.is_empty() {
-            Self::render_empty_state(frame, app, area);
+        if ui_guard.search_results.is_empty() {
+            Self::render_empty_state(frame, shared_state, area);
             return;
         }
 
         // Create list items from search results
-        let list_items: Vec<ListItem> = app
-            .ui
+        let list_items: Vec<ListItem> = ui_guard
             .search_results
             .iter()
-            .filter_map(|entry| app.registry.get(entry.id))
+            .filter_map(|entry| shared_state.metadata.get_by_id(entry.id))
             .map(|obj_info| {
                 let file_name = obj_info
                     .path
@@ -231,7 +251,7 @@ impl ContentSearchOverlay {
 
         let results_block = Block::default()
             .borders(Borders::ALL)
-            .title(format!(" {} Files Found ", app.ui.search_results.len()))
+            .title(format!(" {} Files Found ", ui_guard.search_results.len()))
             .border_style(Style::default().fg(theme::YELLOW))
             .style(Style::default().bg(theme::BACKGROUND));
 
@@ -245,26 +265,26 @@ impl ContentSearchOverlay {
             );
 
         let mut list_state = ListState::default();
-        list_state.select(app.ui.selected);
+        list_state.select(ui_guard.selected);
 
         frame.render_stateful_widget(list, area, &mut list_state);
     }
 
-    fn render_rich_results(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
+    fn render_rich_results(frame: &mut Frame<'_>, shared_state: &SharedState, area: Rect) {
+        let ui_guard = shared_state.lock_ui();
+
         // Simple display of rich search results (deprecated - using raw results now)
-        let list_items: Vec<ListItem> = app
-            .ui
+        let list_items: Vec<ListItem> = ui_guard
             .rich_search_results
             .iter()
-            .map(|line| ListItem::new(line.as_str()).style(Style::default().fg(theme::FOREGROUND)))
+            .map(|result| ListItem::new(result.as_str()))
             .collect();
 
-        let title = format!(" {} Rich Results ", app.ui.rich_search_results.len());
-
+        let title = format!(" {} Rich Results ", ui_guard.rich_search_results.len());
         let results_block = Block::default()
             .borders(Borders::ALL)
             .title(title)
-            .border_style(Style::default().fg(theme::YELLOW))
+            .border_style(Style::default().fg(theme::GREEN))
             .style(Style::default().bg(theme::BACKGROUND));
 
         let list = List::new(list_items)
@@ -277,13 +297,15 @@ impl ContentSearchOverlay {
             );
 
         let mut list_state = ListState::default();
-        list_state.select(app.ui.selected);
+        list_state.select(ui_guard.selected);
 
         frame.render_stateful_widget(list, area, &mut list_state);
     }
 
-    fn render_raw_results(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
-        if let Some(ref raw_results) = app.ui.raw_search_results {
+    fn render_raw_results(frame: &mut Frame<'_>, shared_state: &SharedState, area: Rect) {
+        let ui_guard = shared_state.lock_ui();
+
+        if let Some(ref raw_results) = ui_guard.raw_search_results {
             // Create list items from parsed ANSI text (preserving colors)
             let list_items: Vec<ListItem> = raw_results
                 .parsed_lines
@@ -312,7 +334,7 @@ impl ContentSearchOverlay {
                 );
 
             let mut list_state = ListState::default();
-            list_state.select(app.ui.selected);
+            list_state.select(ui_guard.selected);
 
             frame.render_stateful_widget(list, area, &mut list_state);
         }
@@ -339,7 +361,9 @@ impl ContentSearchOverlay {
     }
 
     /// Render enhanced loading state with spinner and progress
-    fn render_loading_state(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
+    fn render_loading_state(frame: &mut Frame<'_>, shared_state: &SharedState, area: Rect) {
+        let ui_guard = shared_state.lock_ui();
+
         let spinner_chars = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
         let spinner_frame =
             (Instant::now().elapsed().as_millis() / 80) % spinner_chars.len() as u128;
@@ -349,7 +373,7 @@ impl ContentSearchOverlay {
             Line::from(vec![
                 Span::styled(format!("{spinner} "), Style::default().fg(theme::YELLOW)),
                 Span::styled(
-                    format!("Searching for '{}'", app.ui.input),
+                    format!("Searching for '{}'", ui_guard.input),
                     Style::default().fg(theme::FOREGROUND),
                 ),
             ]),
@@ -375,8 +399,10 @@ impl ContentSearchOverlay {
     }
 
     /// Render enhanced empty state with helpful tips
-    fn render_empty_state(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
-        let (title, message_lines, border_color) = if app.ui.input.is_empty() {
+    fn render_empty_state(frame: &mut Frame<'_>, shared_state: &SharedState, area: Rect) {
+        let ui_guard = shared_state.lock_ui();
+
+        let (title, message_lines, border_color) = if ui_guard.input.is_empty() {
             (
                 " Ready to Search ",
                 vec![
@@ -390,11 +416,11 @@ impl ContentSearchOverlay {
                 ],
                 theme::CYAN,
             )
-        } else if app.ui.last_query.is_some() {
+        } else if ui_guard.last_query.is_some() {
             (
                 " No Results Found ",
                 vec![
-                    Line::from(format!("No matches found for '{}'", app.ui.input)),
+                    Line::from(format!("No matches found for '{}'", ui_guard.input)),
                     Line::from(""),
                     Line::from("Try:"),
                     Line::from("• Different search terms"),
@@ -407,7 +433,7 @@ impl ContentSearchOverlay {
             (
                 " Press Enter to Search ",
                 vec![
-                    Line::from(format!("Ready to search for '{}'", app.ui.input)),
+                    Line::from(format!("Ready to search for '{}'", ui_guard.input)),
                     Line::from(""),
                     Line::from("Press Enter to start searching"),
                 ],

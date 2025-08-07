@@ -5,11 +5,11 @@
 //! Loads expensive metadata (size, modification time, item count) in the background
 //! for better UI responsiveness with cache integration.
 
+use crate::fs::object_info::LightObjectInfo;
 use crate::{cache::cache_manager::ObjectInfoCache, controller::actions::Action};
-use crate::fs::object_info::{LightObjectInfo};
 use std::{path::PathBuf, sync::Arc};
 use tokio::sync::mpsc;
-use tracing::{debug, info, instrument, Instrument};
+use tracing::{Instrument, debug, info, instrument};
 
 /// Spawn a background task to load full metadata for an entry
 #[instrument(skip(action_tx, cache), fields(path = %light_info.path.display()))]
@@ -31,10 +31,10 @@ pub fn load_metadata_task(
 
             // Check cache first, then load if not present
             let load_start = std::time::Instant::now();
-            match cache.get_or_load_path(
-                &**light_info.path, 
-                || light_info.clone().into_full_async()
-            ).await {
+            match cache
+                .get_or_load_path(&**light_info.path, || light_info.clone().into_full_async())
+                .await
+            {
                 Ok(full_info) => {
                     let load_duration = load_start.elapsed();
                     info!(
@@ -50,7 +50,7 @@ pub fn load_metadata_task(
                         info: full_info,
                     });
                 }
-            
+
                 Err(e) => {
                     let load_duration = load_start.elapsed();
                     info!(
@@ -68,7 +68,7 @@ pub fn load_metadata_task(
             "single_metadata_load",
             operation_type = "single_metadata_load",
             path = %light_info_path.display()
-        ))
+        )),
     );
 }
 
@@ -87,11 +87,11 @@ pub fn batch_load_metadata_task(
     light_entries: Vec<LightObjectInfo>,
     action_tx: mpsc::UnboundedSender<Action>,
     batch_size: usize,
-    cache: Arc<ObjectInfoCache>
+    cache: Arc<ObjectInfoCache>,
 ) {
     let entry_count = light_entries.len();
     let parent_dir_display = parent_dir.display().to_string();
-    
+
     tokio::spawn(
         async move {
             let batch_start = std::time::Instant::now();
@@ -115,24 +115,25 @@ pub fn batch_load_metadata_task(
             for light_info in light_entries {
                 let light_info_path = light_info.path.clone();
                 let item_start = std::time::Instant::now();
-                
+
                 // OPTIMIZED: Avoid double dereferencing by using path directly
-                let cache_key = crate::cache::cache_manager::ObjectInfoCache::path_to_key(&**light_info_path);
-                match cache.get_or_load(
-                    cache_key,
-                    || {
+                let cache_key =
+                    crate::cache::cache_manager::ObjectInfoCache::path_to_key(&**light_info_path);
+                match cache
+                    .get_or_load(cache_key, || {
                         cache_misses += 1;
                         light_info.into_full_async()
-                    }
-                ).await {
+                    })
+                    .await
+                {
                     Ok(full_info) => {
                         let item_duration = item_start.elapsed();
-                        
+
                         // Fast lookup indicates cache hit
                         if item_duration.as_micros() < 100 {
                             cache_hits += 1;
                         }
-                        
+
                         debug!(
                             marker = "METADATA_TASK",
                             operation_type = "metadata_item_success",
@@ -140,12 +141,12 @@ pub fn batch_load_metadata_task(
                             load_duration_us = item_duration.as_micros(),
                             "Metadata item loaded successfully"
                         );
-                        
+
                         let _ = action_tx.send(Action::UpdateObjectInfo {
                             parent_dir: value.clone(),
                             info: full_info,
                         });
-                        
+
                         success_count += 1;
                     }
 
@@ -159,7 +160,7 @@ pub fn batch_load_metadata_task(
                             error = %e,
                             "Failed to load metadata item"
                         );
-                        
+
                         error_count += 1;
                     }
                 }
@@ -198,6 +199,6 @@ pub fn batch_load_metadata_task(
             operation_type = "batch_metadata_load",
             parent_dir = %parent_dir_display,
             entry_count = entry_count
-        ))
+        )),
     );
 }

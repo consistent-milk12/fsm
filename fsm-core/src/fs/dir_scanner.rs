@@ -5,20 +5,27 @@
 //! Provides an asynchronous function to scan a directory and return a sorted
 //! list of `ObjectInfo` entries. Designed for non-blocking UI updates.
 
-use crate::{cache::cache_manager::ObjectInfoCache,
-    config::ProfilingConfig, 
-    controller::actions::Action, 
-    logging::ProfilingData, 
-    tasks::metadata_task::batch_load_metadata_task
-};
 use crate::error::AppError;
 use crate::fs::object_info::{LightObjectInfo, ObjectInfo};
-use std::{cmp::Ordering, ffi::OsStr, path::{Path, PathBuf}, sync::Arc, time::Duration};
+use crate::{
+    cache::cache_manager::ObjectInfoCache, config::ProfilingConfig, controller::actions::Action,
+    logging::ProfilingData, tasks::metadata_task::batch_load_metadata_task,
+};
 use std::time::Instant;
-use tokio::{fs::{self, DirEntry, ReadDir}, sync::mpsc::{UnboundedReceiver, UnboundedSender}};
+use std::{
+    cmp::Ordering,
+    ffi::OsStr,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
-use tracing::{info, instrument, Span};
+use tokio::{
+    fs::{self, DirEntry, ReadDir},
+    sync::mpsc::{UnboundedReceiver, UnboundedSender},
+};
+use tracing::{Span, info, instrument};
 
 /// Scans the given directory asynchronously and returns a sorted list of `ObjectInfo`.
 ///
@@ -45,17 +52,16 @@ pub async fn scan_dir(
     path: &Path,
     show_hidden: bool,
     profiling_config: &ProfilingConfig,
-    cache: &ObjectInfoCache
+    cache: &ObjectInfoCache,
 ) -> Result<Vec<ObjectInfo>, AppError> {
     // Pre-warm cache for better hit rates
     let warm_start = Instant::now();
-    let warmed_count = cache.warm_for_navigation(path).await
-        .unwrap_or_else(|e| {
-            tracing::warn!("Cache warming failed: {}", e);
-            0
-        });
+    let warmed_count = cache.warm_for_navigation(path).await.unwrap_or_else(|e| {
+        tracing::warn!("Cache warming failed: {}", e);
+        0
+    });
     let warm_duration = warm_start.elapsed();
-    
+
     if warmed_count > 0 {
         info!(
             marker = "CACHE_OPERATION",
@@ -92,10 +98,8 @@ pub async fn scan_dir(
         let cache_lookup_start = Instant::now();
 
         // Cache-integrated ObjectInfo loading
-        match cache.get_or_load_path(
-            &entry_path, 
-            || 
-            { 
+        match cache
+            .get_or_load_path(&entry_path, || {
                 cache_misses += 1;
 
                 tracing::debug!(
@@ -104,14 +108,13 @@ pub async fn scan_dir(
                 );
 
                 ObjectInfo::from_path_async(&entry_path)
-            }
-        ).await
+            })
+            .await
         {
             Ok(info) => {
                 let lookup_duration = cache_lookup_start.elapsed();
 
-                if lookup_duration.as_micros() < 100
-                {
+                if lookup_duration.as_micros() < 100 {
                     // Fast lookup indicates cache hit
                     cache_hits += 1;
 
@@ -124,7 +127,7 @@ pub async fn scan_dir(
 
                 entries.push(info);
             }
-            
+
             Err(e) => {
                 // Log the error but continue processing other entries
                 tracing::debug!("Failed to get ObjectInfo for {entry_path:?}: {e}");
@@ -144,9 +147,8 @@ pub async fn scan_dir(
     });
 
     let duration: Duration = start_time.elapsed();
-    let profiling_data: ProfilingData = ProfilingData::collect_profiling_data_conditional(
-         start_mem, duration, profiling_config
-    );
+    let profiling_data: ProfilingData =
+        ProfilingData::collect_profiling_data_conditional(start_mem, duration, profiling_config);
 
     // Record performance metrics in span
     let current_span = Span::current();
@@ -168,16 +170,12 @@ pub async fn scan_dir(
     };
 
     if let Some(duration_ns) = profiling_data.operation_duration_ns {
-        let perf_category = if duration.as_millis() < 10 
-        { 
-            "excellent" 
-        } else if duration.as_millis() < 50 
-        { 
-            "good" 
-        }
-        else 
-        { 
-            "needs_optimization" 
+        let perf_category = if duration.as_millis() < 10 {
+            "excellent"
+        } else if duration.as_millis() < 50 {
+            "good"
+        } else {
+            "needs_optimization"
         };
 
         info!(
@@ -192,7 +190,9 @@ pub async fn scan_dir(
             cache_hit_rate = format!("{:.1}%", cache_hit_rate),
             performance_category = perf_category,
             "Directory scan completed - {} entries, {:.1}% cache hit rate in {:?}",
-            entries.len(), cache_hit_rate, duration
+            entries.len(),
+            cache_hit_rate,
+            duration
         );
     }
 
@@ -219,7 +219,7 @@ pub enum ScanUpdate {
 /// * `action_tx` - Channel to send metadata loading tasks
 /// * `profiling_config` - The configuration for performance profiling.
 /// * `cache` - The `ObjectInfo` cache for performance optimization.
-/// 
+///
 /// # Returns
 /// * A receiver channel that will receive `ScanUpdate` messages
 /// * A sender for the final sorted results
@@ -239,32 +239,26 @@ pub async fn scan_dir_streaming_with_background_metadata(
     batch_size: usize,
     action_tx: UnboundedSender<Action>,
     profiling_config: ProfilingConfig,
-    cache: Arc<ObjectInfoCache>
+    cache: Arc<ObjectInfoCache>,
 ) -> (
     UnboundedReceiver<ScanUpdate>,
     JoinHandle<Result<Vec<ObjectInfo>, AppError>>,
 ) {
-    let (
-        tx, 
-        rx
-    ) = mpsc::unbounded_channel();
+    let (tx, rx) = mpsc::unbounded_channel();
 
-    let handle: JoinHandle<Result<Vec<ObjectInfo>, AppError>> = tokio::spawn(
-        async move 
-        {
-            let scanner: DirectoryScanner = DirectoryScanner::new(
-                path, 
-                show_hidden, 
-                batch_size, 
-                action_tx, 
-                tx, 
-                profiling_config,
-                cache
-            );
-            
-            scanner.scan().await
-        }
-    );
+    let handle: JoinHandle<Result<Vec<ObjectInfo>, AppError>> = tokio::spawn(async move {
+        let scanner: DirectoryScanner = DirectoryScanner::new(
+            path,
+            show_hidden,
+            batch_size,
+            action_tx,
+            tx,
+            profiling_config,
+            cache,
+        );
+
+        scanner.scan().await
+    });
 
     (rx, handle)
 }
@@ -296,7 +290,7 @@ impl DirectoryScanner {
             action_tx,
             tx,
             profiling_config,
-            cache
+            cache,
         }
     }
 
@@ -323,7 +317,8 @@ impl DirectoryScanner {
 
         // Phase 1: Quick scan for basic info
         let phase1_start = Instant::now();
-        self.perform_quick_scan(&mut entries, &mut light_entries).await?;
+        self.perform_quick_scan(&mut entries, &mut light_entries)
+            .await?;
         let phase1_duration = phase1_start.elapsed();
 
         // Sort entries by directory first, then alphabetically
@@ -339,7 +334,7 @@ impl DirectoryScanner {
         let profiling_data: ProfilingData = ProfilingData::collect_profiling_data_conditional(
             start_mem,
             duration,
-            &self.profiling_config
+            &self.profiling_config,
         );
 
         // Record performance metrics
@@ -349,31 +344,32 @@ impl DirectoryScanner {
             .record("total_duration_ms", duration.as_millis());
 
         if let Some(duration_ns) = profiling_data.operation_duration_ns {
-            let perf_category = if duration.as_millis() < 20 
-            { 
-                "excellent" 
-            } else if duration.as_millis() < 100 
-            { 
-                "good" 
-            }
-            else 
-            { 
-                "needs_optimization" 
-            }; 
+            let perf_category = if duration.as_millis() < 20 {
+                "excellent"
+            } else if duration.as_millis() < 100 {
+                "good"
+            } else {
+                "needs_optimization"
+            };
 
             info!(
-                  marker = "PERF_DIRECTORY_SCAN",
-                  operation_type = "scan_dir_streaming_cached",
-                  duration_ns = duration_ns,
-                  duration_ms = duration.as_millis(),
-                  memory_delta_kb = profiling_data.memory_delta_kb.unwrap_or(0),
-                  entry_count = entries.len(),
-                  phase1_duration_ms = phase1_duration.as_millis(),
-                  phase1_percentage = format!("{:.1}%", (phase1_duration.as_millis() as f64 / duration.as_millis() as f64) * 100.0),
-                  performance_category = perf_category,
-                  "Streaming directory scan completed - {} entries in {:?} (phase1:{:?})",
-                  entries.len(), duration, phase1_duration
-              );
+                marker = "PERF_DIRECTORY_SCAN",
+                operation_type = "scan_dir_streaming_cached",
+                duration_ns = duration_ns,
+                duration_ms = duration.as_millis(),
+                memory_delta_kb = profiling_data.memory_delta_kb.unwrap_or(0),
+                entry_count = entries.len(),
+                phase1_duration_ms = phase1_duration.as_millis(),
+                phase1_percentage = format!(
+                    "{:.1}%",
+                    (phase1_duration.as_millis() as f64 / duration.as_millis() as f64) * 100.0
+                ),
+                performance_category = perf_category,
+                "Streaming directory scan completed - {} entries in {:?} (phase1:{:?})",
+                entries.len(),
+                duration,
+                phase1_duration
+            );
         }
 
         Ok(entries)
@@ -415,11 +411,7 @@ impl DirectoryScanner {
             }
 
             let was_cache_optimized = self
-                .process_directory_entry(
-                    entry,
-                    entries,
-                    light_entries
-                )
+                .process_directory_entry(entry, entries, light_entries)
                 .await;
 
             if was_cache_optimized.0 {
@@ -445,7 +437,10 @@ impl DirectoryScanner {
 
         if processed > 0 {
             let optimization_rate = (cache_optimized as f64 / processed as f64) * 100.0;
-            current_span.record("cache_optimization_rate", format!("{optimization_rate:.1}%"));
+            current_span.record(
+                "cache_optimization_rate",
+                format!("{optimization_rate:.1}%"),
+            );
 
             tracing::debug!(
                 processed = processed,
@@ -461,12 +456,12 @@ impl DirectoryScanner {
     async fn initialize_directory_reader(&self) -> Result<ReadDir, AppError> {
         match fs::read_dir(&*self.path).await {
             Ok(read_dir) => Ok(read_dir),
-            
+
             Err(e) => {
                 let app_error: AppError = AppError::from(e);
-                
+
                 let _ = self.tx.send(ScanUpdate::Error(app_error.to_string()));
-                
+
                 Err(app_error)
             }
         }
@@ -480,11 +475,7 @@ impl DirectoryScanner {
         let entry_path: PathBuf = entry.path();
         let file_name: &str = entry_path
             .file_name()
-            .and_then(|s: &OsStr| -> Option<&str> 
-                {
-                    s.to_str()
-                }
-            )
+            .and_then(|s: &OsStr| -> Option<&str> { s.to_str() })
             .unwrap_or("");
 
         file_name.starts_with('.')
@@ -504,10 +495,9 @@ impl DirectoryScanner {
                 // Create full ObjectInfo immediately using the metadata we already fetched
                 // This avoids the duplicate stat() syscall that was causing performance issues
                 let cache_check_start = Instant::now();
-                let (full_info, was_cache_hit) = if let Some(cached_info) = self
-                    .cache.get_by_path(&entry_path)
-                    .await
-                     {
+                let (full_info, was_cache_hit) = if let Some(cached_info) =
+                    self.cache.get_by_path(&entry_path).await
+                {
                     let cache_lookup_time = cache_check_start.elapsed();
                     tracing::debug!(
                         path = %entry_path.display(),
@@ -518,21 +508,22 @@ impl DirectoryScanner {
                 } else {
                     // Use the metadata we already have to create complete ObjectInfo
                     // This eliminates the duplicate stat() syscall entirely
-                    let full_info = match ObjectInfo::from_light_common(light_info.clone(), &metadata) {
-                        Ok(info) => info,
-                        Err(e) => {
-                            tracing::warn!(
-                                path = %entry_path.display(),
-                                error = %e,
-                                "Failed to create ObjectInfo from metadata"
-                            );
-                            return (false, false);
-                        }
-                    };
-                    
+                    let full_info =
+                        match ObjectInfo::from_light_common(light_info.clone(), &metadata) {
+                            Ok(info) => info,
+                            Err(e) => {
+                                tracing::warn!(
+                                    path = %entry_path.display(),
+                                    error = %e,
+                                    "Failed to create ObjectInfo from metadata"
+                                );
+                                return (false, false);
+                            }
+                        };
+
                     // Insert into cache for future hits
                     self.cache.insert_path(&entry_path, full_info.clone()).await;
-                    
+
                     tracing::debug!(
                         path = %entry_path.display(),
                         "Created full ObjectInfo from existing metadata (zero duplicate syscalls)"
@@ -541,13 +532,7 @@ impl DirectoryScanner {
                 };
 
                 // Send streaming update immediately
-                if self
-                    .tx
-                    .send(
-                        ScanUpdate::Entry(full_info.clone())
-                    )
-                    .is_err()
-                {
+                if self.tx.send(ScanUpdate::Entry(full_info.clone())).is_err() {
                     return (false, false); // Receiver dropped
                 }
 
@@ -572,19 +557,15 @@ impl DirectoryScanner {
     }
 
     fn sort_entries(entries: &mut [ObjectInfo]) {
-        entries
-            .sort_by(
-                |a: &ObjectInfo, b: &ObjectInfo| -> Ordering 
-                {
-                    if a.is_dir && !b.is_dir {
-                        Ordering::Less
-                    } else if !a.is_dir && b.is_dir {
-                        Ordering::Greater
-                    } else {
-                        a.name.cmp(&b.name)
-                    }
-                }
-            );
+        entries.sort_by(|a: &ObjectInfo, b: &ObjectInfo| -> Ordering {
+            if a.is_dir && !b.is_dir {
+                Ordering::Less
+            } else if !a.is_dir && b.is_dir {
+                Ordering::Greater
+            } else {
+                a.name.cmp(&b.name)
+            }
+        });
     }
 
     #[instrument(

@@ -1,7 +1,12 @@
 use std::{
-    cell::{RefCell, RefMut}, collections::{HashMap, VecDeque}, path::{Path, PathBuf}, sync::{
-        atomic::{AtomicU64, Ordering}, Arc, LazyLock, MutexGuard as StdMutexGuard
-    }, time::{Duration, Instant}
+    cell::{RefCell, RefMut},
+    collections::{HashMap, VecDeque},
+    path::{Path, PathBuf},
+    sync::{
+        Arc, LazyLock, MutexGuard as StdMutexGuard,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result};
@@ -10,9 +15,9 @@ use compact_str::CompactString;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{self as SJSON, Value};
-use sysinfo::{Pid, Process, ProcessesToUpdate, System};
 use std::io::Write;
 use std::str::FromStr;
+use sysinfo::{Pid, Process, ProcessesToUpdate, System};
 use tokio::{
     fs as TokioFs,
     sync::{Mutex, MutexGuard, RwLock, RwLockWriteGuard, mpsc, oneshot},
@@ -21,28 +26,29 @@ use tokio::{
 
 use std::sync::Mutex as StdMutex;
 
-use tracing::{field::Visit, span::{self, Id as TraceId, Record}, Event, Level, Metadata, Subscriber};
+use tracing::{
+    Event, Level, Metadata, Subscriber,
+    field::Visit,
+    span::{self, Id as TraceId, Record},
+};
 use tracing_appender::{
     non_blocking::WorkerGuard,
     rolling::{RollingFileAppender, Rotation},
 };
 use tracing_subscriber::{
-    filter::Directive, 
-    fmt::{format::JsonFields, FormattedFields}, 
-    layer::{Context as TracingContext, SubscriberExt}, 
-    registry::{ExtensionsMut, LookupSpan, SpanRef}, 
-    util::SubscriberInitExt, EnvFilter, Layer,
+    EnvFilter, Layer,
+    filter::Directive,
+    fmt::{FormattedFields, format::JsonFields},
+    layer::{Context as TracingContext, SubscriberExt},
+    registry::{ExtensionsMut, LookupSpan, SpanRef},
+    util::SubscriberInitExt,
 };
 
 use crate::config::ProfilingConfig;
 
 // PERFORMANCE OPTIMIZED: Cached system info with reduced refresh frequency
-static SYSTEM_INFO: LazyLock<StdMutex<System>> = LazyLock::new(
-    || -> StdMutex<System>
-    {
-        StdMutex::new(System::new())
-    }
-);
+static SYSTEM_INFO: LazyLock<StdMutex<System>> =
+    LazyLock::new(|| -> StdMutex<System> { StdMutex::new(System::new()) });
 
 // PERFORMANCE OPTIMIZED: Cache system refresh timestamp
 static LAST_SYSTEM_REFRESH: AtomicU64 = AtomicU64::new(0);
@@ -54,9 +60,8 @@ const LEVEL_WARN: &str = "WARN";
 const LEVEL_ERROR: &str = "ERROR";
 const LEVEL_TRACE: &str = "TRACE";
 
-static COMMON_MARKERS: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(
-    || -> HashMap<&'static str, &'static str> 
-    {
+static COMMON_MARKERS: LazyLock<HashMap<&'static str, &'static str>> =
+    LazyLock::new(|| -> HashMap<&'static str, &'static str> {
         [
             ("ENTER_START", "ENTER_START"),
             ("ENTER_COMPLETE", "ENTER_COMPLETE"),
@@ -70,12 +75,10 @@ static COMMON_MARKERS: LazyLock<HashMap<&'static str, &'static str>> = LazyLock:
         .iter()
         .copied()
         .collect()
-    }
-);
+    });
 
-static COMMON_OPERATIONS: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(
-    || -> HashMap<&'static str, &'static str> 
-    {
+static COMMON_OPERATIONS: LazyLock<HashMap<&'static str, &'static str>> =
+    LazyLock::new(|| -> HashMap<&'static str, &'static str> {
         [
             ("directory_entry", "directory_entry"),
             ("navigate", "navigate"),
@@ -86,15 +89,15 @@ static COMMON_OPERATIONS: LazyLock<HashMap<&'static str, &'static str>> = LazyLo
         .iter()
         .copied()
         .collect()
-    }
-);
+    });
 
 const TRACE_MARKER: CompactString = CompactString::const_new("marker");
 const TRACE_MARKER_UNKNOWN_COMPACT: CompactString = CompactString::const_new("UNKNOWN_MARKER");
 const TRACE_MARKER_UNKNOWN_STR: &str = "UNKNOWN_MARKER";
 
 const TRACE_OPERATION_TYPE: CompactString = CompactString::const_new("operation_type");
-const TRACE_OPERATION_UNKNOWN_COMPACT: CompactString = CompactString::const_new("UNKNOWN_OPERATION_TYPE");
+const TRACE_OPERATION_UNKNOWN_COMPACT: CompactString =
+    CompactString::const_new("UNKNOWN_OPERATION_TYPE");
 const TRACE_OPERATION_UNKNOWN_STR: &str = "UNKNOWN_OPERATION_TYPE";
 
 const TRACE_ENTER_SPAN: CompactString = CompactString::const_new("ENTER_SPAN");
@@ -158,12 +161,12 @@ impl Default for LoggerConfig {
             batch_size: 256, // Increased for better throughput
             flush_interval: Duration::from_millis(25), // Reduced for better responsiveness
             log_level: CompactString::const_new("info"), // PERFORMANCE OPTIMIZED: Reduced default verbosity
-            max_log_file_size: 50 * 1024 * 1024, // Increased to 50MB
-            max_log_files: 10,                   // Increased retention
-            max_field_size: 2048,                // Increased field size limit
-            max_fields_count: 64,                // Increased field count
+            max_log_file_size: 50 * 1024 * 1024,         // Increased to 50MB
+            max_log_files: 10,                           // Increased retention
+            max_field_size: 2048,                        // Increased field size limit
+            max_fields_count: 64,                        // Increased field count
             rotation: LogRotation::Never,
-            enable_console_output: false,        // PERFORMANCE OPTIMIZED: Disabled by default
+            enable_console_output: false, // PERFORMANCE OPTIMIZED: Disabled by default
             use_string_interning: true,
             preallocate_buffers: true,
         }
@@ -248,10 +251,10 @@ pub struct LogEntry {
     // Profiling fields for performance monitoring
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cpu_usage_percent: Option<f32>, // CPU usage percentage during operation
-    
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub memory_delta_kb: Option<i64>, // Memory change in KB (can be negative)
-    
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub operation_duration_ns: Option<u64>, // High-precision operation duration in nanoseconds
 
@@ -346,11 +349,8 @@ impl LogEntryPool {
         entry.fs_state = None;
         entry.fields.clear();
 
-        let mut pool: MutexGuard<'_, VecDeque<LogEntry>> = self
-            .pool
-            .lock()
-            .await;
-        
+        let mut pool: MutexGuard<'_, VecDeque<LogEntry>> = self.pool.lock().await;
+
         if pool.len() < self.max_size {
             pool.push_back(entry);
         }
@@ -361,12 +361,8 @@ impl LogEntryPool {
     // ----------------------------------------------------------
     pub fn get_blocking(&self) -> LogEntry {
         self.pool.try_lock().map_or_else(
-            |_| -> LogEntry 
-            { 
-                self.template.clone() 
-            },
-            |mut guard: MutexGuard<'_, VecDeque<LogEntry>>| -> LogEntry 
-            {
+            |_| -> LogEntry { self.template.clone() },
+            |mut guard: MutexGuard<'_, VecDeque<LogEntry>>| -> LogEntry {
                 guard
                     .pop_front()
                     .unwrap_or_else(|| -> LogEntry { self.template.clone() })
@@ -388,19 +384,13 @@ impl SendSafeWriter {
     }
 
     async fn write_all(&self, buf: &[u8]) -> std::io::Result<()> {
-        let mut writer: MutexGuard<'_, Box<dyn Write + Send>> = self
-            .writer
-            .lock()
-            .await;
-    
+        let mut writer: MutexGuard<'_, Box<dyn Write + Send>> = self.writer.lock().await;
+
         writer.write_all(buf)
     }
 
     async fn flush(&self) -> std::io::Result<()> {
-        let mut writer: MutexGuard<'_, Box<dyn Write + Send>> = self
-            .writer
-            .lock()
-            .await;
+        let mut writer: MutexGuard<'_, Box<dyn Write + Send>> = self.writer.lock().await;
 
         writer.flush()
     }
@@ -427,21 +417,14 @@ pub struct LoggingSystem {
 impl LoggingSystem {
     async fn new(
         config: LoggerConfig,
-        profiling_config: ProfilingConfig
-    ) -> Result<(Self, WorkerGuard)> 
-    {
+        profiling_config: ProfilingConfig,
+    ) -> Result<(Self, WorkerGuard)> {
         validate_config(&config)?;
         setup_log_directory(&config.log_dir).await?;
 
-        let (
-            log_tx, 
-            log_rx
-        ) = mpsc::unbounded_channel::<LogEntry>();
-        
-        let (
-            shutdown_tx, 
-            shutdown_rx
-        ) = oneshot::channel::<()>();
+        let (log_tx, log_rx) = mpsc::unbounded_channel::<LogEntry>();
+
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
 
         // Setup file appender with rotation
         let rotation: Rotation = match config.rotation {
@@ -462,20 +445,14 @@ impl LoggingSystem {
             .build(&config.log_dir)
             .context("Failed to create file appender")?;
 
-        let (
-            non_blocking,
-            guard
-        ) = tracing_appender::non_blocking(file_appender);
+        let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
 
-        let entry_pool: Arc<LogEntryPool> = Arc::new(
-            LogEntryPool::new(config.batch_size * 4)
-        );
+        let entry_pool: Arc<LogEntryPool> = Arc::new(LogEntryPool::new(config.batch_size * 4));
         let task_pool: Arc<LogEntryPool> = entry_pool.clone();
         let task_config: LoggerConfig = config.clone();
 
         // Pre-allocate JSON buffer if enabled
-        let json_buffer: Arc<Mutex<Vec<u8>>> = if config.preallocate_buffers 
-        {
+        let json_buffer: Arc<Mutex<Vec<u8>>> = if config.preallocate_buffers {
             Arc::new(Mutex::new(Vec::with_capacity(64 * 1024))) // 64KB buffer
         } else {
             Arc::new(Mutex::new(Vec::new()))
@@ -486,20 +463,17 @@ impl LoggingSystem {
         // Fix: Create Send-safe writer
         let safe_writer: SendSafeWriter = SendSafeWriter::new(non_blocking);
 
-        let task_handle = tokio::spawn(
-            async move 
-            {
-                Self::log_processing_task(
-                    log_rx,
-                    shutdown_rx,
-                    safe_writer,
-                    task_config,
-                    task_pool,
-                    task_json_buffer,
-                )
-                .await
-            }
-        );
+        let task_handle = tokio::spawn(async move {
+            Self::log_processing_task(
+                log_rx,
+                shutdown_rx,
+                safe_writer,
+                task_config,
+                task_pool,
+                task_json_buffer,
+            )
+            .await
+        });
 
         Ok((
             Self {
@@ -733,7 +707,7 @@ const fn get_level_string(level: Level) -> &'static str {
 // Logger builder for clean initialization
 pub struct LoggerBuilder {
     config: LoggerConfig,
-    
+
     profiling_config: ProfilingConfig,
 }
 
@@ -752,9 +726,8 @@ impl LoggerBuilder {
         self
     }
 
-    #[must_use] 
-    pub const fn with_profiling_config(mut self, profiling_config: ProfilingConfig) -> Self
-    {
+    #[must_use]
+    pub const fn with_profiling_config(mut self, profiling_config: ProfilingConfig) -> Self {
         self.profiling_config = profiling_config;
         self
     }
@@ -802,44 +775,36 @@ impl LoggerBuilder {
     }
 
     /// # Panics
-    /// 
+    ///
     /// Panics if it fails to set up a logger.
     pub async fn build(self) -> Result<WorkerGuard> {
         // 1. single-init guard
-        let mut system_guard: RwLockWriteGuard<'_, Option<Arc<LoggingSystem>>> = LOGGING_SYSTEM
-            .write()
-            .await;
-        
+        let mut system_guard: RwLockWriteGuard<'_, Option<Arc<LoggingSystem>>> =
+            LOGGING_SYSTEM.write().await;
+
         if system_guard.is_some() {
             return Err(LoggingError::AlreadyInitialized.into());
         }
 
         // 2. create logging system
-        let (system, guard) = LoggingSystem::new(
-            self.config.clone(),
-            self.profiling_config.clone(),
-        )
-        .await?;
-        
+        let (system, guard) =
+            LoggingSystem::new(self.config.clone(), self.profiling_config.clone()).await?;
+
         let system_arc: Arc<LoggingSystem> = Arc::new(system);
 
         // 3. helper that yields a new filter
         let level_str: CompactString = self.config.log_level.clone(); // keep a copy we can move
-        let make_filter = || 
-        {
-            EnvFilter::from_default_env()
-                .add_directive(Directive::from_str(&level_str)
+        let make_filter = || {
+            EnvFilter::from_default_env().add_directive(
+                Directive::from_str(&level_str)
                     .context("Invalid log level in config")
-                    .expect("Failure in settings up logger.")
-                )
+                    .expect("Failure in settings up logger."),
+            )
         };
 
         // 4. layers
-        let json_layer = JsonLayer::new(
-            system_arc.clone(),
-            self.profiling_config.clone(),
-        )
-        .with_filter(make_filter());
+        let json_layer = JsonLayer::new(system_arc.clone(), self.profiling_config.clone())
+            .with_filter(make_filter());
 
         // mute stdout/stderr entirely
         let fmt_layer = tracing_subscriber::fmt::layer()
@@ -855,7 +820,7 @@ impl LoggerBuilder {
 
         // 6. expose system instance
         *system_guard = Some(system_arc);
-        
+
         drop(system_guard);
 
         Ok(guard)
@@ -942,21 +907,18 @@ impl SpanData {
     }
 
     /// PERFORMANCE OPTIMIZED: Conditional profiling data collection
-    pub fn finalize_with_profiling(&mut self, config: &ProfilingConfig)
-    {
+    pub fn finalize_with_profiling(&mut self, config: &ProfilingConfig) {
         if !config.enabled {
             return; // Skip profiling entirely when disabled
         }
 
         let duration = self.start_time.elapsed();
-        
-        self.profiling_data = Some(
-            ProfilingData::collect_profiling_data_conditional(
-                self.start_memory_kb, 
-                duration, 
-                config
-            )
-        );
+
+        self.profiling_data = Some(ProfilingData::collect_profiling_data_conditional(
+            self.start_memory_kb,
+            duration,
+            config,
+        ));
     }
 }
 
@@ -1012,8 +974,7 @@ impl JsonLayer {
         if marker.ends_with("_COMPLETE") {
             entry.duration_us = Some(span_data.duration_us());
 
-            if let Some(profiling_data) = &span_data.profiling_data
-            {
+            if let Some(profiling_data) = &span_data.profiling_data {
                 entry.cpu_usage_percent = profiling_data.cpu_usage_percent;
                 entry.memory_delta_kb = profiling_data.memory_delta_kb;
                 entry.operation_duration_ns = profiling_data.operation_duration_ns;
@@ -1026,8 +987,7 @@ impl JsonLayer {
                 .fields
                 .iter()
                 .map(
-                    |(k, v): (&CompactString, &String)| -> (CompactString, String) 
-                    {
+                    |(k, v): (&CompactString, &String)| -> (CompactString, String) {
                         (k.clone(), v.clone())
                     },
                 )
@@ -1064,10 +1024,7 @@ impl JsonLayer {
         None
     }
 
-
-    pub fn extract_span_fields<'a, S>(
-        span: &SpanRef<'a, S>,
-    ) -> HashMap<CompactString, String>
+    pub fn extract_span_fields<'a, S>(span: &SpanRef<'a, S>) -> HashMap<CompactString, String>
     where
         S: LookupSpan<'a>,
     {
@@ -1077,25 +1034,20 @@ impl JsonLayer {
         }
 
         // 2. fmt-layer JSON cache
-        if let Some(json) = span
-            .extensions()
-            .get::<FormattedFields<JsonFields>>()
-            && let Ok(Value::Object(obj)) =
-                SJSON::from_str::<Value>(&json.fields)
-            {
-                return obj
-                    .into_iter()
-                    .map(
-                        |(k, v): (String, Value)| -> (CompactString, String) 
-                        {(CompactString::from(k), v.to_string())}
-                    )
-                    .collect();
-            }
+        if let Some(json) = span.extensions().get::<FormattedFields<JsonFields>>()
+            && let Ok(Value::Object(obj)) = SJSON::from_str::<Value>(&json.fields)
+        {
+            return obj
+                .into_iter()
+                .map(|(k, v): (String, Value)| -> (CompactString, String) {
+                    (CompactString::from(k), v.to_string())
+                })
+                .collect();
+        }
 
         // 3. nothing recorded yet
         HashMap::new()
     }
-
 
     // Helper to convert Level to CompactString
     const fn level_to_compact_string(level: Level) -> CompactString {
@@ -1111,18 +1063,16 @@ impl<S> Layer<S> for JsonLayer
 where
     S: Subscriber + for<'lookup> LookupSpan<'lookup>,
 {
-    fn on_new_span(&self, attrs: &span::Attributes<'_>, id: &span::Id, ctx: TracingContext<'_, S>) 
-    {
+    fn on_new_span(&self, attrs: &span::Attributes<'_>, id: &span::Id, ctx: TracingContext<'_, S>) {
         if let Some(span) = ctx.span(id) {
-            // 1) Visit all attributes with pooled JsonVisitor  
+            // 1) Visit all attributes with pooled JsonVisitor
             let mut visitor: JsonVisitor = JsonVisitor::get_pooled(&self.system.config);
             attrs.record(&mut visitor);
 
             // 2) Stash them in extensions for later fast lookup
             let fields = std::mem::take(&mut visitor.fields);
-            span.extensions_mut()
-                .insert(SpanFieldMap(fields));
-            
+            span.extensions_mut().insert(SpanFieldMap(fields));
+
             // 3) Return visitor to pool
             visitor.return_to_pool();
             // (do *not* emit any events here; that happens in on_enter)
@@ -1133,7 +1083,7 @@ where
     fn on_enter(&self, id: &TraceId, ctx: TracingContext<'_, S>) {
         if let Some(span) = ctx.span(id) {
             let metadata: &'static Metadata<'static> = span.metadata();
-            
+
             // PERFORMANCE OPTIMIZED: Skip hot path spans in debug/trace
             let level: Level = *metadata.level();
             if !Self::should_emit_span_event(level) {
@@ -1143,23 +1093,24 @@ where
             let fields: HashMap<CompactString, String> = Self::extract_span_fields(&span);
 
             // Extract marker and operation_type from fields
-            let marker: CompactString = fields.get(&TRACE_MARKER).map_or(
-                TRACE_ENTER_SPAN,
-                |s: &String| -> CompactString { CompactString::new(s) },
-            );
+            let marker: CompactString = fields
+                .get(&TRACE_MARKER)
+                .map_or(TRACE_ENTER_SPAN, |s: &String| -> CompactString {
+                    CompactString::new(s)
+                });
 
             let operation_type: CompactString = fields.get(&TRACE_OPERATION_TYPE).map_or(
                 TRACE_OPERATION_UNKNOWN_COMPACT,
                 |s: &String| -> CompactString { CompactString::new(s) },
             );
 
-            let span_data: SpanData = SpanData
-            {
+            let span_data: SpanData = SpanData {
                 start_time: Instant::now(),
-                start_memory_kb: if self.should_collect_profiling(level) { 
-                    ProfilingData::get_current_memory_kb_cached() // PERFORMANCE OPTIMIZED: Cached memory
-                } else { 
-                    None 
+                start_memory_kb: if self.should_collect_profiling(level) {
+                    // PERFORMANCE OPTIMIZED: Cached memory
+                    ProfilingData::get_current_memory_kb_cached()
+                } else {
+                    None
                 },
                 level: Self::level_to_compact_string(level),
                 target: CompactString::new(metadata.target()),
@@ -1176,18 +1127,17 @@ where
             if Self::should_emit_span_event(level) {
                 self.emit_span_event(id, EVENT_ENTER_SPAN, &span_data);
             }
-            
+
             // Store span for on_exit
             self.span_storage.insert(id.clone(), span_data);
         }
     }
 
     fn on_exit(&self, id: &TraceId, _ctx: TracingContext<'_, S>) {
-        if let Some((_, mut span_data)) = self.span_storage.remove(id)
-        {
+        if let Some((_, mut span_data)) = self.span_storage.remove(id) {
             // PERFORMANCE OPTIMIZED: Conditional profiling
             let level: Level = span_data.level.parse().unwrap_or(Level::TRACE);
-            
+
             if self.should_collect_profiling(level) {
                 span_data.finalize_with_profiling(&self.profiling_config);
             }
@@ -1207,7 +1157,7 @@ where
     // ---------------------------------------------------------------------
     fn on_event(&self, event: &Event<'_>, ctx: TracingContext<'_, S>) {
         let meta: &'static Metadata<'static> = event.metadata();
-        
+
         // PERFORMANCE OPTIMIZED: Skip low-priority events entirely
         if *meta.level() > Level::INFO && !self.profiling_config.enabled {
             return;
@@ -1227,23 +1177,16 @@ where
         entry.target = CompactString::new(meta.target());
 
         // PERFORMANCE OPTIMIZED: Minimal span context inheritance
-        if let Some(span) = ctx.lookup_current() 
-        && let Some(span_data) = self
-                .span_storage
-                .get(&span.id())
+        if let Some(span) = ctx.lookup_current()
+            && let Some(span_data) = self.span_storage.get(&span.id())
         {
-            if entry.operation_type.is_empty() 
-            {
-                entry
-                    .operation_type
-                    .clone_from(&span_data.operation_type);
+            if entry.operation_type.is_empty() {
+                entry.operation_type.clone_from(&span_data.operation_type);
             }
 
             // PERFORMANCE OPTIMIZED: Only inherit essential fields
-            for (key, value) in &span_data.fields 
-            {
-                if !visitor.fields.contains_key(key)
-                {
+            for (key, value) in &span_data.fields {
+                if !visitor.fields.contains_key(key) {
                     visitor.fields.insert(key.clone(), value.clone());
                 }
             }
@@ -1254,12 +1197,12 @@ where
             .fields
             .get(&TRACE_MARKER)
             .map(|s: &String| -> &'static str {
-                COMMON_MARKERS.get(s.as_str()).copied().unwrap_or(TRACE_MARKER_UNKNOWN_STR)
+                COMMON_MARKERS
+                    .get(s.as_str())
+                    .copied()
+                    .unwrap_or(TRACE_MARKER_UNKNOWN_STR)
             })
-            .map_or(
-                TRACE_MARKER_UNKNOWN_COMPACT,
-                CompactString::const_new,
-            );
+            .map_or(TRACE_MARKER_UNKNOWN_COMPACT, CompactString::const_new);
 
         entry.operation_type = visitor
             .fields
@@ -1270,10 +1213,7 @@ where
                     .copied()
                     .unwrap_or(TRACE_OPERATION_UNKNOWN_STR)
             })
-            .map_or(
-                TRACE_OPERATION_UNKNOWN_COMPACT,
-                CompactString::const_new,
-            );
+            .map_or(TRACE_OPERATION_UNKNOWN_COMPACT, CompactString::const_new);
 
         // Duration and source location
         entry.duration_us = visitor
@@ -1293,7 +1233,7 @@ where
 
         // Fire-and-forget send to background task
         let _ = self.system.sender().send(entry);
-        
+
         // Return visitor to pool
         visitor.return_to_pool();
     }
@@ -1318,7 +1258,7 @@ where
             let map: &mut SpanFieldMap = extensions
                 .get_mut::<SpanFieldMap>()
                 .expect("SpanFieldMap missing; on_new_span must have inserted it");
-            
+
             // Single loop with move semantics - no cloning
             let fields: HashMap<CompactString, String> = std::mem::take(&mut visitor.fields);
             for (k, v) in fields {
@@ -1346,9 +1286,9 @@ where
 
 // PERFORMANCE OPTIMIZED: Thread-local visitor pool
 thread_local! {
-    static VISITOR_POOL: RefCell<Vec<JsonVisitor>> = const 
-    { 
-        RefCell::new(Vec::new()) 
+    static VISITOR_POOL: RefCell<Vec<JsonVisitor>> = const
+    {
+        RefCell::new(Vec::new())
     };
 }
 
@@ -1380,7 +1320,8 @@ impl JsonVisitor {
     fn return_to_pool(self) {
         VISITOR_POOL.with(|pool| {
             let mut pool = pool.borrow_mut();
-            if pool.len() < 8 { // Limit pool size
+            if pool.len() < 8 {
+                // Limit pool size
                 pool.push(self);
             }
         });
@@ -1589,33 +1530,30 @@ pub async fn init_logging_with_config(config: LoggerConfig) -> Result<WorkerGuar
 // Integration with existing application state
 impl LogEntry {
     #[must_use]
-    pub fn with_app_state(mut self, state: AppStateInfo) -> Self 
-    {
+    pub fn with_app_state(mut self, state: AppStateInfo) -> Self {
         self.app_state = Some(state);
         self
     }
 
     #[must_use]
-    pub fn with_ui_state(mut self, state: UIStateInfo) -> Self 
-    {
+    pub fn with_ui_state(mut self, state: UIStateInfo) -> Self {
         self.ui_state = Some(state);
         self
     }
 
     #[must_use]
-    pub fn with_fs_state(mut self, state: FileSystemStateInfo) -> Self 
-    {
+    pub fn with_fs_state(mut self, state: FileSystemStateInfo) -> Self {
         self.fs_state = Some(state);
         self
     }
 
     #[must_use]
     pub const fn with_profiling_data(
-        mut self, 
+        mut self,
         cpu_percent: Option<f32>,
         memory_delta: Option<i64>,
-        duration_ns: Option<u64>) -> Self 
-    {
+        duration_ns: Option<u64>,
+    ) -> Self {
         self.cpu_usage_percent = cpu_percent;
         self.memory_delta_kb = memory_delta;
         self.operation_duration_ns = duration_ns;
@@ -1623,7 +1561,7 @@ impl LogEntry {
     }
 }
 
-// PERFORMANCE OPTIMIZED: Profiling utilities 
+// PERFORMANCE OPTIMIZED: Profiling utilities
 #[derive(Debug)]
 pub struct ProfilingData {
     pub cpu_usage_percent: Option<f32>,
@@ -1632,7 +1570,7 @@ pub struct ProfilingData {
 }
 
 impl ProfilingData {
-    #[must_use] 
+    #[must_use]
     pub const fn empty() -> Self {
         Self {
             cpu_usage_percent: None,
@@ -1654,18 +1592,14 @@ impl ProfilingData {
     /// Lightweight performance monitoring helper with real sysinfo metrics
     #[must_use]
     #[expect(clippy::cast_possible_truncation, reason = "Expected accuracy loss")]
-    pub fn collect_profiling_data(
-        start_memory_kb: Option<i64>,
-        duration: Duration,
-    ) -> Self {
+    pub fn collect_profiling_data(start_memory_kb: Option<i64>, duration: Duration) -> Self {
         let current_memory_kb: Option<i64> = Self::get_current_memory_kb();
-        let memory_delta_kb: Option<i64> = if let (Some(current), Some(start)) =
-            (current_memory_kb, start_memory_kb)
-        {
-            Some(current - start)
-        } else {
-            None
-        };
+        let memory_delta_kb: Option<i64> =
+            if let (Some(current), Some(start)) = (current_memory_kb, start_memory_kb) {
+                Some(current - start)
+            } else {
+                None
+            };
 
         Self {
             cpu_usage_percent: Self::get_cpu_usage_percent(),
@@ -1673,7 +1607,6 @@ impl ProfilingData {
             operation_duration_ns: Some(duration.as_nanos() as u64),
         }
     }
-
 
     /// PERFORMANCE OPTIMIZED: Conditionally collect performance data
     #[must_use]
@@ -1689,15 +1622,12 @@ impl ProfilingData {
 
         // Use cached memory retrieval
         let current_memory_kb: Option<i64> = Self::get_current_memory_kb_cached();
-        let memory_delta_kb: Option<i64> = if let (
-            Some(current), 
-            Some(start)
-        ) = (current_memory_kb, start_memory_kb)
-        {
-            Some(current - start)
-        } else {
-            None
-        };
+        let memory_delta_kb: Option<i64> =
+            if let (Some(current), Some(start)) = (current_memory_kb, start_memory_kb) {
+                Some(current - start)
+            } else {
+                None
+            };
 
         // Collect CPU usage if memory_tracking is enabled
         let cpu_usage_percent: Option<f32> = if config.memory_tracking {
@@ -1720,21 +1650,19 @@ impl ProfilingData {
     pub fn get_current_memory_kb_cached() -> Option<i64> {
         let now = Instant::now().elapsed().as_millis() as u64;
         let last_refresh = LAST_SYSTEM_REFRESH.load(Ordering::Relaxed);
-        
+
         let current_pid: Pid = sysinfo::get_current_pid().ok()?;
         let mut system: StdMutexGuard<'_, System> = SYSTEM_INFO.lock().ok()?;
-        
+
         // Only refresh if interval exceeded
         if now.saturating_sub(last_refresh) >= REFRESH_INTERVAL_MS {
-            system.refresh_processes(
-                ProcessesToUpdate::Some(&[current_pid]),
-                true
-            );
+            system.refresh_processes(ProcessesToUpdate::Some(&[current_pid]), true);
             LAST_SYSTEM_REFRESH.store(now, Ordering::Relaxed);
         }
-        
-        system.process(current_pid)
-            .map(|process: &Process| -> i64 {(process.memory() / 1024) as i64})
+
+        system
+            .process(current_pid)
+            .map(|process: &Process| -> i64 { (process.memory() / 1024) as i64 })
     }
 
     /// PERFORMANCE OPTIMIZED: Cached CPU usage with refresh interval  
@@ -1743,21 +1671,19 @@ impl ProfilingData {
     pub fn get_cpu_usage_percent_cached() -> Option<f32> {
         let now = Instant::now().elapsed().as_millis() as u64;
         let last_refresh = LAST_SYSTEM_REFRESH.load(Ordering::Relaxed);
-        
+
         let current_pid: Pid = sysinfo::get_current_pid().ok()?;
         let mut system: StdMutexGuard<'_, System> = SYSTEM_INFO.lock().ok()?;
-        
+
         // Only refresh if interval exceeded
         if now.saturating_sub(last_refresh) >= REFRESH_INTERVAL_MS {
-            system.refresh_processes(
-                ProcessesToUpdate::Some(&[current_pid]),
-                true
-            );
+            system.refresh_processes(ProcessesToUpdate::Some(&[current_pid]), true);
             LAST_SYSTEM_REFRESH.store(now, Ordering::Relaxed);
         }
-        
-        system.process(current_pid)
-            .map(|process: &Process| -> f32 {process.cpu_usage()})
+
+        system
+            .process(current_pid)
+            .map(|process: &Process| -> f32 { process.cpu_usage() })
     }
 
     /// Get current memory usage in KB using sysinfo for cross-platform accuracy
@@ -1766,20 +1692,17 @@ impl ProfilingData {
     pub fn get_current_memory_kb() -> Option<i64> {
         // 1) Obtain the current PID
         let current_pid: Pid = sysinfo::get_current_pid().ok()?;
-        
+
         // 2) Lock the shared System instance
         let mut system: StdMutexGuard<'_, System> = SYSTEM_INFO.lock().ok()?;
-        
+
         // 3) Refresh only this process's info
-        system.refresh_processes(
-            ProcessesToUpdate::Some(&[current_pid]),
-            true
-        );
-        
+        system.refresh_processes(ProcessesToUpdate::Some(&[current_pid]), true);
+
         // 4) Convert bytes (u64) → KB (i64)
         system
             .process(current_pid)
-            .map(|process: &Process| -> i64 {(process.memory() / 1024) as i64})
+            .map(|process: &Process| -> i64 { (process.memory() / 1024) as i64 })
     }
 
     /// Get current CPU usage percentage for the process using sysinfo
@@ -1787,20 +1710,16 @@ impl ProfilingData {
     pub fn get_cpu_usage_percent() -> Option<f32> {
         // 1) Obtain the current PID
         let current_pid: Pid = sysinfo::get_current_pid().ok()?;
-        
+
         // 2) Lock the shared System instance
         let mut system: StdMutexGuard<'_, System> = SYSTEM_INFO.lock().ok()?;
 
-        // 3) Refresh only this process's info (necessary for cpu_usage deltas)        
-        system.refresh_processes(
-            ProcessesToUpdate::Some(&[current_pid]),
-            true
-        );
-        
+        // 3) Refresh only this process's info (necessary for cpu_usage deltas)
+        system.refresh_processes(ProcessesToUpdate::Some(&[current_pid]), true);
+
         // 4) Return the CPU usage percentage
         system
             .process(current_pid)
-            .map(|process: &Process| -> f32 {process.cpu_usage()})
+            .map(|process: &Process| -> f32 { process.cpu_usage() })
     }
-
 }

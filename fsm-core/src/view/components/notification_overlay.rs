@@ -16,8 +16,17 @@ use ratatui::{
 pub struct NotificationOverlay;
 
 impl NotificationOverlay {
-    pub fn render(frame: &mut Frame<'_>, app: &crate::AppState, area: Rect) {
-        if let Some(notification) = &app.ui.notification {
+    pub fn render(
+        frame: &mut Frame<'_>,
+        shared_state: &crate::model::shared_state::SharedState,
+        area: Rect,
+    ) {
+        let notification = {
+            let ui_guard = shared_state.lock_ui();
+            ui_guard.notification.clone()
+        };
+
+        if let Some(notification) = notification {
             // Create a smaller overlay area in the top-right corner
             let notification_width = 60;
             let notification_height = 6;

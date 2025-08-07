@@ -1,8 +1,7 @@
-
 //! ``src/view/components/search_results_overlay.rs``
 //! # `SearchResultsOverlay`: Displays Search Results
 
-use crate::AppState;
+use crate::model::shared_state::SharedState;
 use crate::view::theme;
 use ratatui::{
     Frame,
@@ -15,8 +14,11 @@ use ratatui::{
 pub struct SearchResultsOverlay;
 
 impl SearchResultsOverlay {
-    pub fn render(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
-        let results = &app.ui.search_results;
+    pub fn render(frame: &mut Frame<'_>, shared_state: &SharedState, area: Rect) {
+        let results = {
+            let ui_guard = shared_state.lock_ui();
+            ui_guard.search_results.clone()
+        };
 
         let mut lines = vec![Line::from(Span::styled(
             "Search Results",
@@ -36,12 +38,16 @@ impl SearchResultsOverlay {
 
             let items: Vec<ListItem> = results
                 .iter()
-                .filter_map(|entry| app.registry.get(entry.id))
+                .filter_map(|entry| shared_state.metadata.get_by_id(entry.id))
                 .map(|obj_info| ListItem::new(obj_info.path.to_string_lossy().into_owned()))
                 .collect();
 
             let mut list_state = ListState::default();
-            list_state.select(app.ui.selected);
+            let selected = {
+                let ui_guard = shared_state.lock_ui();
+                ui_guard.selected
+            };
+            list_state.select(selected);
 
             let list = List::new(items)
                 .block(

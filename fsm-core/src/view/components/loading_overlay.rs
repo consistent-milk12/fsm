@@ -1,4 +1,4 @@
-use crate::AppState;
+use crate::model::shared_state::SharedState;
 use crate::view::theme;
 use ratatui::{
     Frame,
@@ -12,8 +12,13 @@ pub struct LoadingOverlay;
 
 impl LoadingOverlay {
     #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-    pub fn render(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
-        let Some(loading) = &app.ui.loading else {
+    pub fn render(frame: &mut Frame<'_>, shared_state: &SharedState, area: Rect) {
+        let loading = {
+            let ui_guard = shared_state.lock_ui();
+            ui_guard.loading.clone()
+        };
+
+        let Some(loading) = loading else {
             return;
         };
 

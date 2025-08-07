@@ -2,7 +2,7 @@
 //! ============================================================================
 //! # `InputPromptOverlay`: Stylized Input Prompt for File/Folder Creation
 
-use crate::model::app_state::AppState;
+use crate::model::shared_state::SharedState;
 use crate::view::theme;
 use ratatui::{
     Frame,
@@ -15,16 +15,22 @@ pub struct InputPromptOverlay;
 
 impl InputPromptOverlay {
     #[allow(clippy::cast_possible_truncation)]
-    pub fn render(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
+    pub fn render(frame: &mut Frame<'_>, shared_state: &SharedState, area: Rect) {
         let overlay_area = Self::centered_rect(50, 10, area);
         frame.render_widget(Clear, overlay_area);
 
-        let title = match app.ui.input_prompt_type {
-            Some(crate::controller::actions::InputPromptType::CreateFile) => " Create New File ",
-            Some(crate::controller::actions::InputPromptType::CreateDirectory) => {
-                " Create New Directory "
-            }
-            _ => " Input ",
+        let (title, input_text) = {
+            let ui_guard = shared_state.lock_ui();
+            let title = match ui_guard.input_prompt_type {
+                Some(crate::controller::actions::InputPromptType::CreateFile) => {
+                    " Create New File "
+                }
+                Some(crate::controller::actions::InputPromptType::CreateDirectory) => {
+                    " Create New Directory "
+                }
+                _ => " Input ",
+            };
+            (title, ui_guard.input.clone())
         };
 
         let input_block = Block::default()
@@ -34,7 +40,7 @@ impl InputPromptOverlay {
             .border_style(Style::default().fg(theme::PURPLE))
             .style(Style::default().bg(theme::BACKGROUND));
 
-        let input_paragraph = Paragraph::new(app.ui.input.as_str())
+        let input_paragraph = Paragraph::new(input_text.as_str())
             .block(input_block)
             .style(Style::default().fg(theme::FOREGROUND))
             .wrap(Wrap { trim: false });
@@ -43,7 +49,7 @@ impl InputPromptOverlay {
 
         // Show cursor
         frame.set_cursor_position((
-            overlay_area.x + app.ui.input.len() as u16 + 1,
+            overlay_area.x + input_text.len() as u16 + 1,
             overlay_area.y + 1,
         ));
 

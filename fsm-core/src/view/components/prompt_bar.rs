@@ -6,7 +6,7 @@
 //! - Uses `UIState`'s input buffer
 //! - Always centered, visually distinct, themable
 
-use crate::AppState;
+use crate::model::shared_state::SharedState;
 use crate::view::theme;
 use ratatui::{
     Frame,
@@ -19,12 +19,16 @@ use ratatui::{
 pub struct PromptBar;
 
 impl PromptBar {
-    pub fn render(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
-        let prompt_text = &app.ui.input;
-        let prompt_label = match app.ui.overlay {
-            crate::model::ui_state::UIOverlay::Prompt => "Command:",
-            crate::model::ui_state::UIOverlay::Search => "Search:",
-            _ => "Input:",
+    pub fn render(frame: &mut Frame<'_>, shared_state: &SharedState, area: Rect) {
+        let (prompt_text, prompt_label) = {
+            let ui_guard = shared_state.lock_ui();
+            let prompt_text = ui_guard.input.clone();
+            let prompt_label = match ui_guard.overlay {
+                crate::model::ui_state::UIOverlay::Prompt => "Command:",
+                crate::model::ui_state::UIOverlay::Search => "Search:",
+                _ => "Input:",
+            };
+            (prompt_text, prompt_label)
         };
 
         let overlay_area = Self::centered_rect(40, 12, area);

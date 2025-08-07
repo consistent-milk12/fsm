@@ -11,28 +11,31 @@
 //! - Performance monitoring and resource management
 //! - Extensive logging and debugging support
 
-use crate::{controller::actions::{Action, InputPromptType}, logging::ProfilingData};
 use crate::fs::dir_scanner::ScanUpdate;
-use crate::fs::object_info::ObjectInfo;
 use crate::model::app_state::AppState;
-use crate::model::object_registry::SortableEntry;
 use crate::model::command_palette::CommandAction;
 use crate::model::fs_state::{EntryFilter, EntrySort, PaneState};
-use crate::model::ui_state::{LoadingState, NotificationLevel, Component, UIMode, UIOverlay};
+use crate::model::object_registry::SortableEntry;
+use crate::model::shared_state::SharedState;
+use crate::model::ui_state::{
+    Component, LoadingState, NotificationLevel, UIMode, UIOverlay, UIState,
+};
 use crate::tasks::file_ops_task::{FileOperation, FileOperationTask};
 use crate::tasks::search_task::RawSearchResult;
-use crate::tasks::size_task as FileSizeOperator; 
+use crate::{
+    controller::actions::{Action, InputPromptType},
+    logging::ProfilingData,
+};
 use crossterm::event::{Event as TermEvent, EventStream, KeyCode, KeyModifiers};
-use dashmap::mapref::one::Ref;
 use futures::StreamExt;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::process::Command;
+use tokio::sync::mpsc;
 use tokio::sync::mpsc::UnboundedSender;
-use tokio::sync::{Mutex, MutexGuard, mpsc};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info, span::Entered, trace, warn, Span};
+use tracing::{Span, debug, info, span::Entered, trace, warn};
 
 /// Enhanced task result with performance metrics
 #[derive(Debug, Clone)]
@@ -88,7 +91,7 @@ pub enum TaskResult {
 
 /// Enhanced event loop with performance monitoring and advanced features
 pub struct EventLoop {
-    pub app: Arc<Mutex<AppState>>,
+    pub app: Arc<SharedState>,
     task_rx: mpsc::UnboundedReceiver<TaskResult>,
     event_stream: EventStream,
     action_rx: mpsc::UnboundedReceiver<Action>,
@@ -101,7 +104,7 @@ pub struct EventLoop {
 impl EventLoop {
     /// Create new enhanced event loop with performance monitoring
     pub fn new(
-        app: Arc<Mutex<AppState>>,
+        app: Arc<SharedState>,
         task_rx: mpsc::UnboundedReceiver<TaskResult>,
         action_rx: mpsc::UnboundedReceiver<Action>,
     ) -> Self {
@@ -118,25 +121,17 @@ impl EventLoop {
     }
 
     /// Calculate search result count across all types with caching
-    fn current_result_count(app: &AppState) -> usize {
-        let count: usize = app
-            .ui.raw_search_results
-            .as_ref()
-            .map_or(if app
-                    .ui
-                    .rich_search_results
-                    .is_empty() 
-                {
-                    app.ui.search_results.len()
-                } else {
-                    app.ui.rich_search_results.len()
-                }, 
-                |raw_results: &RawSearchResult| -> usize 
-                {
-                    raw_results.lines.len()
-                }
-            );
-
+    fn current_result_count(app: &SharedState) -> usize {
+        // Use fine-grained UI locking
+        let ui_guard = app.lock_ui();
+        let count: usize = ui_guard.raw_search_results.as_ref().map_or(
+            if ui_guard.rich_search_results.is_empty() {
+                ui_guard.search_results.len()
+            } else {
+                ui_guard.rich_search_results.len()
+            },
+            |raw_results: &RawSearchResult| -> usize { raw_results.lines.len() },
+        );
         trace!("Calculated result count: {}", count);
         count
     }
@@ -151,31 +146,30 @@ impl EventLoop {
         if self.event_count == 1 {
             self.avg_response_time = time_ms;
         } else {
-            self.avg_response_time = self
-                .avg_response_time
-                .mul_add(0.9, time_ms * 0.1);
+            self.avg_response_time = self.avg_response_time.mul_add(0.9, time_ms * 0.1);
         }
 
         // Log performance warnings with profiling data
         if time_ms > 16.0 {
             // 60fps threshold - collect profiling data for slow events
-            let profiling_data: ProfilingData = ProfilingData::collect_profiling_data(
-                None, 
-                processing_time
-            );
-            
+            let profiling_data: ProfilingData =
+                ProfilingData::collect_profiling_data(None, processing_time);
+
             // Check channel queue lengths for diagnostic info
             let task_queue_len: usize = self.task_rx.len();
             let action_queue_len: usize = self.action_rx.len();
-            
+
             info!(
                 marker = "PERF_SLOW_EVENT",
-                operation_type = "event_processing", 
+                operation_type = "event_processing",
                 duration_ns = profiling_data.operation_duration_ns.unwrap_or(0),
                 task_queue_len = task_queue_len,
                 action_queue_len = action_queue_len,
                 "Slow event processing: {:.2}ms (avg: {:.2}ms) [task_q:{}, action_q:{}]",
-                time_ms, self.avg_response_time, task_queue_len, action_queue_len
+                time_ms,
+                self.avg_response_time,
+                task_queue_len,
+                action_queue_len
             );
         }
 
@@ -208,7 +202,7 @@ impl EventLoop {
         let action: Option<Action> = tokio::select! {
             // Prioritize terminal events for immediate input response
             biased;
-            
+
             Some(Ok(event)) = self.event_stream.next() => {
                 trace!("Terminal event received: {:?}", event);
                 let action = self.handle_terminal_event(event).await;
@@ -238,11 +232,15 @@ impl EventLoop {
 
     /// Enhanced terminal event handling with comprehensive logging
     async fn handle_terminal_event(&self, event: TermEvent) -> Action {
-        let app: MutexGuard<'_, AppState> = self.app.lock().await;
-        let current_overlay: UIOverlay = app.ui.overlay;
-        let current_mode: UIMode = app.ui.mode;
-        let has_notification: bool = app.ui.notification.is_some();
-        drop(app);
+        // Fine-grained locking: Only access UI state for event processing
+        let (current_overlay, current_mode, has_notification) = {
+            let ui_guard = self.app.lock_ui();
+            (
+                ui_guard.overlay,
+                ui_guard.mode,
+                ui_guard.notification.is_some(),
+            )
+        };
 
         debug!(
             "Processing event in mode={:?}, overlay={:?}, notification={}",
@@ -266,9 +264,9 @@ impl EventLoop {
                 // Auto-dismiss notifications on any key
                 if has_notification {
                     debug!("Auto-dismissing notification on key press");
-                    let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-                    app.ui.dismiss_notification();
-                    app.ui.mark_dirty(Component::Notification);
+                    let mut ui_guard = self.app.lock_ui();
+                    ui_guard.dismiss_notification();
+                    ui_guard.mark_dirty(Component::Notification);
                     // Continue processing the key event
                 }
 
@@ -326,21 +324,20 @@ impl EventLoop {
     ) -> Action {
         // HIGHEST PRIORITY: Cancel active file operations
         {
-            let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
+            let mut ui_guard = self.app.lock_ui();
 
-            if !app.ui.active_file_operations.is_empty() {
-                let cancelled_count: usize = app.ui.cancel_all_operations();
+            if !ui_guard.active_file_operations.is_empty() {
+                let cancelled_count: usize = ui_guard.cancel_all_operations();
 
                 if cancelled_count > 0 {
-                    app.ui
-                        .show_info(format!("Cancelled {cancelled_count} file operations(s)"));
+                    ui_guard.show_info(format!("Cancelled {cancelled_count} file operations(s)"));
 
                     info!("User cancelled {cancelled_count} file operations via ESC key");
 
-                    app.ui.mark_dirty(Component::Overlay);
-                    app.ui.mark_dirty(Component::Notification);
+                    ui_guard.mark_dirty(Component::Overlay);
+                    ui_guard.mark_dirty(Component::Notification);
 
-                    drop(app);
+                    drop(ui_guard);
 
                     return Action::NoOp;
                 }
@@ -355,11 +352,11 @@ impl EventLoop {
         // Priority order: notification -> overlay -> command completions -> command mode -> quit
         if has_notification {
             debug!("Escape: dismissing notification");
-            let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-            app.ui.dismiss_notification();
-            app.ui.mark_dirty(Component::Notification);
-            
-            drop(app);
+            let mut ui_guard = self.app.lock_ui();
+            ui_guard.dismiss_notification();
+            ui_guard.mark_dirty(Component::Notification);
+
+            drop(ui_guard);
 
             return Action::NoOp;
         }
@@ -371,20 +368,14 @@ impl EventLoop {
 
         if mode == UIMode::Command {
             debug!("Escape: checking command completions");
-            let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-            
-            if app.ui.command_palette.show_completions {
+            let mut ui_guard = self.app.lock_ui();
+            if ui_guard.command_palette.show_completions {
                 debug!("Escape: hiding command completions");
-                app.ui.command_palette.hide_completions();
-                app.ui.mark_dirty(Component::Command);
-
-                drop(app);
-
+                ui_guard.command_palette.hide_completions();
+                ui_guard.mark_dirty(Component::Command);
                 return Action::NoOp;
             }
-
             debug!("Escape: exiting command mode");
-            
             return Action::ExitCommandMode;
         }
 
@@ -392,7 +383,7 @@ impl EventLoop {
         Action::Quit
     }
 
-    #[allow(clippy::cognitive_complexity, reason="Will probably refactor later")]
+    #[allow(clippy::cognitive_complexity, reason = "Will probably refactor later")]
     /// Enhanced command mode with improved auto-completion
     async fn handle_command_mode_keys(&self, key: crossterm::event::KeyEvent) -> Action {
         trace!("Command mode key: {:?}", key.code);
@@ -400,102 +391,78 @@ impl EventLoop {
         match key.code {
             KeyCode::Char(c) => {
                 debug!("Command mode: adding character '{}'", c);
-                let mut app = self.app.lock().await;
-                app.ui.command_palette.input.push(c);
-                app.ui.command_palette.update_filter();
-                app.ui.command_palette.show_completions_if_available();
-                
+                let mut ui_guard = self.app.lock_ui();
+                ui_guard.command_palette.input.push(c);
+                ui_guard.command_palette.update_filter();
+                ui_guard.command_palette.show_completions_if_available();
                 trace!(
                     "Command input: '{}', completions available: {}",
-                    app.ui.command_palette.input, app.ui.command_palette.show_completions
+                    ui_guard.command_palette.input, ui_guard.command_palette.show_completions
                 );
-
-                drop(app);
-
                 Action::NoOp
             }
-
             KeyCode::Backspace => {
                 debug!("Command mode: backspace");
-                let mut app = self.app.lock().await;
-                app.ui.command_palette.input.pop();
-                app.ui.command_palette.update_filter();
-                app.ui.command_palette.show_completions_if_available();
+                let mut ui_guard = self.app.lock_ui();
+                ui_guard.command_palette.input.pop();
+                ui_guard.command_palette.update_filter();
+                ui_guard.command_palette.show_completions_if_available();
                 trace!(
                     "Command input: '{}' (after backspace)",
-                    app.ui.command_palette.input
+                    ui_guard.command_palette.input
                 );
-
-                drop(app);
-
                 Action::NoOp
             }
-
             KeyCode::Up => {
                 debug!("Command mode: up arrow navigation");
-                let mut app = self.app.lock().await;
-                if app.ui.command_palette.show_completions {
-                    app.ui.command_palette.prev_completion();
+                let mut ui_guard = self.app.lock_ui();
+                if ui_guard.command_palette.show_completions {
+                    ui_guard.command_palette.prev_completion();
                     trace!("Command completions: navigated up");
                 } else {
-                    app.ui.command_palette.selected =
-                        app.ui.command_palette.selected.saturating_sub(1);
+                    ui_guard.command_palette.selected =
+                        ui_guard.command_palette.selected.saturating_sub(1);
                     trace!(
                         "Command history: navigated up to {}",
-                        app.ui.command_palette.selected
+                        ui_guard.command_palette.selected
                     );
                 }
-
-                drop(app);
-
                 Action::NoOp
             }
-
             KeyCode::Down => {
                 debug!("Command mode: down arrow navigation");
-                let mut app = self.app.lock().await;
-                if app.ui.command_palette.show_completions {
-                    app.ui.command_palette.next_completion();
+                let mut ui_guard = self.app.lock_ui();
+                if ui_guard.command_palette.show_completions {
+                    ui_guard.command_palette.next_completion();
                     trace!("Command completions: navigated down");
                 } else {
-                    let max_idx = app.ui.command_palette.filtered.len().saturating_sub(1);
-                    app.ui.command_palette.selected = app
-                        .ui
+                    let max_idx = ui_guard.command_palette.filtered.len().saturating_sub(1);
+                    ui_guard.command_palette.selected = ui_guard
                         .command_palette
                         .selected
                         .saturating_add(1)
                         .min(max_idx);
                     trace!(
                         "Command history: navigated down to {}",
-                        app.ui.command_palette.selected
+                        ui_guard.command_palette.selected
                     );
                 }
-
-                drop(app);
-                
                 Action::NoOp
             }
-
             KeyCode::Tab => {
                 debug!("Command mode: tab completion");
-                let mut app = self.app.lock().await;
-                if app.ui.command_palette.show_completions {
-                    let before = app.ui.command_palette.input.clone();
-                    app.ui.command_palette.apply_completion();
-                    let after = app.ui.command_palette.input.clone();
-
-                    drop(app);
-
+                let mut ui_guard = self.app.lock_ui();
+                if ui_guard.command_palette.show_completions {
+                    let before = ui_guard.command_palette.input.clone();
+                    ui_guard.command_palette.apply_completion();
+                    let after = ui_guard.command_palette.input.clone();
                     info!("Applied completion: '{}' -> '{}'", before, after);
                 } else {
                     trace!("Tab pressed but no completions available");
                 }
-
                 Action::NoOp
             }
-
             KeyCode::Enter => self.handle_command_enter_key().await,
-
             _ => {
                 trace!("Command mode: ignoring key {:?}", key.code);
                 Action::NoOp
@@ -505,27 +472,32 @@ impl EventLoop {
 
     async fn handle_command_enter_key(&self) -> Action {
         debug!("Command mode: executing command");
-        let app: MutexGuard<'_, AppState> = self.app.lock().await;
-        let input: &str = app.ui.command_palette.input.trim();
+        let ui_guard = self.app.lock_ui();
+        let input: &str = ui_guard.command_palette.input.trim();
         info!("Executing command: '{}'", input);
-
         // Try parsing user input first
-        app.ui.command_palette.parse_command().map_or_else(|| app
-            .ui
-            .command_palette
-            .filtered
-            .get(app.ui.command_palette.selected).map_or_else(|| {
-            info!("No valid command to execute, exiting command mode");
-            Action::ExitCommandMode
-        }, |cmd| {
-            debug!("Using selected command from list: {:?}", cmd.action);
-
-            Self::map_command_action_to_action(cmd.action.clone())
-        }), |parsed_action| {
-            debug!("Command parsed successfully: {:?}", parsed_action);
-
-            Self::map_command_action_to_action(parsed_action)
-        })
+        ui_guard.command_palette.parse_command().map_or_else(
+            || {
+                ui_guard
+                    .command_palette
+                    .filtered
+                    .get(ui_guard.command_palette.selected)
+                    .map_or_else(
+                        || {
+                            info!("No valid command to execute, exiting command mode");
+                            Action::ExitCommandMode
+                        },
+                        |cmd| {
+                            debug!("Using selected command from list: {:?}", cmd.action);
+                            Self::map_command_action_to_action(cmd.action.clone())
+                        },
+                    )
+            },
+            |parsed_action| {
+                debug!("Command parsed successfully: {:?}", parsed_action);
+                Self::map_command_action_to_action(parsed_action)
+            },
+        )
     }
 
     #[allow(clippy::unused_async)]
@@ -613,87 +585,64 @@ impl EventLoop {
         match key.code {
             KeyCode::Char(c) => {
                 debug!("Filename search: adding character '{}'", c);
-                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-                app.ui.input.push(c);
-
-                let pattern: String = app.ui.input.clone();
-
-                drop(app);
-
+                let mut ui_guard = self.app.lock_ui();
+                ui_guard.input.push(c);
+                let pattern: String = ui_guard.input.clone();
                 trace!("Filename search pattern: '{}'", pattern);
                 Action::FileNameSearch(pattern)
             }
-
             KeyCode::Backspace => {
                 debug!("Filename search: backspace");
-                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-                app.ui.input.pop();
-
-                let pattern = app.ui.input.clone();
+                let mut ui_guard = self.app.lock_ui();
+                ui_guard.input.pop();
+                let pattern = ui_guard.input.clone();
                 trace!("Filename search pattern: '{}' (after backspace)", pattern);
-
-                drop(app);
-
                 Action::FileNameSearch(pattern)
             }
-
             KeyCode::Enter => {
                 debug!("Filename search: enter pressed");
-                let app: MutexGuard<'_, AppState> = self.app.lock().await;
-
+                let ui_guard = self.app.lock_ui();
                 // Try to open selected result
-                if !app.ui.filename_search_results.is_empty()
-                    && let Some(selected_idx) = app.ui.selected
-                    && let Some(selected_entry) = app.ui.filename_search_results.get(selected_idx)
-                    && let Some(obj_info) = app.registry.get(selected_entry.id)
+                if !ui_guard.filename_search_results.is_empty()
+                    && let Some(selected_idx) = ui_guard.selected
+                    && let Some(selected_entry) = ui_guard.filename_search_results.get(selected_idx)
                 {
-                    info!("Opening selected file: {:?}", obj_info.path);
-                    return Action::OpenFile(obj_info.path.clone(), None);
+                    // Registry access is now lock-free or via a method on SharedState
+                    if let Some(obj_info) = self.app.get_object_info(selected_entry.id) {
+                        info!("Opening selected file: {:?}", obj_info.path);
+                        return Action::OpenFile(obj_info.path.clone(), None);
+                    }
                 }
-
                 // Fallback to triggering search
-                if app.ui.input.trim().is_empty() {
-                    drop(app);
+                if ui_guard.input.trim().is_empty() {
                     debug!("Closing filename search (empty input)");
                     Action::CloseOverlay
                 } else {
-                    debug!("Triggering filename search for: '{}'", app.ui.input);
-                    Action::FileNameSearch(app.ui.input.clone())
+                    debug!("Triggering filename search for: '{}'", ui_guard.input);
+                    Action::FileNameSearch(ui_guard.input.clone())
                 }
             }
-
             KeyCode::Up => {
                 debug!("Filename search: navigate up");
-                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-
-                let result_count: usize = app.ui.filename_search_results.len();
-
+                let mut ui_guard = self.app.lock_ui();
+                let result_count: usize = ui_guard.filename_search_results.len();
                 if result_count > 0 {
-                    app.ui.selected = Some(app.ui.selected.unwrap_or(0).saturating_sub(1));
-                    trace!("Filename search selection: {:?}", app.ui.selected);
+                    ui_guard.selected = Some(ui_guard.selected.unwrap_or(0).saturating_sub(1));
+                    trace!("Filename search selection: {:?}", ui_guard.selected);
                 }
-
-                drop(app);
-
                 Action::NoOp
             }
-
             KeyCode::Down => {
                 debug!("Filename search: navigate down");
-                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-                let result_count: usize = app.ui.filename_search_results.len();
-
+                let mut ui_guard = self.app.lock_ui();
+                let result_count: usize = ui_guard.filename_search_results.len();
                 if result_count > 0 {
-                    let current: usize = app.ui.selected.unwrap_or(0);
-                    app.ui.selected = Some((current + 1).min(result_count.saturating_sub(1)));
-                    trace!("Filename search selection: {:?}", app.ui.selected);
+                    let current: usize = ui_guard.selected.unwrap_or(0);
+                    ui_guard.selected = Some((current + 1).min(result_count.saturating_sub(1)));
+                    trace!("Filename search selection: {:?}", ui_guard.selected);
                 }
-
-                drop(app);
-
                 Action::NoOp
             }
-
             _ => {
                 trace!("Filename search: ignoring key {:?}", key.code);
                 Action::NoOp
@@ -708,71 +657,63 @@ impl EventLoop {
         match key.code {
             KeyCode::Char(c) => {
                 debug!("Content search: adding character '{}'", c);
-                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-                app.ui.input.push(c);
-
+                let mut ui_guard = self.app.lock_ui();
+                ui_guard.input.push(c);
                 // Clear previous results for real-time search
-                Self::clear_search_results(&mut app);
-                app.ui.mark_dirty(Component::Main);
-                trace!("Content search input: '{}' (results cleared)", app.ui.input);
-                
-                drop(app);
-
+                ui_guard.search_results.clear();
+                ui_guard.rich_search_results.clear();
+                ui_guard.raw_search_results = None;
+                ui_guard.last_query = None;
+                ui_guard.selected = None;
+                ui_guard.mark_dirty(Component::Main);
+                trace!(
+                    "Content search input: '{}' (results cleared)",
+                    ui_guard.input
+                );
                 Action::NoOp
             }
-
             KeyCode::Backspace => {
                 debug!("Content search: backspace");
-                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-
-                app.ui.input.pop();
-                Self::clear_search_results(&mut app);
-
-                app.ui.mark_dirty(Component::Main);
-                trace!("Content search input: '{}' (after backspace)", app.ui.input);
-
-                drop(app);
-
+                let mut ui_guard = self.app.lock_ui();
+                ui_guard.input.pop();
+                ui_guard.search_results.clear();
+                ui_guard.rich_search_results.clear();
+                ui_guard.raw_search_results = None;
+                ui_guard.last_query = None;
+                ui_guard.selected = None;
+                ui_guard.mark_dirty(Component::Main);
+                trace!(
+                    "Content search input: '{}' (after backspace)",
+                    ui_guard.input
+                );
                 Action::NoOp
             }
-
             KeyCode::Enter => self.handle_content_search_enter_key().await,
-
             KeyCode::Up => {
                 debug!("Content search: navigate up");
-                let mut app = self.app.lock().await;
-                let result_count = Self::current_result_count(&app);
-                
+                let mut ui_guard = self.app.lock_ui();
+                let result_count = Self::current_result_count(&self.app);
                 if result_count > 0 {
-                    let new_idx = app.ui.selected.unwrap_or(0).saturating_sub(1);
-                    app.ui.selected = Some(new_idx);
-                    app.ui.mark_dirty(Component::Main);
-                    
-                    drop(app);
-
+                    let new_idx = ui_guard.selected.unwrap_or(0).saturating_sub(1);
+                    ui_guard.selected = Some(new_idx);
+                    ui_guard.mark_dirty(Component::Main);
                     trace!("Content search selection: {}", new_idx);
                 }
-                
                 Action::NoOp
             }
-
             KeyCode::Down => {
                 debug!("Content search: navigate down");
-                let mut app = self.app.lock().await;
-                let result_count = Self::current_result_count(&app);
+                let mut ui_guard = self.app.lock_ui();
+                let result_count = Self::current_result_count(&self.app);
                 if result_count > 0 {
-                    let current = app.ui.selected.unwrap_or(0);
+                    let current = ui_guard.selected.unwrap_or(0);
                     let new_idx = (current + 1).min(result_count.saturating_sub(1));
-                    app.ui.selected = Some(new_idx);
-                    app.ui.mark_dirty(Component::Main);
-                    
-                    drop(app);
-
+                    ui_guard.selected = Some(new_idx);
+                    ui_guard.mark_dirty(Component::Main);
                     trace!("Content search selection: {}", new_idx);
                 }
                 Action::NoOp
             }
-
             _ => {
                 trace!("Content search: ignoring key {:?}", key.code);
                 Action::NoOp
@@ -782,14 +723,34 @@ impl EventLoop {
 
     async fn handle_content_search_enter_key(&self) -> Action {
         debug!("Content search: enter pressed");
-        let app: MutexGuard<'_, AppState> = self.app.lock().await;
+
+        // Get selected index and various search results
+        let (
+            selected_idx,
+            raw_results,
+            rich_search_results,
+            search_results,
+            input_pattern,
+            current_dir,
+        ) = {
+            let ui_guard = self.app.lock_ui();
+            let fs_guard = self.app.lock_fs();
+            (
+                ui_guard.selected,
+                ui_guard.raw_search_results.clone(),
+                ui_guard.rich_search_results.clone(),
+                ui_guard.search_results.clone(),
+                ui_guard.input.clone(),
+                fs_guard.active_pane().cwd.clone(),
+            )
+        };
 
         // Try to open selected result first
-        if let Some(selected_idx) = app.ui.selected {
+        if let Some(selected_idx) = selected_idx {
             debug!("Processing selection at index {}", selected_idx);
 
             // Priority: Raw -> Rich -> Simple results
-            if let Some(ref raw_results) = app.ui.raw_search_results {
+            if let Some(ref raw_results) = raw_results {
                 debug!("Processing raw search results");
                 if selected_idx < raw_results.lines.len() {
                     return self
@@ -798,23 +759,17 @@ impl EventLoop {
                 }
             }
 
-            if !app.ui.rich_search_results.is_empty()
-                && selected_idx < app.ui.rich_search_results.len()
-            {
+            if !rich_search_results.is_empty() && selected_idx < rich_search_results.len() {
                 debug!("Processing rich search results");
                 return self
-                    .process_rich_search_line(
-                        &app.ui.rich_search_results,
-                        selected_idx,
-                        &app.fs.active_pane().cwd,
-                    )
+                    .process_rich_search_line(&rich_search_results, selected_idx, &current_dir)
                     .await;
             }
 
-            if !app.ui.search_results.is_empty() && selected_idx < app.ui.search_results.len() {
+            if !search_results.is_empty() && selected_idx < search_results.len() {
                 debug!("Processing simple search results");
-                let result = &app.ui.search_results[selected_idx];
-                if let Some(obj_info) = app.registry.get(result.id) {
+                let result = &search_results[selected_idx];
+                if let Some(obj_info) = self.app.metadata.get_by_id(result.id) {
                     info!("Opening file: {:?}", obj_info.path);
                     return Action::OpenFile(obj_info.path.clone(), None);
                 }
@@ -822,21 +777,18 @@ impl EventLoop {
         }
 
         // No valid selection, start new search
-        let pattern = app.ui.input.clone();
-        
-        drop(app);
-        
-        info!("Starting content search for: '{}'", pattern);
-        Action::ContentSearch(pattern)
+        info!("Starting content search for: '{}'", input_pattern);
+        Action::ContentSearch(input_pattern)
     }
 
     /// Helper to clear search results
-    fn clear_search_results(app: &mut AppState) {
-        app.ui.search_results.clear();
-        app.ui.rich_search_results.clear();
-        app.ui.raw_search_results = None;
-        app.ui.last_query = None;
-        app.ui.selected = None;
+    fn clear_search_results(shared_state: &SharedState) {
+        let mut ui_guard = shared_state.lock_ui();
+        ui_guard.search_results.clear();
+        ui_guard.rich_search_results.clear();
+        ui_guard.raw_search_results = None;
+        ui_guard.last_query = None;
+        ui_guard.selected = None;
     }
 
     #[allow(clippy::unused_async)]
@@ -908,31 +860,20 @@ impl EventLoop {
         match key.code {
             KeyCode::Char(c) => {
                 debug!("Prompt: adding character '{}'", c);
-                let mut app = self.app.lock().await;
-                app.ui.input.push(c);
-                
-                drop(app);
-
+                let mut ui_guard = self.app.lock_ui();
+                ui_guard.input.push(c);
                 Action::NoOp
             }
-
             KeyCode::Backspace => {
                 debug!("Prompt: backspace");
-                let mut app = self.app.lock().await;
-                app.ui.input.pop();
-                
-                drop(app);
-
+                let mut ui_guard = self.app.lock_ui();
+                ui_guard.input.pop();
                 Action::NoOp
             }
-
             KeyCode::Enter => {
                 debug!("Prompt: enter pressed");
-                let app = self.app.lock().await;
-                let input = app.ui.input.trim().to_string();
-
-                drop(app);
-
+                let ui_guard = self.app.lock_ui();
+                let input = ui_guard.input.trim().to_string();
                 if input.is_empty() {
                     debug!("Closing prompt (empty input)");
                     Action::CloseOverlay
@@ -941,7 +882,6 @@ impl EventLoop {
                     Action::SubmitInputPrompt(input)
                 }
             }
-
             _ => {
                 trace!("Prompt: ignoring key {:?}", key.code);
                 Action::NoOp
@@ -961,43 +901,45 @@ impl EventLoop {
 
             KeyCode::Enter => {
                 debug!("Search results: opening selected result");
-                let app: MutexGuard<'_, AppState> = self.app.lock().await;
 
-                if let Some(selected_idx) = app.ui.selected
-                    && let Some(result) = app.ui.search_results.get(selected_idx)
-                    && let Some(obj_info) = app.registry.get(result.id)
+                let (selected_idx, search_results) = {
+                    let ui_guard = self.app.lock_ui();
+                    (ui_guard.selected, ui_guard.search_results.clone())
+                };
+
+                if let Some(selected_idx) = selected_idx
+                    && let Some(result) = search_results.get(selected_idx)
+                    && let Some(obj_info) = self.app.metadata.get_by_id(result.id)
                 {
                     info!("Opening search result: {:?}", obj_info.path);
-                    
+
                     return Action::OpenFile(obj_info.path.clone(), None);
                 }
-
-                drop(app);
 
                 Action::NoOp
             }
 
             KeyCode::Up => {
                 debug!("Search results: navigate up");
-                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
+                let mut ui_guard = self.app.lock_ui();
 
-                if !app.ui.search_results.is_empty() {
-                    let current = app.ui.selected.unwrap_or(0);
-                    app.ui.selected = Some(current.saturating_sub(1));
-                    app.ui.mark_dirty(Component::Main);
+                if !ui_guard.search_results.is_empty() {
+                    let current = ui_guard.selected.unwrap_or(0);
+                    ui_guard.selected = Some(current.saturating_sub(1));
+                    ui_guard.mark_dirty(Component::Main);
                 }
                 Action::NoOp
             }
 
             KeyCode::Down => {
                 debug!("Search results: navigate down");
-                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-                let result_count: usize = app.ui.search_results.len();
+                let mut ui_guard = self.app.lock_ui();
+                let result_count: usize = ui_guard.search_results.len();
 
                 if result_count > 0 {
-                    let current = app.ui.selected.unwrap_or(0);
-                    app.ui.selected = Some((current + 1).min(result_count.saturating_sub(1)));
-                    app.ui.mark_dirty(Component::Main);
+                    let current = ui_guard.selected.unwrap_or(0);
+                    ui_guard.selected = Some((current + 1).min(result_count.saturating_sub(1)));
+                    ui_guard.mark_dirty(Component::Main);
                 }
 
                 Action::NoOp
@@ -1073,28 +1015,30 @@ impl EventLoop {
             action = ?action,
             operation_type = "action_dispatch"
         );
-        
+
         let guard: Entered<'_> = span.enter();
-        
+
         let start_time: Instant = Instant::now();
-        
+
         // Drop the span guard before any async operations
         drop(guard);
 
         match action {
             // Batch update actions
-            Action::BatchUpdateObjectInfo 
-            { 
-                parent_dir, 
-                objects 
+            Action::BatchUpdateObjectInfo {
+                parent_dir,
+                objects,
             } => {
-                trace!("Batch updating {0} object infos for {parent_dir:?}", objects.len()); 
-                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-
-                app.update_object_info_batch(&parent_dir, objects).await;
-                app.ui.mark_dirty(Component::Main);
+                trace!(
+                    "Batch updating {0} object infos for {parent_dir:?}",
+                    objects.len()
+                );
+                self.app
+                    .update_object_info_batch(&parent_dir, objects)
+                    .await;
+                let mut ui_guard = self.app.lock_ui();
+                ui_guard.mark_dirty(Component::Main);
             }
-
             // UI actions
             Action::ToggleHelp
             | Action::EnterCommandMode
@@ -1104,7 +1048,6 @@ impl EventLoop {
             | Action::CloseOverlay
             | Action::ToggleShowHidden
             | Action::SimulateLoading => self.dispatch_ui_action(action).await,
-
             // Navigation
             Action::MoveSelectionUp
             | Action::MoveSelectionDown
@@ -1114,7 +1057,6 @@ impl EventLoop {
             | Action::SelectLast
             | Action::EnterSelected
             | Action::GoToParent => self.dispatch_navigation_action(action).await,
-
             // Command-driven actions
             Action::CreateFile
             | Action::CreateDirectory
@@ -1124,7 +1066,6 @@ impl EventLoop {
             | Action::Delete
             | Action::RenameEntry(_)
             | Action::GoToPath(_) => self.dispatch_command_action(action).await,
-
             // Search
             Action::FileNameSearch(_)
             | Action::ContentSearch(_)
@@ -1134,50 +1075,42 @@ impl EventLoop {
             | Action::ShowRichSearchResults(_)
             | Action::ShowRawSearchResults(_)
             | Action::OpenFile(_, _) => self.dispatch_search_action(action).await,
-
             // Task/Update results
             Action::TaskResult(_)
             | Action::DirectoryScanUpdate { .. }
             | Action::UpdateObjectInfo { .. } => self.dispatch_task_update_action(action).await,
-
             // Input prompts
             Action::ShowInputPrompt(_) | Action::SubmitInputPrompt(_) => {
                 self.dispatch_prompt_action(action).await;
             }
-
             // File operation tasks
             Action::Copy { .. }
             | Action::Move { .. }
             | Action::Rename { .. }
             | Action::CancelFileOperation { .. } => self.dispatch_file_op_action(action).await,
-
             // Legacy/Misc
             Action::Sort(_) | Action::Filter(_) => {
                 self.dispatch_legacy_action(action).await;
             }
-
             Action::Quit => {
                 info!("Quit action - handled in main loop");
             }
             Action::Tick => {
                 // Quiet tick processing with performance monitoring
-                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-                let redraw_needed: bool = app.ui.update_notification();
-
+                let mut ui_guard = self.app.lock_ui();
+                let redraw_needed: bool = ui_guard.update_notification();
                 // Periodic cleanup and optimization
                 if self.event_count.is_multiple_of(1000) {
                     trace!("Performing periodic cleanup (event #{}))", self.event_count);
                     // Could add memory cleanup, cache pruning, etc. here
                 }
-
                 if redraw_needed {
-                    app.ui.mark_dirty(Component::All);
+                    ui_guard.mark_dirty(Component::All);
                 }
             }
-
             Action::Key(_) | Action::Mouse(_) | Action::Resize(..) | Action::NoOp => {
-                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-                app.ui.mark_dirty(Component::All);
+                let mut ui_guard = self.app.lock_ui();
+                ui_guard.mark_dirty(Component::All);
             }
         }
 
@@ -1192,88 +1125,62 @@ impl EventLoop {
         match action {
             Action::ToggleHelp => {
                 debug!("Toggling help overlay");
-                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-                app.ui.toggle_help_overlay();
-                app.ui.mark_dirty(Component::All);
-
-                info!("Help overlay toggled to: {:?}", app.ui.overlay);
-                
-                drop(app);
+                let mut ui_guard = self.app.lock_ui();
+                ui_guard.toggle_help_overlay();
+                ui_guard.mark_dirty(Component::All);
+                info!("Help overlay toggled to: {:?}", ui_guard.overlay);
             }
-            
             Action::EnterCommandMode => {
                 debug!("Entering command mode");
-                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-                app.ui.enter_command_mode();
-                app.ui.mark_dirty(Component::All);
-
+                let mut ui_guard = self.app.lock_ui();
+                ui_guard.enter_command_mode();
+                ui_guard.mark_dirty(Component::All);
                 info!("Command mode activated");
-                
-                drop(app);
             }
-
             Action::ExitCommandMode => {
                 debug!("Exiting command mode");
-                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-                app.ui.exit_command_mode();
-                app.ui.mark_dirty(Component::All);
-            
+                let mut ui_guard = self.app.lock_ui();
+                ui_guard.exit_command_mode();
+                ui_guard.mark_dirty(Component::All);
                 info!("Command mode deactivated");
-                
-                drop(app);
             }
-
             Action::ToggleFileNameSearch => {
                 debug!("Toggling filename search overlay");
-                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-                app.ui.toggle_filename_search_overlay();
-                app.ui.mark_dirty(Component::All);
-
-                info!("Filename search overlay toggled to: {:?}", app.ui.overlay);
-                
-                drop(app);
+                let mut ui_guard = self.app.lock_ui();
+                ui_guard.toggle_filename_search_overlay();
+                ui_guard.mark_dirty(Component::All);
+                info!("Filename search overlay toggled to: {:?}", ui_guard.overlay);
             }
-
             Action::ToggleContentSearch => {
                 debug!("Toggling content search overlay");
-                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-                app.ui.toggle_content_search_overlay();
-
-                if app.ui.overlay == UIOverlay::ContentSearch {
-                    app.ui.exit_command_mode();
+                let mut ui_guard = self.app.lock_ui();
+                ui_guard.toggle_content_search_overlay();
+                if ui_guard.overlay == UIOverlay::ContentSearch {
+                    ui_guard.exit_command_mode();
                     info!("Content search overlay opened, command mode exited");
                 } else {
                     info!("Content search overlay closed");
                 }
-
-                app.ui.mark_dirty(Component::All);
-                
-                drop(app);
+                ui_guard.mark_dirty(Component::All);
             }
-
             Action::CloseOverlay => {
                 debug!("Closing overlay");
-                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-                let previous_overlay = app.ui.overlay;
-                app.ui.close_all_overlays();
-                app.ui.mark_dirty(Component::All);
-                
-                drop(app);
-
+                let mut ui_guard = self.app.lock_ui();
+                let previous_overlay = ui_guard.overlay;
+                ui_guard.close_all_overlays();
+                ui_guard.mark_dirty(Component::All);
                 info!("Closed overlay: {:?}", previous_overlay);
             }
-            
             Action::ToggleShowHidden => {
                 debug!("Toggling hidden files visibility");
-                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-                app.ui.toggle_show_hidden();
-                app.ui.mark_dirty(Component::All);
+                let mut ui_guard = self.app.lock_ui();
+                ui_guard.toggle_show_hidden();
+                ui_guard.mark_dirty(Component::All);
             }
             Action::SimulateLoading => {
                 debug!("Simulating loading state");
-                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-
-                app.ui.loading = Some(LoadingState {
+                let mut ui_guard = self.app.lock_ui();
+                ui_guard.loading = Some(LoadingState {
                     message: "Simulated loading...".into(),
                     progress: None,
                     spinner_frame: 0,
@@ -1281,135 +1188,167 @@ impl EventLoop {
                     completed: Some(0),
                     total: Some(100),
                 });
-
-                app.ui.overlay = UIOverlay::Loading;
-                app.ui.mark_dirty(Component::All);
+                ui_guard.overlay = UIOverlay::Loading;
+                ui_guard.mark_dirty(Component::All);
             }
             _ => unreachable!(),
         }
     }
 
     async fn dispatch_navigation_action(&self, action: Action) {
-        let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
         match action {
             Action::MoveSelectionUp => {
                 debug!("Moving selection up");
-                app.fs.active_pane_mut().move_selection_up();
-                app.ui.selected = app.fs.active_pane().selected;
+                {
+                    let mut fs_state = self.app.lock_fs();
+                    fs_state.active_pane_mut().move_selection_up();
+                    let selected = fs_state.active_pane().selected;
+                    let mut ui_state = self.app.lock_ui();
+                    ui_state.selected = selected;
+                }
             }
             Action::MoveSelectionDown => {
                 debug!("Moving selection down");
-                app.fs.active_pane_mut().move_selection_down();
-                app.ui.selected = app.fs.active_pane().selected;
+                {
+                    let mut fs_state = self.app.lock_fs();
+                    fs_state.active_pane_mut().move_selection_down();
+                    let selected = fs_state.active_pane().selected;
+                    let mut ui_state = self.app.lock_ui();
+                    ui_state.selected = selected;
+                }
             }
             Action::PageUp => {
                 debug!("Page up");
-                app.fs.active_pane_mut().page_up();
-                app.ui.selected = app.fs.active_pane().selected;
+                {
+                    let mut fs_state = self.app.lock_fs();
+                    fs_state.active_pane_mut().page_up();
+                    let selected = fs_state.active_pane().selected;
+                    let mut ui_state = self.app.lock_ui();
+                    ui_state.selected = selected;
+                }
             }
             Action::PageDown => {
                 debug!("Page down");
-                app.fs.active_pane_mut().page_down();
-                app.ui.selected = app.fs.active_pane().selected;
+                {
+                    let mut fs_state = self.app.lock_fs();
+                    fs_state.active_pane_mut().page_down();
+                    let selected = fs_state.active_pane().selected;
+                    let mut ui_state = self.app.lock_ui();
+                    ui_state.selected = selected;
+                }
             }
             Action::SelectFirst => {
                 debug!("Selecting first entry");
-                app.fs.active_pane_mut().select_first();
-                app.ui.selected = app.fs.active_pane().selected;
+                {
+                    let mut fs_state = self.app.lock_fs();
+                    fs_state.active_pane_mut().select_first();
+                    let selected = fs_state.active_pane().selected;
+                    let mut ui_state = self.app.lock_ui();
+                    ui_state.selected = selected;
+                }
             }
             Action::SelectLast => {
                 debug!("Selecting last entry");
-                app.fs.active_pane_mut().select_last();
-                app.ui.selected = app.fs.active_pane().selected;
+                {
+                    let mut fs_state = self.app.lock_fs();
+                    fs_state.active_pane_mut().select_last();
+                    let selected = fs_state.active_pane().selected;
+                    let mut ui_state = self.app.lock_ui();
+                    ui_state.selected = selected;
+                }
             }
             Action::EnterSelected => {
                 debug!("Entering selected item");
-                app.enter_selected_directory().await;
+                self.app.enter_selected_directory().await;
             }
             Action::GoToParent => {
                 info!("Going to parent directory");
-                app.go_to_parent_directory().await;
+                self.app.go_to_parent_directory().await;
             }
             _ => unreachable!(),
         }
-        app.ui.mark_dirty(Component::Main);
+        {
+            let mut ui_state = self.app.lock_ui();
+            ui_state.mark_dirty(Component::Main);
+        }
     }
 
     async fn dispatch_command_action(&self, action: Action) {
-        let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
         match action {
             Action::CreateFile => {
                 info!("Creating new file (command-driven)");
-                app.create_file().await;
+                self.app.create_file().await;
             }
             Action::CreateDirectory => {
                 info!("Creating new directory (command-driven)");
-                app.create_directory().await;
+                self.app.create_directory().await;
             }
             Action::CreateFileWithName(name) => {
                 info!("Creating new file '{}' (command-driven)", name);
-                app.create_file_with_name(name).await;
+                self.app.create_file_with_name(name).await;
             }
             Action::CreateDirectoryWithName(name) => {
                 info!("Creating new directory '{}' (command-driven)", name);
-                app.create_directory_with_name(name).await;
+                self.app.create_directory_with_name(name).await;
             }
             Action::ReloadDirectory => {
                 info!("Reloading directory (command-driven)");
-                app.reload_directory().await;
+                self.app.reload_directory().await;
             }
             Action::Delete => {
                 info!("Delete action triggered - this should now be command-driven");
-                app.delete_entry().await;
+                self.app.delete_entry().await;
             }
             Action::RenameEntry(new_name) => {
                 info!("Renaming selected entry to '{}'", new_name);
-                app.rename_selected_entry(new_name).await;
+                self.app.rename_selected_entry(new_name).await;
             }
             Action::GoToPath(path_str) => {
                 info!("Navigating to path: '{}'", path_str);
-                app.navigate_to_path(path_str).await;
+                self.app.navigate_to_path(path_str).await;
             }
             _ => unreachable!(),
         }
 
-        if app.ui.is_in_command_mode() {
-            app.ui.exit_command_mode();
+        let mut ui_guard = self.app.lock_ui();
+        if ui_guard.is_in_command_mode() {
+            ui_guard.exit_command_mode();
         }
-        app.ui.mark_dirty(Component::All);
+        ui_guard.mark_dirty(Component::All);
     }
 
     async fn dispatch_search_action(&self, action: Action) {
         match action {
             Action::FileNameSearch(pattern) => {
                 info!("Starting filename search for pattern: '{}'", pattern);
-                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-                app.filename_search(&pattern);
-                app.ui.mark_dirty(Component::All);
+                let mut ui_guard = self.app.lock_ui();
+                // Call a method on SharedState or directly update UI state as needed
+                ui_guard.set_last_query(Some(pattern));
+                ui_guard.mark_dirty(Component::All);
             }
             Action::ContentSearch(pattern) => {
                 info!("Starting content search for pattern: '{}'", pattern);
-                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-                app.start_content_search(pattern);
-                app.ui.mark_dirty(Component::All);
+                let mut ui_guard = self.app.lock_ui();
+                ui_guard.set_last_query(Some(pattern));
+                ui_guard.mark_dirty(Component::All);
             }
             Action::DirectContentSearch(pattern) => {
                 info!("Starting direct content search for pattern: '{}'", pattern);
-                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-                app.ui.overlay = UIOverlay::ContentSearch;
-                app.ui.input.clear();
-                app.start_content_search(pattern);
-                app.ui.exit_command_mode();
-                app.ui.mark_dirty(Component::All);
+                let mut ui_guard = self.app.lock_ui();
+                ui_guard.overlay = UIOverlay::ContentSearch;
+                ui_guard.input.clear();
+                ui_guard.set_last_query(Some(pattern));
+                ui_guard.exit_command_mode();
+                ui_guard.mark_dirty(Component::All);
             }
             Action::ShowSearchResults(results) => {
                 self.handle_show_search_results(results).await;
             }
             Action::ShowFilenameSearchResults(results) => {
                 info!("Showing {} filename search results", results.len());
-                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-                app.ui.filename_search_results = results;
-                app.ui.mark_dirty(Component::All);
+                let mut ui_guard = self.app.lock_ui();
+                ui_guard.filename_search_results = results;
+                ui_guard.mark_dirty(Component::All);
             }
             Action::ShowRichSearchResults(results) => {
                 self.handle_show_rich_search_results(results).await;
@@ -1426,41 +1365,42 @@ impl EventLoop {
 
     async fn handle_show_search_results(&self, results: Vec<SortableEntry>) {
         info!("Showing {} search results", results.len());
-        let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-        app.ui.search_results = results;
+        let mut ui_guard = self.app.lock_ui();
+        ui_guard.search_results = results;
 
-        if app.ui.overlay != UIOverlay::ContentSearch {
-            app.ui.set_overlay(UIOverlay::SearchResults);
-        } else if !app.ui.search_results.is_empty() {
-            app.ui.selected = Some(0);
+        if ui_guard.overlay != UIOverlay::ContentSearch {
+            ui_guard.set_overlay(UIOverlay::SearchResults);
+        } else if !ui_guard.search_results.is_empty() {
+            ui_guard.selected = Some(0);
         }
 
-        app.ui.mark_dirty(Component::All);
+        ui_guard.mark_dirty(Component::All);
     }
 
     async fn handle_show_rich_search_results(&self, results: Vec<String>) {
         info!("Showing {} rich search results", results.len());
-        let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-        app.ui.rich_search_results = results;
+        let mut ui_guard = self.app.lock_ui();
+        ui_guard.rich_search_results = results;
 
-        if app.ui.overlay == UIOverlay::ContentSearch && !app.ui.rich_search_results.is_empty() {
-            app.ui.selected = Some(0);
+        if ui_guard.overlay == UIOverlay::ContentSearch && !ui_guard.rich_search_results.is_empty()
+        {
+            ui_guard.selected = Some(0);
         }
 
-        app.ui.mark_dirty(Component::All);
+        ui_guard.mark_dirty(Component::All);
     }
 
     async fn handle_show_raw_search_results(&self, results: RawSearchResult) {
         info!("Showing {} raw search results", results.lines.len());
-        let mut app = self.app.lock().await;
-        app.ui.raw_search_results = Some(results);
-        app.ui.raw_search_selected = 0;
+        let mut ui_guard = self.app.lock_ui();
+        ui_guard.raw_search_results = Some(results);
+        ui_guard.raw_search_selected = 0;
 
-        if app.ui.overlay == UIOverlay::ContentSearch {
-            app.ui.selected = Some(0);
+        if ui_guard.overlay == UIOverlay::ContentSearch {
+            ui_guard.selected = Some(0);
         }
 
-        app.ui.mark_dirty(Component::All);
+        ui_guard.mark_dirty(Component::All);
     }
 
     async fn handle_open_file(&self, path: Arc<PathBuf>, line_number: Option<usize>) {
@@ -1481,15 +1421,15 @@ impl EventLoop {
         match cmd.spawn() {
             Ok(_) => {
                 info!("Successfully launched VS Code for file: {}", path_str);
-                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-                app.ui.close_all_overlays();
-                app.ui.mark_dirty(Component::All);
+                let mut ui_guard = self.app.lock_ui();
+                ui_guard.close_all_overlays();
+                ui_guard.mark_dirty(Component::All);
             }
             Err(e) => {
                 warn!("Failed to open file with VS Code: {}", e);
-                let mut app = self.app.lock().await;
-                app.ui.show_error(format!("Failed to open file: {e}"));
-                app.ui.mark_dirty(Component::All);
+                let mut ui_guard = self.app.lock_ui();
+                ui_guard.show_error(format!("Failed to open file: {e}"));
+                ui_guard.mark_dirty(Component::All);
             }
         }
     }
@@ -1504,9 +1444,9 @@ impl EventLoop {
             }
             Action::UpdateObjectInfo { parent_dir, info } => {
                 trace!("Updating object info for {:?}", info.path);
-                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-                app.update_object_info(&parent_dir, &info);
-                app.ui.mark_dirty(Component::Main);
+                self.app.update_object_info(&parent_dir, &info);
+                let mut ui_guard = self.app.lock_ui();
+                ui_guard.mark_dirty(Component::Main);
             }
             _ => unreachable!(),
         }
@@ -1514,7 +1454,7 @@ impl EventLoop {
 
     async fn handle_task_result(&self, task_result: TaskResult) {
         debug!("Processing task result: {:?}", task_result);
-        let mut app = self.app.lock().await;
+        let mut ui_guard = self.app.lock_ui();
 
         match task_result {
             TaskResult::Legacy {
@@ -1526,7 +1466,7 @@ impl EventLoop {
                 ..
             } => {
                 self.handle_legacy_task(
-                    &mut app,
+                    &mut ui_guard,
                     task_id,
                     result,
                     progress,
@@ -1539,10 +1479,10 @@ impl EventLoop {
                 operation_id,
                 result,
             } => {
-                self.handle_file_op_complete(&mut app, operation_id, result)
+                self.handle_file_op_complete(&mut ui_guard, operation_id, result)
                     .await;
-                app.ui.mark_dirty(Component::Overlay);
-                app.ui.mark_dirty(Component::Notification);
+                ui_guard.mark_dirty(Component::Overlay);
+                ui_guard.mark_dirty(Component::Notification);
             }
             TaskResult::FileOperationProgress {
                 operation_id,
@@ -1556,7 +1496,7 @@ impl EventLoop {
                 throughput_bps,
             } => {
                 self.handle_file_op_progress(
-                    &mut app,
+                    &mut ui_guard,
                     operation_id,
                     operation_type,
                     current_bytes,
@@ -1568,7 +1508,7 @@ impl EventLoop {
                     throughput_bps,
                 )
                 .await;
-                app.ui.mark_dirty(Component::Overlay);
+                ui_guard.mark_dirty(Component::Overlay);
             }
         }
     }
@@ -1576,14 +1516,14 @@ impl EventLoop {
     #[allow(clippy::unused_async)]
     async fn handle_legacy_task(
         &self,
-        app: &mut AppState,
-        task_id: u64,
-        result: Result<String, String>,
+        ui: &mut UIState,
+        _task_id: u64,
+        _result: Result<String, String>,
         progress: Option<f64>,
         current_item: Option<String>,
         completed: Option<u64>,
     ) {
-        if let Some(ref mut loading) = app.ui.loading {
+        if let Some(ref mut loading) = ui.loading {
             if let Some(progress) = progress {
                 loading.progress = Some(progress);
             }
@@ -1599,43 +1539,34 @@ impl EventLoop {
         if let Some(p) = progress
             && (p - 1.0).abs() < f64::EPSILON
         {
-            app.ui.loading = None;
-            if app.ui.overlay == UIOverlay::Loading {
-                app.ui.overlay = UIOverlay::None;
-                app.ui
-                    .show_info("Loading complete. All files scanned.".to_string());
+            ui.loading = None;
+            if ui.overlay == UIOverlay::Loading {
+                ui.overlay = UIOverlay::None;
+                ui.show_info("Loading complete. All files scanned.".to_string());
             }
         }
-
-        app.complete_task(
-            task_id,
-            Some(match &result {
-                Ok(s) => s.clone(),
-                Err(e) => format!("Error: {e}"),
-            }),
-        );
+        // TODO: complete_task logic must be moved to a new location using SharedState
     }
 
     #[allow(clippy::unused_async)]
     async fn handle_file_op_complete(
         &self,
-        app: &mut AppState,
+        ui: &mut UIState,
         operation_id: String,
         result: Result<(), crate::error::AppError>,
     ) {
-        app.ui.remove_operation(&operation_id);
-
+        ui.remove_operation(&operation_id);
         match result {
             Ok(()) => {
                 info!("File operation {} completed successfully", operation_id);
-                app.ui.show_info("File operation completed".to_string());
+                ui.show_info("File operation completed".to_string());
             }
             Err(e) => {
                 if e.to_string().contains("Cancelled") {
                     debug!("Operation {operation_id} was cancelled by user.");
                 } else {
                     warn!("File operation {} failed: {}", operation_id, e);
-                    app.ui.show_error(format!("File operation failed: {e}"));
+                    ui.show_error(format!("File operation failed: {e}"));
                 }
             }
         }
@@ -1648,7 +1579,7 @@ impl EventLoop {
     )]
     async fn handle_file_op_progress(
         &self,
-        app: &mut AppState,
+        ui: &mut UIState,
         operation_id: String,
         operation_type: String,
         current_bytes: u64,
@@ -1659,7 +1590,7 @@ impl EventLoop {
         start_time: Instant,
         throughput_bps: Option<u64>,
     ) {
-        if let Some(existing_progress) = app.ui.active_file_operations.get_mut(&operation_id) {
+        if let Some(existing_progress) = ui.active_file_operations.get_mut(&operation_id) {
             existing_progress.update(current_bytes, current_file.clone(), files_completed);
             if let Some(bps) = throughput_bps {
                 existing_progress.throughput_bps = Some(bps);
@@ -1673,12 +1604,10 @@ impl EventLoop {
             if let Some(bps) = throughput_bps {
                 progress.throughput_bps = Some(bps);
             }
-            app.ui
-                .active_file_operations
+            ui.active_file_operations
                 .insert(operation_id.clone(), progress);
         }
-
-        if let Some(ref mut loading) = app.ui.loading {
+        if let Some(ref mut loading) = ui.loading {
             if total_bytes > 0 {
                 loading.progress = Some(current_bytes as f64 / total_bytes as f64);
             }
@@ -1696,31 +1625,32 @@ impl EventLoop {
 
     async fn handle_directory_scan_update(&self, path: Arc<PathBuf>, update: ScanUpdate) {
         debug!("Directory scan update for path: {:?}", path);
-        let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
+        let mut fs_guard = self.app.lock_fs();
+        let mut ui_guard = self.app.lock_ui();
 
-        if app.fs.active_pane().cwd == **path {
+        if fs_guard.active_pane().cwd == **path {
             match update {
                 ScanUpdate::Entry(entry) => {
                     trace!("Adding incremental entry: {:?}", entry.name);
-                    // Convert ObjectInfo to SortableEntry via registry
-                    let object_id = app.registry.insert(entry);
-                    let sortable_entry = crate::model::object_registry::SortableEntry::from_object_info(&app.registry.get(object_id).unwrap(), object_id);
-                    app.fs.active_pane_mut().add_incremental_entry(sortable_entry);
-                    app.ui.mark_dirty(Component::Main);
+                    let (_object_id, sortable_entry) = self.app.metadata.insert(entry);
+                    fs_guard
+                        .active_pane_mut()
+                        .add_incremental_entry(sortable_entry);
+                    ui_guard.mark_dirty(Component::Main);
                 }
                 ScanUpdate::Completed(count) => {
-                    self.handle_scan_completed(&mut app, path, count).await;
+                    self.handle_scan_completed_new(count).await;
                 }
                 ScanUpdate::Error(e) => {
                     warn!("Directory scan error: {}", e);
-                    let current_pane: &mut PaneState = app.fs.active_pane_mut();
+                    let current_pane: &mut PaneState = fs_guard.active_pane_mut();
                     current_pane.is_loading = false;
                     current_pane.is_incremental_loading = false;
                     let err_msg: String = format!("Error scanning directory: {e}");
                     current_pane.last_error = Some(err_msg.clone());
-                    app.set_error(err_msg);
-                    app.ui.mark_dirty(Component::Main);
-                    app.ui.mark_dirty(Component::StatusBar);
+                    // TODO: set_error logic must be moved to a new location using SharedState
+                    ui_guard.mark_dirty(Component::Main);
+                    ui_guard.mark_dirty(Component::StatusBar);
                 }
             }
         }
@@ -1740,142 +1670,144 @@ impl EventLoop {
 
     async fn handle_show_input_prompt(&self, prompt_type: InputPromptType) {
         info!("Showing input prompt: {:?}", prompt_type);
-        let mut app = self.app.lock().await;
-        app.ui.show_input_prompt(prompt_type);
-        app.ui.mark_dirty(Component::All);
+        let mut ui_guard = self.app.lock_ui();
+        ui_guard.show_input_prompt(prompt_type);
+        ui_guard.mark_dirty(Component::All);
     }
 
     #[allow(clippy::unused_async)]
-    async fn handle_scan_completed(&self, app: &mut AppState, path: Arc<PathBuf>, count: usize) {
+    async fn handle_scan_completed(&self, path: Arc<PathBuf>, count: usize) {
         info!("Directory scan completed with {} entries", count);
-        let sortable_entries: Vec<crate::model::object_registry::SortableEntry> = app.fs.active_pane().entries.clone();
-
-        app.fs
+        let mut fs_guard = self.app.lock_fs();
+        let mut ui_guard = self.app.lock_ui();
+        let sortable_entries: Vec<crate::model::object_registry::SortableEntry> =
+            fs_guard.active_pane().entries.clone();
+        fs_guard
             .active_pane_mut()
             .complete_incremental_loading(sortable_entries);
-        app.fs.add_recent_dir(path.clone());
+        fs_guard.add_recent_dir(path.clone());
 
-        let action_tx: UnboundedSender<Action> = app.action_tx.clone();
-        let entries_for_size: Vec<crate::model::object_registry::SortableEntry> = app.fs.active_pane().entries.clone();
+        // TODO: action_tx logic must be moved to a new location using SharedState
+        // TODO: Temporarily disabled size calculation until we implement action_tx properly
+        // let entries_for_size: Vec<crate::model::object_registry::SortableEntry> = fs_guard.active_pane().entries.clone();
+        // for sortable_entry in entries_for_size {
+        //     if let Some(object_info) = self.app.metadata.get_by_id(sortable_entry.id)
+        //         && object_info.is_dir {
+        //             // FileSizeOperator::calculate_size_task needs to be updated for new architecture
+        //         }
+        // }
 
-        for sortable_entry in entries_for_size {
-            // Get ObjectInfo from registry to check if directory
-            if let Some(object_info) = app.registry.get(sortable_entry.id)
-                && object_info.is_dir {
-                    FileSizeOperator::calculate_size_task(
-                        path.clone(),
-                        object_info.clone(),
-                        action_tx.clone(),
-                        app.cache.clone(),
-                    );
-                }
-        }
+        ui_guard.mark_dirty(Component::All);
+    }
 
-        app.ui.mark_dirty(Component::All);
+    async fn handle_scan_completed_new(&self, count: usize) {
+        info!(
+            "Directory scan completed with {} entries (new method)",
+            count
+        );
+        let mut ui_guard = self.app.lock_ui();
+        ui_guard.mark_dirty(Component::All);
     }
 
     async fn handle_submit_input_prompt(&self, input: String) {
         info!("Submitting input prompt: '{}'", input);
 
-        let mut app = self.app.lock().await;
-        let prompt_type = app.ui.input_prompt_type.clone();
-        app.ui.hide_input_prompt();
+        let prompt_type = {
+            let mut ui_guard = self.app.lock_ui();
+            let prompt_type = ui_guard.input_prompt_type.clone();
+            ui_guard.hide_input_prompt();
+            prompt_type
+        };
 
         match prompt_type {
             Some(InputPromptType::CreateFile) => {
-                self.dispatch_create_file_action(app, input).await;
+                self.dispatch_create_file_action(input).await;
             }
 
             Some(InputPromptType::CreateDirectory) => {
-                self.dispatch_create_directory_action(app, input).await;
+                self.dispatch_create_directory_action(input).await;
             }
-            
+
             Some(InputPromptType::Rename) => {
-                self.dispatch_rename_entry_action(app, input).await;
+                self.dispatch_rename_entry_action(input).await;
             }
-            
+
             Some(InputPromptType::Search) => {
-                self.dispatch_search_action_content(app, input).await;
+                self.dispatch_search_action_content(input).await;
             }
-            
+
             Some(InputPromptType::GoToPath) => {
-                self.dispatch_go_to_path_action(app, input).await;
+                self.dispatch_go_to_path_action(input).await;
             }
-            
+
             Some(InputPromptType::Custom(prompt_msg)) => {
-                self.process_custom_prompt_notification(app, prompt_msg, input)
+                self.process_custom_prompt_notification(prompt_msg, input)
                     .await;
             }
-            
+
             Some(InputPromptType::CopyDestination) => {
-                self.process_copy_destination_prompt(app, input).await;
+                self.process_copy_destination_prompt(input).await;
             }
-            
+
             Some(InputPromptType::MoveDestination) => {
-                self.process_move_destination_prompt(app, input).await;
+                self.process_move_destination_prompt(input).await;
             }
-            
+
             Some(InputPromptType::RenameFile) => {
-                self.process_rename_file_prompt(app, input).await;
+                self.process_rename_file_prompt(input).await;
             }
-            
+
             None => {
-                drop(app);
-                self.handle_missing_prompt_type().await;   
+                self.handle_missing_prompt_type().await;
             }
         }
     }
 
-    async fn dispatch_create_file_action(&self, _app: MutexGuard<'_, AppState>, input: String) {
+    async fn dispatch_create_file_action(&self, input: String) {
         Box::pin(self.dispatch_action(Action::CreateFileWithName(input))).await;
     }
 
-    async fn dispatch_create_directory_action(&self, _app: MutexGuard<'_, AppState>, input: String) {
+    async fn dispatch_create_directory_action(&self, input: String) {
         Box::pin(self.dispatch_action(Action::CreateDirectoryWithName(input))).await;
     }
 
-    async fn dispatch_rename_entry_action(&self, _app: MutexGuard<'_, AppState>, input: String) {
+    async fn dispatch_rename_entry_action(&self, input: String) {
         info!("Processing rename prompt with input: '{}'", input);
         Box::pin(self.dispatch_action(Action::RenameEntry(input))).await;
     }
 
-    async fn dispatch_search_action_content(&self, _app: MutexGuard<'_, AppState>, input: String) {
+    async fn dispatch_search_action_content(&self, input: String) {
         info!("Processing search prompt with input: '{}'", input);
         Box::pin(self.dispatch_action(Action::DirectContentSearch(input))).await;
     }
 
-    async fn dispatch_go_to_path_action(&self, _app: MutexGuard<'_, AppState>, input: String) {
+    async fn dispatch_go_to_path_action(&self, input: String) {
         info!("Processing go-to-path prompt with input: '{}'", input);
         Box::pin(self.dispatch_action(Action::GoToPath(input))).await;
     }
 
     #[allow(clippy::unused_async)]
-    async fn process_custom_prompt_notification(
-        &self,
-        mut app: MutexGuard<'_, AppState>,
-        prompt_msg: String,
-        input: String,
-    ) {
+    async fn process_custom_prompt_notification(&self, prompt_msg: String, input: String) {
         info!(
             "Processing custom prompt '{}' with input: '{}'",
             prompt_msg, input
         );
 
-        app.ui.show_notification(
+        let mut ui_guard = self.app.lock_ui();
+        ui_guard.show_notification(
             format!("Custom prompt '{prompt_msg}': {input}"),
             NotificationLevel::Info,
             Some(3000),
         );
 
-        app.ui.mark_dirty(Component::All);
+        ui_guard.mark_dirty(Component::All);
     }
 
-    async fn process_copy_destination_prompt(&self, app: MutexGuard<'_, AppState>, input: String) {
+    async fn process_copy_destination_prompt(&self, input: String) {
         info!("Processing copy destination prompt with input: '{}'", input);
 
-        let source_path = Self::extract_selected_file_path(&app);
-        drop(app);
-        
+        let source_path = Self::extract_selected_file_path(&self.app);
+
         if let Some(source_path) = source_path {
             self.execute_copy_operation(source_path, input).await;
         } else {
@@ -1883,12 +1815,11 @@ impl EventLoop {
         }
     }
 
-    async fn process_move_destination_prompt(&self, app: MutexGuard<'_, AppState>, input: String) {
+    async fn process_move_destination_prompt(&self, input: String) {
         info!("Processing move destination prompt with input: '{}'", input);
 
-        let source_path = Self::extract_selected_file_path(&app);
-        drop(app);
-        
+        let source_path = Self::extract_selected_file_path(&self.app);
+
         if let Some(source_path) = source_path {
             self.execute_move_operation(source_path, input).await;
         } else {
@@ -1896,12 +1827,11 @@ impl EventLoop {
         }
     }
 
-    async fn process_rename_file_prompt(&self, app: MutexGuard<'_, AppState>, input: String) {
+    async fn process_rename_file_prompt(&self, input: String) {
         info!("Processing rename file prompt with input: '{}'", input);
 
-        let source_path = Self::extract_selected_file_path(&app);
-        drop(app);
-        
+        let source_path = Self::extract_selected_file_path(&self.app);
+
         if let Some(source_path) = source_path {
             self.execute_rename_operation(source_path, input).await;
         } else {
@@ -1909,30 +1839,23 @@ impl EventLoop {
         }
     }
 
-    fn extract_selected_file_path(app: &MutexGuard<'_, AppState>) -> Option<Arc<PathBuf>> {
-        app.fs.active_pane().selected.and_then(|selected_idx| {
-            app.fs
+    fn extract_selected_file_path(shared_state: &SharedState) -> Option<Arc<PathBuf>> {
+        let fs_guard = shared_state.lock_fs();
+        fs_guard.active_pane().selected.and_then(|selected_idx| {
+            fs_guard
                 .active_pane()
                 .entries
                 .get(selected_idx)
                 .and_then(|sortable_entry| {
-                    app
-                        .registry
-                        .get(sortable_entry.id)
-                        .map(|obj: Ref<'_, u64, ObjectInfo>| -> Arc<PathBuf> 
-                            {
-                                obj.path.clone()
-                            }
-                        )
+                    shared_state
+                        .metadata
+                        .get_by_id(sortable_entry.id)
+                        .map(|obj_info| obj_info.path.clone())
                 })
         })
     }
 
-    async fn execute_copy_operation(
-        &self,
-        source_path:Arc<PathBuf>,
-        input: String,
-    ) {
+    async fn execute_copy_operation(&self, source_path: Arc<PathBuf>, input: String) {
         let dest_path = PathBuf::from(input);
         Box::pin(self.dispatch_action(Action::Copy {
             source: source_path,
@@ -1941,11 +1864,7 @@ impl EventLoop {
         .await;
     }
 
-    async fn execute_move_operation(
-        &self,
-        source_path: Arc<PathBuf>,
-        input: String,
-    ) {
+    async fn execute_move_operation(&self, source_path: Arc<PathBuf>, input: String) {
         let dest_path: PathBuf = PathBuf::from(input);
 
         Box::pin(self.dispatch_action(Action::Move {
@@ -1955,11 +1874,7 @@ impl EventLoop {
         .await;
     }
 
-    async fn execute_rename_operation(
-        &self,
-        source_path: Arc<PathBuf>,
-        input: String,
-    ) {
+    async fn execute_rename_operation(&self, source_path: Arc<PathBuf>, input: String) {
         Box::pin(self.dispatch_action(Action::Rename {
             source: source_path,
             new_name: input,
@@ -1969,33 +1884,31 @@ impl EventLoop {
 
     #[allow(clippy::unused_async)]
     async fn show_copy_error(&self) {
-        let mut app = self.app.lock().await;
-        app.ui
-            .show_error("No file selected for copy operation".to_string());
-        app.ui.mark_dirty(Component::All);
+        let mut ui_guard = self.app.lock_ui();
+        ui_guard.show_error("No file selected for copy operation".to_string());
+        ui_guard.mark_dirty(Component::All);
     }
 
     #[allow(clippy::unused_async)]
     async fn show_move_error(&self) {
-        let mut app = self.app.lock().await;
-        app.ui
-            .show_error("No file selected for move operation".to_string());
-        app.ui.mark_dirty(Component::All);
+        let mut ui_guard = self.app.lock_ui();
+        ui_guard.show_error("No file selected for move operation".to_string());
+        ui_guard.mark_dirty(Component::All);
     }
 
     #[allow(clippy::unused_async)]
     async fn show_rename_error(&self) {
-        let mut app = self.app.lock().await;
-        app.ui
-            .show_error("No file selected for rename operation".to_string());
-        app.ui.mark_dirty(Component::All);
+        let mut ui_guard = self.app.lock_ui();
+        ui_guard.show_error("No file selected for rename operation".to_string());
+        ui_guard.mark_dirty(Component::All);
     }
 
     #[allow(clippy::unused_async)]
+    #[allow(clippy::unused_async)]
     async fn handle_missing_prompt_type(&self) {
         info!("No prompt type set when submitting input");
-        let mut app = self.app.lock().await;
-        app.ui.mark_dirty(Component::All);
+        let mut ui_guard = self.app.lock_ui();
+        ui_guard.mark_dirty(Component::All);
     }
 
     async fn dispatch_file_op_action(&self, action: Action) {
@@ -2087,10 +2000,9 @@ impl EventLoop {
         info!("Cancelling file operation: {operation_id}");
 
         // TODO: Implement actual cancellation logic in phase 2.4
-        let mut app = self.app.lock().await;
-        app.ui
-            .show_info(format!("Cancellation operations {operation_id}"));
-        app.ui.mark_dirty(Component::All);
+        let mut ui_guard = self.app.lock_ui();
+        ui_guard.show_info(format!("Cancellation operations {operation_id}"));
+        ui_guard.mark_dirty(Component::All);
     }
 
     async fn create_and_spawn_file_operation_task(
@@ -2114,27 +2026,35 @@ impl EventLoop {
     }
 
     async fn get_task_dependencies(&self) -> TaskDependencies {
-        let app = self.app.lock().await;
-        let task_tx = app.task_tx.clone();
-        let app_handle = self.app.clone();
-        drop(app);
+        let app_guard = self.app.lock_app();
+        let task_tx = app_guard.task_tx.clone();
+
+        // Create a tokio::sync::Mutex wrapper for compatibility with FileOperationTask
+        // TODO: Update FileOperationTask to work with SharedState directly
+        let app_state_tokio = Arc::new(tokio::sync::Mutex::new(AppState::new(
+            app_guard.config.clone(),
+            app_guard.metadata.clone(),
+            app_guard.task_tx.clone(),
+            app_guard.action_tx.clone(),
+        )));
+
+        drop(app_guard);
 
         TaskDependencies {
             task_tx,
-            app_handle,
+            app_handle: app_state_tokio,
         }
     }
 
     async fn store_cancellation_token(&self, operation_id: &str, cancel_token: CancellationToken) {
-        let mut app = self.app.lock().await;
-        app.ui
-            .store_cancel_token(operation_id.to_string(), cancel_token);
+        let mut ui_guard = self.app.lock_ui();
+        ui_guard.store_cancel_token(operation_id.to_string(), cancel_token);
     }
 
     async fn show_operation_info(&self, message: String) {
-        let mut app = self.app.lock().await;
-        app.ui.show_info(message);
-        app.ui.mark_dirty(Component::All);
+        let mut ui_guard = self.app.lock_ui();
+        ui_guard.show_info(message);
+        ui_guard.mark_dirty(Component::All);
     }
 
     #[allow(clippy::unused_async)]
@@ -2152,8 +2072,8 @@ impl EventLoop {
         match action {
             Action::Sort(_) => {
                 info!("Sort action should now be command-driven (:sort)");
-                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-                let active_pane: &mut PaneState = app.fs.active_pane_mut();
+                let mut fs_guard = self.app.lock_fs();
+                let active_pane = fs_guard.active_pane_mut();
 
                 active_pane.sort = match active_pane.sort {
                     EntrySort::NameAsc => EntrySort::NameDesc,
@@ -2169,15 +2089,18 @@ impl EventLoop {
                     EntrySort::ModifiedDesc | EntrySort::Custom => EntrySort::NameAsc,
                 };
 
-                let sort_criteria: String = active_pane.sort.to_string();
-                app.sort_entries(&sort_criteria);
-                app.ui.mark_dirty(Component::All);
+                let _sort_criteria: String = active_pane.sort.to_string();
+                // TODO: Implement sort_entries in the new SharedState architecture
+                drop(fs_guard);
+
+                let mut ui_guard = self.app.lock_ui();
+                ui_guard.mark_dirty(Component::All);
             }
 
             Action::Filter(_) => {
                 info!("Filter action should now be command-driven (:filter)");
-                let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-                let active_pane: &mut PaneState = app.fs.active_pane_mut();
+                let mut fs_guard = self.app.lock_fs();
+                let active_pane = fs_guard.active_pane_mut();
 
                 active_pane.filter = match active_pane.filter {
                     EntryFilter::All => EntryFilter::FilesOnly,
@@ -2188,9 +2111,12 @@ impl EventLoop {
                     | EntryFilter::Custom(_) => EntryFilter::All,
                 };
 
-                let filter_criteria: String = active_pane.filter.to_string();
-                app.filter_entries(&filter_criteria);
-                app.ui.mark_dirty(Component::All);
+                let _filter_criteria: String = active_pane.filter.to_string();
+                // TODO: Implement filter_entries in the new SharedState architecture
+                drop(fs_guard);
+
+                let mut ui_guard = self.app.lock_ui();
+                ui_guard.mark_dirty(Component::All);
             }
             _ => unreachable!(),
         }
@@ -2200,5 +2126,5 @@ impl EventLoop {
 // Helper struct to group task dependencies
 struct TaskDependencies {
     task_tx: UnboundedSender<TaskResult>,
-    app_handle: Arc<Mutex<AppState>>,
+    app_handle: Arc<tokio::sync::Mutex<AppState>>,
 }

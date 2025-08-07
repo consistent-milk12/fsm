@@ -5,15 +5,15 @@
 //! Handles copy, move, and rename operations asynchronously to prevent UI
 //! blocking during large file operations.
 
-use crate::{config::Config, error::AppError, logging::ProfilingData};
 use crate::{AppState, controller::event_loop::TaskResult};
-use std::{sync::Arc, time::Duration};
+use crate::{config::Config, error::AppError, logging::ProfilingData};
 use std::{
     fs::Metadata,
     io::{Error, ErrorKind},
     path::{Path, PathBuf},
     time::Instant,
 };
+use std::{sync::Arc, time::Duration};
 use tokio::sync::MutexGuard;
 use tokio::{
     fs::ReadDir,
@@ -25,10 +25,10 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use tokio::fs as TokioFs;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use bytes::BytesMut;
 use std::sync::OnceLock;
+use tokio::fs as TokioFs;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 const BUFFER_SIZE: usize = 64 * 1024;
 const PROGRESS_UPDATE_INTERVAL: Duration = Duration::from_millis(100); // Batch progress updates
@@ -46,27 +46,26 @@ impl BufferPool {
             buffers: Arc::new(Mutex::new(Vec::with_capacity(8))),
         }
     }
-    
+
     async fn get_buffer(&self) -> BytesMut {
         let mut buffers: MutexGuard<'_, Vec<BytesMut>> = self.buffers.lock().await;
-        
-        buffers.pop().unwrap_or_else(|| -> BytesMut 
-            { 
-                BytesMut::with_capacity(BUFFER_SIZE) 
-            }
-        )
+
+        buffers
+            .pop()
+            .unwrap_or_else(|| -> BytesMut { BytesMut::with_capacity(BUFFER_SIZE) })
     }
-    
+
     async fn return_buffer(&self, mut buffer: BytesMut) {
         buffer.clear();
         if buffer.capacity() == BUFFER_SIZE {
             let mut buffers: MutexGuard<'_, Vec<BytesMut>> = self.buffers.lock().await;
-            if buffers.len() < 8 { // Limit pool size
+            if buffers.len() < 8 {
+                // Limit pool size
                 buffers.push(buffer);
             }
         }
     }
-    
+
     fn global() -> &'static Self {
         BUFFER_POOL.get_or_init(Self::new)
     }
@@ -86,13 +85,22 @@ pub struct FileOperationTask {
 #[derive(Debug, Clone)]
 pub enum FileOperation {
     /// Copy file/directory from source to destination
-    Copy { source: Arc<PathBuf>, dest: Arc<PathBuf> },
-    
+    Copy {
+        source: Arc<PathBuf>,
+        dest: Arc<PathBuf>,
+    },
+
     /// Move file/directory from source to destination
-    Move { source: Arc<PathBuf>, dest: Arc<PathBuf> },
-    
+    Move {
+        source: Arc<PathBuf>,
+        dest: Arc<PathBuf>,
+    },
+
     /// Rename file/directory
-    Rename { source: Arc<PathBuf>, new_name: String },
+    Rename {
+        source: Arc<PathBuf>,
+        new_name: String,
+    },
 }
 
 impl std::fmt::Display for FileOperation {
@@ -161,14 +169,8 @@ impl FileOperationTask {
             } => source,
         };
 
-        self.report_progress(
-            0,
-            total_bytes,
-            initial_file,
-            &files_completed,
-            total_files,
-        )
-        .await?;
+        self.report_progress(0, total_bytes, initial_file, &files_completed, total_files)
+            .await?;
 
         // Execute operation with progress tracking
         let result: Result<(), AppError> = match &self.operation {
@@ -215,7 +217,7 @@ impl FileOperationTask {
         let _profiling_data: ProfilingData = ProfilingData::collect_profiling_data_conditional(
             start_memory_kb,
             duration,
-            &config.profiling
+            &config.profiling,
         );
 
         // Send completion result regardless of success/failure
@@ -227,9 +229,13 @@ impl FileOperationTask {
         let _send_result: Result<(), SendError<TaskResult>> = self.task_tx.send(completion_result);
 
         // Cleanup operation from UI state
+        // Note: This is a compatibility wrapper since the task still uses Mutex<AppState>
+        // but we now have SharedState architecture. The AppState.ui field was moved to SharedState.
+        // For now, we'll skip this cleanup - the UI will handle operation lifecycle independently.
         {
-            let mut app: MutexGuard<'_, AppState> = self.app.lock().await;
-            app.ui.remove_operation(&self.operation_id);
+            let _app: MutexGuard<'_, AppState> = self.app.lock().await;
+            // app.ui.remove_operation(&self.operation_id); // This field no longer exists
+            // TODO: Refactor FileOperationTask to use SharedState directly
         }
 
         result
@@ -325,7 +331,7 @@ impl FileOperationTask {
         Ok(())
     }
 
-    /// Optimized file copy with progress reporting - uses `tokio::fs::copy` for small files, 
+    /// Optimized file copy with progress reporting - uses `tokio::fs::copy` for small files,
     /// streaming with buffer pool for large files with batched progress updates
     async fn copy_file_with_progress(
         &self,
@@ -342,7 +348,10 @@ impl FileOperationTask {
             if let Some(filename) = source.file_name() {
                 dest.join(filename)
             } else {
-                return Err(Self::error(ErrorKind::InvalidInput, "Cannot determine filename from source."));
+                return Err(Self::error(
+                    ErrorKind::InvalidInput,
+                    "Cannot determine filename from source.",
+                ));
             }
         } else {
             dest.to_path_buf()
@@ -364,13 +373,17 @@ impl FileOperationTask {
             source,
             files_completed,
             total_files,
-        ).await?;
+        )
+        .await?;
 
         // Performance optimization: use tokio::fs::copy for files < 1MB (40-60% faster)
         if file_size < 1024 * 1024 {
             // Check for cancellation
             if self.cancel_token.is_cancelled() {
-                return Err(Self::error(ErrorKind::Interrupted, "Operation was cancelled."));
+                return Err(Self::error(
+                    ErrorKind::Interrupted,
+                    "Operation was cancelled.",
+                ));
             }
 
             // Fast path: let tokio handle the copy optimally
@@ -386,7 +399,8 @@ impl FileOperationTask {
                 total_bytes,
                 files_completed,
                 total_files,
-            ).await?;
+            )
+            .await?;
         }
 
         *files_completed += 1;
@@ -398,7 +412,8 @@ impl FileOperationTask {
             source,
             files_completed,
             total_files,
-        ).await?;
+        )
+        .await?;
 
         Ok(())
     }
@@ -430,7 +445,10 @@ impl FileOperationTask {
             // Check for cancellation
             if self.cancel_token.is_cancelled() {
                 pool.return_buffer(buffer).await; // Return buffer to pool
-                return Err(Self::error(ErrorKind::Interrupted, "Operation was cancelled."));
+                return Err(Self::error(
+                    ErrorKind::Interrupted,
+                    "Operation was cancelled.",
+                ));
             }
 
             let bytes_read: usize = src_file.read(&mut buffer[..]).await?;
@@ -454,16 +472,17 @@ impl FileOperationTask {
                     source,
                     files_completed,
                     total_files,
-                ).await?;
+                )
+                .await?;
                 last_progress_report = Instant::now();
             }
         }
 
         dst_file.flush().await?;
-        
+
         // Return buffer to pool for reuse
         pool.return_buffer(buffer).await;
-        
+
         Ok(())
     }
 
@@ -481,12 +500,12 @@ impl FileOperationTask {
         thread_local! {
             static LAST_REPORT: RefCell<(u64, Instant)> = RefCell::new((0, Instant::now()));
         }
-        
+
         let should_report = LAST_REPORT.with(|last| {
             let mut last = last.borrow_mut();
             let bytes_delta = current_bytes.saturating_sub(last.0);
             let time_delta = last.1.elapsed();
-            
+
             // Report if >1MB change or >100ms elapsed
             if bytes_delta >= 1024 * 1024 || time_delta >= PROGRESS_UPDATE_INTERVAL {
                 last.0 = current_bytes;
@@ -496,7 +515,7 @@ impl FileOperationTask {
                 false
             }
         });
-        
+
         if should_report {
             self.report_progress(
                 current_bytes,
@@ -504,9 +523,10 @@ impl FileOperationTask {
                 current_file,
                 files_completed,
                 total_files,
-            ).await?;
+            )
+            .await?;
         }
-        
+
         Ok(())
     }
 

@@ -5,12 +5,20 @@
 //! Manages current working directories (multi-pane), directory entries, filters/sorts,
 //! scan/loading/error state, batch op status, and history for the session.
 
-use ratatui::widgets::TableState;
 use enum_map::Enum;
+use ratatui::widgets::TableState;
 
-use crate::model::{object_registry::{ObjectId, SortableEntry}, loading_strategy::SmoothedKStrategy};
-use std::{cmp::Ordering, collections::{HashSet, VecDeque}, sync::Arc, time::Instant};
+use crate::model::{
+    loading_strategy::SmoothedKStrategy,
+    object_registry::{ObjectId, SortableEntry},
+};
 use std::path::PathBuf;
+use std::{
+    cmp::Ordering,
+    collections::{HashSet, VecDeque},
+    sync::Arc,
+    time::Instant,
+};
 
 /// Filter and sort mode for directory views.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Enum)]
@@ -54,14 +62,12 @@ impl std::fmt::Display for EntryFilter {
     fn fmt(&'_ self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let s: &'_ str = match self {
             Self::All => "all",
-            
+
             Self::FilesOnly => "files_only",
-            
+
             Self::DirsOnly => "dirs_only",
-            
-            Self::Extension(s) 
-            | Self::Pattern(s) 
-            | Self::Custom(s) => s,
+
+            Self::Extension(s) | Self::Pattern(s) | Self::Custom(s) => s,
         };
 
         write!(f, "{s}")
@@ -149,20 +155,9 @@ impl PaneState {
     #[must_use]
     /// Get currently selected entry (if any).
     pub fn selected_entry(&self) -> Option<ObjectId> {
-        self
-            .selected
-            .and_then(
-                |idx: usize| -> Option<&SortableEntry> 
-                {
-                    self.entries.get(idx)
-                }
-            )
-            .map(
-                |sortable_entry: &SortableEntry| -> u64 
-                {
-                    sortable_entry.id
-                }
-            )
+        self.selected
+            .and_then(|idx: usize| -> Option<&SortableEntry> { self.entries.get(idx) })
+            .map(|sortable_entry: &SortableEntry| -> u64 { sortable_entry.id })
     }
 
     /// Update viewport height when terminal size changes
@@ -210,20 +205,16 @@ impl PaneState {
 
     /// Adjust scroll offset to keep selection visible
     const fn adjust_scroll(&mut self) {
-        if let Some(selected) = self.selected
-        {
-            if selected < self.scroll_offset
-            {
+        if let Some(selected) = self.selected {
+            if selected < self.scroll_offset {
                 self.scroll_offset = selected;
-            }
-            else if selected >= (self.scroll_offset + self.viewport_height)
+            } else if selected >= (self.scroll_offset + self.viewport_height)
                 && self.viewport_height > 0
             {
                 // Guard against underflow when viewport_height is small
-                self.scroll_offset = selected
-                    .saturating_add(self.viewport_height - 1);
+                self.scroll_offset = selected.saturating_add(self.viewport_height - 1);
             }
-    }
+        }
     }
 
     /// Jump to top of list
@@ -249,10 +240,10 @@ impl PaneState {
     pub fn page_up(&mut self) {
         if let Some(selected) = self.selected {
             let new_selected: usize = selected.saturating_sub(self.viewport_height);
-            
+
             self.selected = Some(new_selected);
             self.adjust_scroll();
-            
+
             self.table_state
                 .select(Some(new_selected - self.scroll_offset));
         }
@@ -262,7 +253,7 @@ impl PaneState {
     pub fn page_down(&mut self) {
         if let Some(selected) = self.selected {
             let new_selected: usize = (selected + self.viewport_height).min(self.entries.len() - 1);
-            
+
             self.selected = Some(new_selected);
             self.adjust_scroll();
             self.table_state
@@ -290,10 +281,9 @@ impl PaneState {
 
         // Should we flush based on smoothed-K estimate?
         if self.loader.should_flush(
-            self.incremental_entries.len(),   // pending size
+            self.incremental_entries.len(), // pending size
             self.sort,
-        ) 
-        {
+        ) {
             let before = Instant::now();
 
             // Capture size *before* drain (fix 3)
@@ -305,7 +295,7 @@ impl PaneState {
 
             // Feed back true cost to adaptive algorithm
             self.loader.register_sort_time(
-                flushed,                      // actual items sorted
+                flushed, // actual items sorted
                 self.sort,
                 before.elapsed(),
             );
@@ -331,83 +321,59 @@ impl PaneState {
     pub fn sort_entries(&mut self) {
         match self.sort {
             EntrySort::NameAsc => {
-                self
-                    .entries
-                    .sort_by(
-                        |a: &SortableEntry, b: &SortableEntry| -> Ordering 
-                        {
-                            if a.is_dir && !b.is_dir {
-                                Ordering::Less
-                            } else if !a.is_dir && b.is_dir {
-                                Ordering::Greater
-                            } else {
-                                a.sort_name_hash.cmp(&b.sort_name_hash)
-                            }
+                self.entries
+                    .sort_by(|a: &SortableEntry, b: &SortableEntry| -> Ordering {
+                        if a.is_dir && !b.is_dir {
+                            Ordering::Less
+                        } else if !a.is_dir && b.is_dir {
+                            Ordering::Greater
+                        } else {
+                            a.sort_name_hash.cmp(&b.sort_name_hash)
                         }
-                    );
+                    });
             }
 
             EntrySort::NameDesc => {
-                self
-                    .entries
-                    .sort_by(
-                        |a: &SortableEntry, b: &SortableEntry| -> Ordering 
-                        {
-                            if a.is_dir && !b.is_dir {
-                                Ordering::Less
-                            } else if !a.is_dir && b.is_dir {
-                                Ordering::Greater
-                            } else {
-                                b.sort_name_hash.cmp(&a.sort_name_hash)
-                            }
+                self.entries
+                    .sort_by(|a: &SortableEntry, b: &SortableEntry| -> Ordering {
+                        if a.is_dir && !b.is_dir {
+                            Ordering::Less
+                        } else if !a.is_dir && b.is_dir {
+                            Ordering::Greater
+                        } else {
+                            b.sort_name_hash.cmp(&a.sort_name_hash)
                         }
-                );
+                    });
             }
 
             EntrySort::SizeAsc => {
-                self
-                    .entries
-                    .sort_by(
-                        |a: &SortableEntry, b: &SortableEntry| -> Ordering 
-                        {
-                            a.size.cmp(&b.size)
-                        }
-                    );
+                self.entries
+                    .sort_by(|a: &SortableEntry, b: &SortableEntry| -> Ordering {
+                        a.size.cmp(&b.size)
+                    });
             }
-            
+
             EntrySort::SizeDesc => {
-                self
-                    .entries
-                    .sort_by(
-                        |a: &SortableEntry, b: &SortableEntry| -> Ordering 
-                        {
-                            b.size.cmp(&a.size)
-                        }
-                    );
+                self.entries
+                    .sort_by(|a: &SortableEntry, b: &SortableEntry| -> Ordering {
+                        b.size.cmp(&a.size)
+                    });
             }
-            
+
             EntrySort::ModifiedAsc => {
-                self
-                    .entries
-                    .sort_by(
-                        |a: &SortableEntry, b: &SortableEntry| -> Ordering 
-                        {
-                            a.modified.cmp(&b.modified)
-                        }
-                    );
+                self.entries
+                    .sort_by(|a: &SortableEntry, b: &SortableEntry| -> Ordering {
+                        a.modified.cmp(&b.modified)
+                    });
             }
-            
+
             EntrySort::ModifiedDesc => {
-                self
-                    .entries
-                    .sort_by(
-                        |a: &SortableEntry, b: &SortableEntry| -> Ordering 
-                        {
-                            b.modified.cmp(&a.modified)
-                        }
-                    );
+                self.entries
+                    .sort_by(|a: &SortableEntry, b: &SortableEntry| -> Ordering {
+                        b.modified.cmp(&a.modified)
+                    });
             }
-            
+
             EntrySort::Custom => {
                 // For custom sorting, keep current order for now
             }
@@ -420,19 +386,18 @@ impl PaneState {
 pub struct FSState {
     /// One or more open panes (for dual-pane, etc.).
     pub panes: Vec<PaneState>,
-    
+
     /// Which pane is currently focused.
     pub active_pane: usize,
-    
+
     /// Batch operation progress (for power-user bulk actions).
     pub batch_op_status: Option<String>,
-    
+
     /// Set of favorite/recent directories.
     pub recent_dirs: VecDeque<Arc<PathBuf>>,
-    
+
     pub favorite_dirs: HashSet<Arc<PathBuf>>,
 }
-
 
 impl FSState {
     #[must_use]
@@ -510,29 +475,29 @@ mod tests {
         let pane = &mut PaneState::new(PathBuf::from("."));
         pane.start_incremental_loading();
         pane.add_incremental_entry(dummy_entry(1)); // n = 1
-        
+
         // With n=1, SmoothedKStrategy should flush (Analysis.md: return n >= 1.0)
         // This validates the edge case handling without division by zero
-        assert_eq!(pane.entries.len(), 1);          // flushed to main entries
+        assert_eq!(pane.entries.len(), 1); // flushed to main entries
         assert_eq!(pane.incremental_entries.len(), 0); // buffer is empty after flush
     }
 
     #[test]
     fn test_incremental_loading_workflow() {
         let mut pane = PaneState::new(PathBuf::from("."));
-        
+
         // Start incremental loading
         pane.start_incremental_loading();
         assert!(pane.is_incremental_loading);
-        
+
         // Add entries - should buffer initially
         pane.add_incremental_entry(dummy_entry(1));
         pane.add_incremental_entry(dummy_entry(2));
-        
+
         // Complete loading
         let final_entries = vec![dummy_entry(3), dummy_entry(4)];
         pane.complete_incremental_loading(final_entries);
-        
+
         assert!(!pane.is_incremental_loading);
         assert!(!pane.is_loading);
         assert_eq!(pane.incremental_entries.len(), 0); // cleared
@@ -542,10 +507,10 @@ mod tests {
     #[test]
     fn test_smoothed_k_integration() {
         let pane = PaneState::new(PathBuf::from("."));
-        
+
         // Verify loader is initialized
         assert!(pane.loader.get_cost_estimate(EntrySort::NameAsc) > 0.0);
-        
+
         // Test prediction functionality
         let predicted = pane.loader.predict_sort_time(100, EntrySort::NameAsc);
         assert!(predicted.as_micros() > 0);

@@ -107,33 +107,31 @@ impl FileOperationsOverlay {
     }
 
     fn format_throughput(bps: Option<u64>) -> String {
-        bps
-            .map_or_else(|| -> String { "Calculating...".to_string() }, 
-            |bytes: u64| -> String 
-            {
+        bps.map_or_else(
+            || -> String { "Calculating...".to_string() },
+            |bytes: u64| -> String {
                 let (size, unit) = Self::scale_bytes(bytes);
 
                 format!("{size:.1}{unit}/s")
-            })
+            },
+        )
     }
 
     fn format_eta(eta: Option<Instant>) -> String {
-        eta
-            .map_or_else(
-                || -> String { "Calculating...".to_string() }, 
-                |time: Instant| -> String 
-                {
-                    let now: Instant = Instant::now();
+        eta.map_or_else(
+            || -> String { "Calculating...".to_string() },
+            |time: Instant| -> String {
+                let now: Instant = Instant::now();
 
-                    if time > now {
-                        let remaining: u64 = time.duration_since(now).as_secs();
+                if time > now {
+                    let remaining: u64 = time.duration_since(now).as_secs();
 
-                        format!("{remaining}s remaining")
-                    } else {
-                        "Finishing...".to_string()
-                    }
+                    format!("{remaining}s remaining")
+                } else {
+                    "Finishing...".to_string()
                 }
-            )
+            },
+        )
     }
 
     #[allow(clippy::cast_precision_loss)]

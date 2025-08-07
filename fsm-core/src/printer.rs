@@ -548,7 +548,7 @@ where
 
             // Set advice hint directly (non-blocking)
             let _ = m.advise(Advice::Sequential);
-            
+
             m
         };
 
@@ -675,10 +675,7 @@ fn process_lines_max_parallel(mmap: &Arc<Mmap>, line_boundaries: &[usize]) -> Ve
 // -------------------------------------------------------------------------
 // Balanced parallelization strategy
 // -------------------------------------------------------------------------
-fn process_lines_balanced_parallel(
-    mmap: &Arc<Mmap>,
-    line_boundaries: &[usize],
-) -> Vec<String> {
+fn process_lines_balanced_parallel(mmap: &Arc<Mmap>, line_boundaries: &[usize]) -> Vec<String> {
     if line_boundaries.len() < 2 {
         return vec![];
     }
@@ -727,10 +724,7 @@ fn process_lines_balanced_parallel(
 ///
 /// Parallel Processing Error.
 ///
-fn process_lines_streaming_parallel(
-    mmap: &Arc<Mmap>,
-    line_boundaries: &[usize],
-) -> Vec<String> {
+fn process_lines_streaming_parallel(mmap: &Arc<Mmap>, line_boundaries: &[usize]) -> Vec<String> {
     const STREAM_CHUNK_SIZE: usize = 16384; // Larger chunks for streaming
 
     let line_ranges: Vec<(usize, usize)> =
@@ -847,11 +841,14 @@ fn parse_single_line_parallel(mmap: &Arc<Mmap>, start: usize, end: usize) -> Opt
                 parse_buf.extend_from_slice(line_bytes);
 
                 // Parse JSON with SIMD
-                simd_parse::<Value>(parse_buf).map_or_else(|_| None, |mut json| {
-                    // Transform filename field with optimized string operations
-                    transform_filename_field_optimized(&mut json, filename_buf, itoa_buf);
-                    Some(json)
-                })
+                simd_parse::<Value>(parse_buf).map_or_else(
+                    |_| None,
+                    |mut json| {
+                        // Transform filename field with optimized string operations
+                        transform_filename_field_optimized(&mut json, filename_buf, itoa_buf);
+                        Some(json)
+                    },
+                )
             })
         })
     })
