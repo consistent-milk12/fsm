@@ -8,8 +8,8 @@
 use crate::error::AppError;
 use crate::fs::object_info::{LightObjectInfo, ObjectInfo};
 use crate::{
-    cache::cache_manager::ObjectInfoCache, config::ProfilingConfig, controller::actions::Action,
-    logging::ProfilingData, tasks::metadata_task::batch_load_metadata_task,
+    cache::cache_manager::ObjectInfoCache, controller::actions::Action,
+    tasks::metadata_task::batch_load_metadata_task,
 };
 use std::time::Instant;
 use std::{
@@ -32,11 +32,10 @@ use tracing::{Span, info, instrument};
 /// # Arguments
 /// * `path` - The path to the directory to scan.
 /// * `show_hidden` - Whether to include hidden files/directories (starting with '.').
-/// * `profiling_config` - The configuration for performance profiling.
 /// * `cache` - The `ObjectInfo` cache for performance optimization
 #[expect(clippy::too_many_lines, reason = "Expected verbosity due to logging")]
 #[instrument(
-    skip(profiling_config, cache),
+    skip(cache),
     fields(
         operation_type = "scan_dir_cached",
         path = %path.display(),
@@ -51,7 +50,6 @@ use tracing::{Span, info, instrument};
 pub async fn scan_dir(
     path: &Path,
     show_hidden: bool,
-    profiling_config: &ProfilingConfig,
     cache: &ObjectInfoCache,
 ) -> Result<Vec<ObjectInfo>, AppError> {
     // Pre-warm cache for better hit rates
@@ -73,7 +71,7 @@ pub async fn scan_dir(
     }
 
     let start_time: Instant = Instant::now();
-    let start_mem: Option<i64> = ProfilingData::get_current_memory_kb();
+    // Profiling removed - lean logging approach
 
     let mut entries: Vec<ObjectInfo> = Vec::new();
     let mut read_dir: ReadDir = fs::read_dir(path).await?;
@@ -147,8 +145,7 @@ pub async fn scan_dir(
     });
 
     let duration: Duration = start_time.elapsed();
-    let profiling_data: ProfilingData =
-        ProfilingData::collect_profiling_data_conditional(start_mem, duration, profiling_config);
+    // Profiling removed - lean logging approach
 
     // Record performance metrics in span
     let current_span = Span::current();
@@ -157,9 +154,7 @@ pub async fn scan_dir(
     current_span.record("cache_misses", cache_misses);
     current_span.record("duration_ms", duration.as_millis());
 
-    if let Some(memory_delta) = profiling_data.memory_delta_kb {
-        current_span.record("memory_delta_kb", memory_delta);
-    }
+    // Memory delta recording removed - lean logging approach
 
     // Calculate cache efficiency
     let total_lookups: u32 = cache_hits + cache_misses;
@@ -169,7 +164,8 @@ pub async fn scan_dir(
         0.0
     };
 
-    if let Some(duration_ns) = profiling_data.operation_duration_ns {
+    // Performance logging simplified - lean approach
+    {
         let perf_category = if duration.as_millis() < 10 {
             "excellent"
         } else if duration.as_millis() < 50 {
@@ -181,9 +177,9 @@ pub async fn scan_dir(
         info!(
             marker = "PERF_DIRECTORY_SCAN",
             operation_type = "scan_dir_cached",
-            duration_ns = duration_ns,
+            duration_ns = duration.as_nanos(),
             duration_ms = duration.as_millis(),
-            memory_delta_kb = profiling_data.memory_delta_kb.unwrap_or(0),
+            memory_delta_kb = 0, // Memory tracking removed
             entry_count = entries.len(),
             cache_hits = cache_hits,
             cache_misses = cache_misses,
@@ -217,7 +213,6 @@ pub enum ScanUpdate {
 /// * `show_hidden` - Whether to include hidden files/directories
 /// * `batch_size` - Number of entries to process before yielding (for responsiveness)
 /// * `action_tx` - Channel to send metadata loading tasks
-/// * `profiling_config` - The configuration for performance profiling.
 /// * `cache` - The `ObjectInfo` cache for performance optimization.
 ///
 /// # Returns
@@ -225,7 +220,7 @@ pub enum ScanUpdate {
 /// * A sender for the final sorted results
 #[allow(clippy::unused_async, reason = "async move occurs inside tokio::spawn")]
 #[instrument(
-    skip(action_tx, profiling_config, cache)
+    skip(action_tx, cache)
     fields(
         operation_type = "scan_dir_streaming",
         path = %path.display(),
@@ -238,7 +233,6 @@ pub async fn scan_dir_streaming_with_background_metadata(
     show_hidden: bool,
     batch_size: usize,
     action_tx: UnboundedSender<Action>,
-    profiling_config: ProfilingConfig,
     cache: Arc<ObjectInfoCache>,
 ) -> (
     UnboundedReceiver<ScanUpdate>,
@@ -247,15 +241,8 @@ pub async fn scan_dir_streaming_with_background_metadata(
     let (tx, rx) = mpsc::unbounded_channel();
 
     let handle: JoinHandle<Result<Vec<ObjectInfo>, AppError>> = tokio::spawn(async move {
-        let scanner: DirectoryScanner = DirectoryScanner::new(
-            path,
-            show_hidden,
-            batch_size,
-            action_tx,
-            tx,
-            profiling_config,
-            cache,
-        );
+        let scanner: DirectoryScanner =
+            DirectoryScanner::new(path, show_hidden, batch_size, action_tx, tx, cache);
 
         scanner.scan().await
     });
@@ -269,7 +256,6 @@ struct DirectoryScanner {
     batch_size: usize,
     action_tx: UnboundedSender<Action>,
     tx: UnboundedSender<ScanUpdate>,
-    profiling_config: ProfilingConfig,
     cache: Arc<ObjectInfoCache>,
 }
 
@@ -280,7 +266,6 @@ impl DirectoryScanner {
         batch_size: usize,
         action_tx: UnboundedSender<Action>,
         tx: UnboundedSender<ScanUpdate>,
-        profiling_config: ProfilingConfig,
         cache: Arc<ObjectInfoCache>,
     ) -> Self {
         Self {
@@ -289,7 +274,6 @@ impl DirectoryScanner {
             batch_size,
             action_tx,
             tx,
-            profiling_config,
             cache,
         }
     }
@@ -310,7 +294,7 @@ impl DirectoryScanner {
     )]
     async fn scan(self) -> Result<Vec<ObjectInfo>, AppError> {
         let start_time: Instant = Instant::now();
-        let start_mem: Option<i64> = ProfilingData::get_current_memory_kb();
+        // Profiling removed - lean logging approach
 
         let mut entries: Vec<ObjectInfo> = Vec::new();
         let mut light_entries: Vec<LightObjectInfo> = Vec::new();
@@ -331,11 +315,7 @@ impl DirectoryScanner {
         self.start_background_metadata_loading(light_entries);
 
         let duration: Duration = start_time.elapsed();
-        let profiling_data: ProfilingData = ProfilingData::collect_profiling_data_conditional(
-            start_mem,
-            duration,
-            &self.profiling_config,
-        );
+        // Profiling removed - lean logging approach
 
         // Record performance metrics
         Span::current()
@@ -343,7 +323,8 @@ impl DirectoryScanner {
             .record("phase1_duration_ms", phase1_duration.as_millis())
             .record("total_duration_ms", duration.as_millis());
 
-        if let Some(duration_ns) = profiling_data.operation_duration_ns {
+        // Performance logging simplified - lean approach
+        {
             let perf_category = if duration.as_millis() < 20 {
                 "excellent"
             } else if duration.as_millis() < 100 {
@@ -355,9 +336,9 @@ impl DirectoryScanner {
             info!(
                 marker = "PERF_DIRECTORY_SCAN",
                 operation_type = "scan_dir_streaming_cached",
-                duration_ns = duration_ns,
+                duration_ns = duration.as_nanos(),
                 duration_ms = duration.as_millis(),
-                memory_delta_kb = profiling_data.memory_delta_kb.unwrap_or(0),
+                memory_delta_kb = 0, // Memory tracking removed
                 entry_count = entries.len(),
                 phase1_duration_ms = phase1_duration.as_millis(),
                 phase1_percentage = format!(

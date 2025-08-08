@@ -20,11 +20,7 @@ use tokio::{
     sync::mpsc::UnboundedSender,
 };
 
-use crate::{
-    config::Config,
-    controller::{actions::Action, event_loop::TaskResult},
-    logging::ProfilingData,
-};
+use crate::controller::{actions::Action, event_loop::TaskResult};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawSearchResult {
@@ -230,8 +226,6 @@ pub struct SearchTask;
 ///
 /// If the stdout out is not piped (which is always handled by helpper functions).
 ///
-#[expect(clippy::too_many_lines, reason = "Marked for refactor")]
-#[expect(clippy::cast_sign_loss, reason = "Expected")]
 pub fn search_task(
     task_id: u64,
     pattern: String,
@@ -241,7 +235,7 @@ pub fn search_task(
 ) {
     tokio::spawn(async move {
         let start_time = Instant::now();
-        let start_memory_kb = ProfilingData::get_current_memory_kb();
+        // Profiling removed - lean logging approach
 
         let mut output_lines: Vec<String> = Vec::new();
         let mut parsed_lines: Vec<Text<'static>> = Vec::new();
@@ -263,13 +257,7 @@ pub fn search_task(
             Ok(c) => c,
             Err(e) => {
                 let duration: Duration = start_time.elapsed();
-                let config: Config = Config::load().await.unwrap();
-                let profiling_data: ProfilingData =
-                    ProfilingData::collect_profiling_data_conditional(
-                        start_memory_kb,
-                        duration,
-                        &config.profiling,
-                    );
+                // Profiling removed - lean logging approach
 
                 let _ = task_tx.send(TaskResult::Legacy {
                     task_id,
@@ -280,7 +268,7 @@ pub fn search_task(
                     total: None,
                     message: None,
                     execution_time: Some(duration),
-                    memory_usage: Some(profiling_data.memory_delta_kb.unwrap() as u64),
+                    memory_usage: None, // Memory tracking removed
                 });
                 return;
             }
@@ -305,13 +293,7 @@ pub fn search_task(
             Ok(status) => status,
             Err(e) => {
                 let duration: Duration = start_time.elapsed();
-                let config: Config = Config::load().await.unwrap();
-                let profiling_data: ProfilingData =
-                    ProfilingData::collect_profiling_data_conditional(
-                        start_memory_kb,
-                        duration,
-                        &config.profiling,
-                    );
+                // Profiling removed - lean logging approach
 
                 let _ = task_tx.send(TaskResult::Legacy {
                     task_id,
@@ -322,7 +304,7 @@ pub fn search_task(
                     total: None,
                     message: None,
                     execution_time: Some(duration),
-                    memory_usage: Some(profiling_data.memory_delta_kb.unwrap() as u64),
+                    memory_usage: None, // Memory tracking removed
                 });
                 return;
             }
@@ -330,12 +312,7 @@ pub fn search_task(
 
         if !status.success() && status.code() != Some(1) {
             let duration: Duration = start_time.elapsed();
-            let config: Config = Config::load().await.unwrap();
-            let profiling_data: ProfilingData = ProfilingData::collect_profiling_data_conditional(
-                start_memory_kb,
-                duration,
-                &config.profiling,
-            );
+            // Profiling removed - lean logging approach
 
             let _ = task_tx.send(TaskResult::Legacy {
                 task_id,
@@ -346,23 +323,18 @@ pub fn search_task(
                 total: None,
                 message: None,
                 execution_time: Some(duration),
-                memory_usage: Some(profiling_data.memory_delta_kb.unwrap() as u64),
+                memory_usage: None, // Memory tracking removed
             });
             return;
         }
 
         let match_count: usize = output_lines.len();
 
-        // Calculate final profiling data
+        // Calculate final execution time
         let duration: Duration = start_time.elapsed();
-        let config: Config = Config::load().await.unwrap();
-        let profiling_data: ProfilingData = ProfilingData::collect_profiling_data_conditional(
-            start_memory_kb,
-            duration,
-            &config.profiling,
-        );
+        // Profiling removed - lean logging approach
 
-        // Report completion with profiling data
+        // Report completion
         let _ = task_tx.send(TaskResult::Legacy {
             task_id,
             result: Ok(format!("found {match_count} line(s) matching pattern")),
@@ -372,7 +344,7 @@ pub fn search_task(
             total: None,
             message: None,
             execution_time: Some(duration),
-            memory_usage: Some(profiling_data.memory_delta_kb.unwrap() as u64),
+            memory_usage: None, // Memory tracking removed
         });
 
         // Send raw results to UI

@@ -19,7 +19,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use fsm_core::logging::{ProfilingData, init_logging_with_level};
+use fsm_core::logging::init_logging_with_level;
 
 use anyhow::{Context, Error, Result};
 use crossterm::{
@@ -109,9 +109,12 @@ impl App {
         let fs_state: FSState = FSState::default();
         let ui_state: UIState = UIState::default();
 
-        let (task_tx, task_rx) = mpsc::unbounded_channel::<TaskResult>();
+        // Bounded channels with appropriate capacity for production use
+        const TASK_CHANNEL_CAPACITY: usize = 64;    // Task completion notifications  
+        const ACTION_CHANNEL_CAPACITY: usize = 128; // UI actions and updates
 
-        let (action_tx, action_rx) = mpsc::unbounded_channel::<Action>();
+        let (task_tx, task_rx) = mpsc::channel::<TaskResult>(TASK_CHANNEL_CAPACITY);
+        let (action_tx, action_rx) = mpsc::channel::<Action>(ACTION_CHANNEL_CAPACITY);
 
         // SHARED STATE: Fine-grained locking architecture
         let shared_state = Arc::new(SharedState::new(
@@ -286,16 +289,14 @@ impl App {
             #[allow(clippy::cast_possible_truncation)]
             let duration_us: u64 = duration.as_micros() as u64;
 
-            // Collect profiling data for render operations
-            let profiling_data: ProfilingData =
-                ProfilingData::collect_profiling_data(None, duration);
+            // Render profiling removed - lean logging approach
 
             if duration.as_millis() > 16 {
                 tracing::warn!(
                     marker = "PERF_FRAME_RENDER",
                     operation_type = "render",
                     duration_us = duration_us,
-                    duration_ns = profiling_data.operation_duration_ns.unwrap_or(0),
+                    duration_ns = duration.as_nanos(),
                     "Slow render detected: {}ms (target: <16ms for 60fps)",
                     duration.as_millis()
                 );
@@ -304,7 +305,7 @@ impl App {
                     marker = "UI_RENDER_COMPLETE",
                     operation_type = "render",
                     duration_us = duration_us,
-                    duration_ns = profiling_data.operation_duration_ns.unwrap_or(0),
+                    duration_ns = duration.as_nanos(),
                     "Render completed in {}ms",
                     duration.as_millis()
                 );

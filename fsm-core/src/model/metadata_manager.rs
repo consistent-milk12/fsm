@@ -10,13 +10,14 @@
 //! • **Single source of truth** – no cache-registry divergence possible
 
 use std::{
+    collections::HashSet,
     path::{Path, PathBuf},
     sync::Arc,
 };
 
 use ahash::RandomState;
 
-use dashmap::DashMap; // Sharded, lock-free map
+use dashmap::{DashMap, mapref::one::Ref}; // Sharded, lock-free map
 
 use crate::{
     error_core::CoreError,
@@ -35,6 +36,9 @@ type InfoArc = Arc<ObjectInfo>; // Value: metadata wrapped in Arc
 pub struct MetadataManager {
     /// Canonical store: `ObjectId` → Arc<ObjectInfo>
     registry: Arc<DashMap<ObjectId, InfoArc, RandomState>>,
+
+    /// Directory index: dir_id → set of child ObjectIds currently visible there
+    dir_index: Arc<DashMap<ObjectId, HashSet<ObjectId>, RandomState>>,
 }
 
 impl MetadataManager {
@@ -47,13 +51,17 @@ impl MetadataManager {
     pub fn new() -> Self {
         Self {
             registry: Arc::new(DashMap::with_hasher(RandomState::new())),
+            dir_index: Arc::new(DashMap::with_hasher(RandomState::new())),
         }
     }
 
     /// Create from existing registry (for compatibility)
     #[must_use]
     pub fn from_registry(registry: Arc<DashMap<ObjectId, InfoArc, RandomState>>) -> Self {
-        Self { registry }
+        Self {
+            registry,
+            dir_index: Arc::new(DashMap::with_hasher(RandomState::new())),
+        }
     }
 
     // ---------------------------------------------------------------
@@ -64,6 +72,15 @@ impl MetadataManager {
         use std::hash::{Hash, Hasher};
         let mut hasher = ahash::AHasher::default();
         path.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    // Public helper to compute an ObjectId from a directory path
+    #[must_use]
+    pub fn dir_id_for_path<P: AsRef<Path>>(&self, path: P) -> ObjectId {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = ahash::AHasher::default();
+        path.as_ref().hash(&mut hasher);
         hasher.finish()
     }
 
@@ -103,13 +120,13 @@ impl MetadataManager {
 
         // Try registry first
         if let Some(info_arc) = self.registry.get(&id) {
-            let sortable = SortableEntry::from_object_info(&info_arc, id);
+            let sortable: SortableEntry = SortableEntry::from_object_info(&info_arc, id);
             return Ok((info_arc.clone(), sortable));
         }
 
         // Cold path – fetch from filesystem
-        let info = ObjectInfo::from_path_sync(&path)?;
-        let info_arc = Arc::new(info);
+        let info: ObjectInfo = ObjectInfo::from_path_sync(&path)?;
+        let info_arc: Arc<ObjectInfo> = Arc::new(info);
 
         // Store in registry
         self.registry.insert(id, info_arc.clone());
@@ -120,7 +137,11 @@ impl MetadataManager {
 
     /// Get ObjectInfo by ObjectId directly from registry (lock-free)
     pub fn get_by_id(&self, id: ObjectId) -> Option<InfoArc> {
-        self.registry.get(&id).map(|entry| entry.value().clone())
+        self.registry
+            .get(&id)
+            .map(|entry: Ref<'_, u64, Arc<ObjectInfo>>| -> Arc<ObjectInfo> {
+                entry.value().clone()
+            })
     }
 
     /// Insert `ObjectInfo` and return `ObjectId` + `SortableEntry`
@@ -162,6 +183,30 @@ impl MetadataManager {
     /// Get registry size (for debugging)
     pub fn size(&self) -> usize {
         self.registry.len()
+    }
+
+    /// Update directory index with the latest set of child IDs for a directory
+    pub fn update_dir_index(&self, dir_id: ObjectId, new_ids: &HashSet<ObjectId>) {
+        self.dir_index.insert(dir_id, new_ids.clone());
+    }
+
+    /// Prune stale entries that are no longer present in the given directory,
+    /// unless they still appear in another directory index.
+    pub fn prune_stale_entries(&self, stale_ids: &HashSet<ObjectId>, current_dir: ObjectId) {
+        for id in stale_ids {
+            // See if this id is present in any dir other than current_dir
+            let mut referenced_elsewhere = false;
+            for kv in self.dir_index.iter() {
+                let (dir, set) = (kv.key(), kv.value());
+                if *dir != current_dir && set.contains(id) {
+                    referenced_elsewhere = true;
+                    break;
+                }
+            }
+            if !referenced_elsewhere {
+                self.registry.remove(id);
+            }
+        }
     }
 }
 

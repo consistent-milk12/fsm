@@ -3,16 +3,26 @@
 //! Core application state container with fine-grained locking architecture.
 //! Solves mutex contention crisis by separating UI, FS, and business logic into independent mutexes.
 
-use std::sync::{Arc, Mutex};
-use tokio::sync::mpsc;
+use compact_str::CompactString;
+use futures::{StreamExt, stream};
+use std::{
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+};
+use tokio::{sync::mpsc, task};
+use tracing::{Instrument, Span, field, instrument};
 
 use crate::{
     config::Config,
-    controller::actions::Action,
-    controller::event_loop::TaskResult,
+    controller::{actions::Action, event_loop::TaskResult},
+    fs::object_info::ObjectInfo,
     model::{
-        app_state::AppState, fs_state::FSState, metadata_manager::MetadataManager,
-        ui_state::UIState,
+        PaneState,
+        app_state::AppState,
+        fs_state::FSState,
+        metadata_manager::MetadataManager,
+        object_registry::SortableEntry,
+        ui_state::{Component, UIState},
     },
 };
 
@@ -26,11 +36,42 @@ pub struct DeprecatedSharedStateGuard<'a> {
 
 /// Main application state container with fine-grained locking
 ///
-/// Architecture:
+/// ## Architecture:
 /// - app_state: Business logic (channels, tasks, history) - minimal mutex scope
 /// - ui_state: UI rendering state - independent mutex, never blocks BG tasks
 /// - fs_state: Filesystem navigation state - independent mutex, never blocks UI
 /// - metadata: Lock-free DashMap access via Arc (no mutex needed)
+///
+/// ## 🔒 **MANDATORY GLOBAL LOCK ORDERING - DEADLOCK PREVENTION**
+/// 
+/// **CRITICAL**: When acquiring multiple locks, ALWAYS follow this order:
+/// ```
+/// 1. FS_STATE  →  2. UI_STATE  →  3. APP_STATE
+/// ```
+///
+/// ### ✅ **SAFE PATTERNS**:
+/// ```rust
+/// // Pattern 1: Independent scopes (PREFERRED)
+/// let data = { self.lock_fs().some_data.clone() };
+/// { self.lock_ui().update(data); }
+///
+/// // Pattern 2: Sequential FS→UI (when needed)
+/// let mut fs = self.lock_fs();   // FS first
+/// drop(fs);                      // Explicit drop
+/// let mut ui = self.lock_ui();   // UI second
+/// ```
+///
+/// ### ❌ **DEADLOCK PATTERNS - FORBIDDEN**:
+/// ```rust
+/// let ui = self.lock_ui();   // UI first
+/// let fs = self.lock_fs();   // FS second - DEADLOCK RISK!
+/// ```
+///
+/// ### 📋 **ENFORCEMENT CHECKLIST**:
+/// - [ ] All multi-lock functions follow FS→UI→APP order
+/// - [ ] Use independent scopes when possible (safer)
+/// - [ ] Never hold locks across `.await` points
+/// - [ ] Document any exceptions with architectural justification
 pub struct SharedState {
     /// Core business logic and channels (minimal mutex scope)
     pub app_state: Arc<Mutex<AppState>>,
@@ -54,8 +95,8 @@ impl SharedState {
         metadata: Arc<MetadataManager>,
         ui_state: UIState,
         fs_state: FSState,
-        task_tx: mpsc::UnboundedSender<TaskResult>,
-        action_tx: mpsc::UnboundedSender<Action>,
+        task_tx: mpsc::Sender<TaskResult>,
+        action_tx: mpsc::Sender<Action>,
     ) -> Self {
         let app_state = AppState::new(config.clone(), metadata.clone(), task_tx, action_tx);
 
@@ -84,16 +125,22 @@ impl SharedState {
     }
 
     /// Lock app state (for business logic operations)
+    ///
+    /// ⚠️  **LOCK ORDER**: When acquiring multiple locks, acquire APP_STATE LAST (after FS→UI)
     pub fn lock_app(&self) -> std::sync::MutexGuard<'_, AppState> {
         self.app_state.lock().unwrap()
     }
 
     /// Lock UI state (for rendering operations)
+    ///
+    /// ⚠️  **LOCK ORDER**: When acquiring multiple locks, acquire UI_STATE SECOND (after FS)
     pub fn lock_ui(&self) -> std::sync::MutexGuard<'_, UIState> {
         self.ui_state.lock().unwrap()
     }
 
     /// Lock FS state (for navigation operations)
+    /// 
+    /// ⚠️  **LOCK ORDER**: When acquiring multiple locks, acquire FS_STATE FIRST
     pub fn lock_fs(&self) -> std::sync::MutexGuard<'_, FSState> {
         self.fs_state.lock().unwrap()
     }
@@ -133,7 +180,7 @@ impl SharedState {
 
         // Mark UI as dirty to trigger re-render
         if let Ok(mut ui_guard) = self.ui_state.try_lock() {
-            ui_guard.mark_dirty(crate::model::ui_state::Component::All);
+            ui_guard.mark_dirty(Component::All);
         }
     }
 
@@ -149,7 +196,7 @@ impl SharedState {
 
         // Mark UI as dirty to trigger re-render
         if let Ok(mut ui_guard) = self.ui_state.try_lock() {
-            ui_guard.mark_dirty(crate::model::ui_state::Component::All);
+            ui_guard.mark_dirty(Component::All);
         }
     }
 
@@ -169,16 +216,17 @@ impl SharedState {
 
     /// Enter the currently selected directory or open the file
     pub async fn enter_selected_directory(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let selected_entry = {
+        // Read selected index without holding FS lock
+        let selected_idx: Option<usize> = {
             let ui_guard = self.lock_ui();
-            let fs_guard = self.lock_fs();
-            let active_pane = fs_guard.active_pane();
+            ui_guard.selected
+        };
 
-            if let Some(selected_idx) = ui_guard.selected {
-                active_pane.entries.get(selected_idx).cloned()
-            } else {
-                return Ok(());
-            }
+        let selected_entry = if let Some(idx) = selected_idx {
+            let fs_guard = self.lock_fs();
+            fs_guard.active_pane().entries.get(idx).cloned()
+        } else {
+            None
         };
 
         if let Some(entry) = selected_entry
@@ -238,50 +286,48 @@ impl SharedState {
 
     // File Operation Methods
 
-    /// Create a new file in the current directory
-    pub async fn create_file(&self) -> Result<(), Box<dyn std::error::Error>> {
-        if let Ok(mut ui_guard) = self.ui_state.try_lock() {
-            ui_guard.show_input_prompt(crate::controller::actions::InputPromptType::CreateFile);
-        }
-        Ok(())
-    }
-
-    /// Create a new directory in the current directory
-    pub async fn create_directory(&self) -> Result<(), Box<dyn std::error::Error>> {
-        if let Ok(mut ui_guard) = self.ui_state.try_lock() {
-            ui_guard
-                .show_input_prompt(crate::controller::actions::InputPromptType::CreateDirectory);
-        }
-        Ok(())
-    }
-
-    /// Create a file with a specific name
+    // ─────────────────────────────────────────────────────────────────────────────
+    // Create a file with a specific name
+    // ─────────────────────────────────────────────────────────────────────────────
+    #[instrument(skip(self), fields(operation_type = "fs_create_file"))]
     pub async fn create_file_with_name(
         &self,
         name: String,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let current_dir = {
-            let fs_guard = self.lock_fs();
-            fs_guard.active_pane().cwd.clone()
+        // Read cwd without holding the lock across await
+        let cwd: PathBuf = {
+            let fs = self.lock_fs();
+            fs.active_pane().cwd.clone()
         };
 
-        let file_path = current_dir.join(&name);
+        let file_path = cwd.join(&name);
 
-        // Use spawn_blocking to avoid blocking the async runtime
-        let file_path_clone = file_path.clone();
-        let result =
-            tokio::task::spawn_blocking(move || std::fs::File::create(&file_path_clone)).await?;
+        // Do the blocking create off the runtime
+        let create_res = task::spawn_blocking({
+            let file_path = file_path.clone();
+            move || std::fs::File::create(&file_path)
+        })
+        .in_current_span()
+        .await;
 
-        match result {
-            Ok(_) => {
-                if let Ok(mut ui_guard) = self.ui_state.try_lock() {
-                    ui_guard.show_info(format!("Created file: {}", name));
+        match create_res {
+            Ok(Ok(_)) => {
+                if let Ok(mut ui) = self.ui_state.try_lock() {
+                    ui.show_info(format!("Created file: {name}"));
                 }
+                // Don’t hold any locks while awaiting
                 self.reload_directory().await?;
             }
-            Err(e) => {
-                if let Ok(mut ui_guard) = self.ui_state.try_lock() {
-                    ui_guard.show_error(format!("Failed to create file: {}", e));
+            Ok(Err(e)) => {
+                if let Ok(mut ui) = self.ui_state.try_lock() {
+                    ui.show_error(format!("Failed to create file: {e}"));
+                }
+            }
+            Err(join_err) => {
+                if let Ok(mut ui) = self.ui_state.try_lock() {
+                    ui.show_error(format!(
+                        "Create task panicked/joined with error: {join_err}"
+                    ));
                 }
             }
         }
@@ -289,33 +335,43 @@ impl SharedState {
         Ok(())
     }
 
-    /// Create a directory with a specific name
+    // ─────────────────────────────────────────────────────────────────────────────
+    // Create a directory with a specific name
+    // ─────────────────────────────────────────────────────────────────────────────
+    #[instrument(skip(self), fields(operation_type = "fs_create_dir"))]
     pub async fn create_directory_with_name(
         &self,
         name: String,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let current_dir = {
-            let fs_guard = self.lock_fs();
-            fs_guard.active_pane().cwd.clone()
+        let cwd: PathBuf = {
+            let fs = self.lock_fs();
+            fs.active_pane().cwd.clone()
         };
 
-        let dir_path = current_dir.join(&name);
+        let dir_path = cwd.join(&name);
 
-        // Use spawn_blocking to avoid blocking the async runtime
-        let dir_path_clone = dir_path.clone();
-        let result =
-            tokio::task::spawn_blocking(move || std::fs::create_dir(&dir_path_clone)).await?;
+        let mkdir_res = task::spawn_blocking({
+            let dir_path = dir_path.clone();
+            move || std::fs::create_dir(&dir_path)
+        })
+        .in_current_span()
+        .await;
 
-        match result {
-            Ok(_) => {
-                if let Ok(mut ui_guard) = self.ui_state.try_lock() {
-                    ui_guard.show_info(format!("Created directory: {}", name));
+        match mkdir_res {
+            Ok(Ok(_)) => {
+                if let Ok(mut ui) = self.ui_state.try_lock() {
+                    ui.show_info(format!("Created directory: {name}"));
                 }
                 self.reload_directory().await?;
             }
-            Err(e) => {
-                if let Ok(mut ui_guard) = self.ui_state.try_lock() {
-                    ui_guard.show_error(format!("Failed to create directory: {}", e));
+            Ok(Err(e)) => {
+                if let Ok(mut ui) = self.ui_state.try_lock() {
+                    ui.show_error(format!("Failed to create directory: {e}"));
+                }
+            }
+            Err(join_err) => {
+                if let Ok(mut ui) = self.ui_state.try_lock() {
+                    ui.show_error(format!("Create dir task error: {join_err}"));
                 }
             }
         }
@@ -323,51 +379,67 @@ impl SharedState {
         Ok(())
     }
 
-    /// Delete the currently selected entry
+    // ─────────────────────────────────────────────────────────────────────────────
+    // Delete the currently selected entry
+    // ─────────────────────────────────────────────────────────────────────────────
+    #[instrument(skip(self), fields(operation_type = "fs_delete"))]
     pub async fn delete_entry(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let selected_entry = {
-            let ui_guard = self.lock_ui();
-            let fs_guard = self.lock_fs();
-            let active_pane = fs_guard.active_pane();
-
-            if let Some(selected_idx) = ui_guard.selected {
-                active_pane.entries.get(selected_idx).cloned()
-            } else {
-                return Ok(());
-            }
+        // Snapshot selection without holding multiple locks
+        let selected_idx: Option<usize> = {
+            let ui = self.lock_ui();
+            ui.selected
         };
 
-        if let Some(entry) = selected_entry
-            && let Some(obj_info) = self.metadata.get_by_id(entry.id)
-        {
-            let path = obj_info.path.as_ref();
+        let id: Option<u64> = if let Some(idx) = selected_idx {
+            let fs = self.lock_fs();
+            fs.active_pane().entries.get(idx).map(|e| e.id)
+        } else {
+            None
+        };
 
-            // Use spawn_blocking to avoid blocking the async runtime
-            let path_clone = path.to_path_buf();
-            let is_dir = obj_info.is_dir;
-            let result = tokio::task::spawn_blocking(move || {
+        let Some(id) = id else {
+            return Ok(());
+        };
+
+        // Lock-free metadata lookup → own the PathBuf so blocking task owns it
+        let (path, is_dir) = match self.metadata.get_by_id(id) {
+            Some(info) => (PathBuf::from(info.path.as_ref()), info.is_dir),
+            None => return Ok(()),
+        };
+
+        // Do removal off runtime
+        let del_res = task::spawn_blocking({
+            let path = path.clone();
+            move || {
                 if is_dir {
-                    std::fs::remove_dir_all(&path_clone)
+                    std::fs::remove_dir_all(&path)
                 } else {
-                    std::fs::remove_file(&path_clone)
+                    std::fs::remove_file(&path)
                 }
-            })
-            .await?;
+            }
+        })
+        .in_current_span()
+        .await;
 
-            match result {
-                Ok(_) => {
-                    if let Ok(mut ui_guard) = self.ui_state.try_lock() {
-                        ui_guard.show_info(format!(
-                            "Deleted: {}",
-                            path.file_name().unwrap_or_default().to_string_lossy()
-                        ));
-                    }
-                    self.reload_directory().await?;
+        match del_res {
+            Ok(Ok(())) => {
+                // Invalidate metadata entry if present
+                self.metadata.invalidate(&path);
+
+                if let Ok(mut ui) = self.ui_state.try_lock() {
+                    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("item");
+                    ui.show_info(format!("Deleted: {name}"));
                 }
-                Err(e) => {
-                    if let Ok(mut ui_guard) = self.ui_state.try_lock() {
-                        ui_guard.show_error(format!("Failed to delete: {}", e));
-                    }
+                self.reload_directory().await?;
+            }
+            Ok(Err(e)) => {
+                if let Ok(mut ui) = self.ui_state.try_lock() {
+                    ui.show_error(format!("Failed to delete {}: {e}", path.display()));
+                }
+            }
+            Err(join_err) => {
+                if let Ok(mut ui) = self.ui_state.try_lock() {
+                    ui.show_error(format!("Delete task error: {join_err}"));
                 }
             }
         }
@@ -375,51 +447,68 @@ impl SharedState {
         Ok(())
     }
 
-    /// Rename the currently selected entry
+    // ─────────────────────────────────────────────────────────────────────────────
+    // Rename the currently selected entry
+    // ─────────────────────────────────────────────────────────────────────────────
+    #[instrument(skip(self), fields(operation_type = "fs_rename"))]
     pub async fn rename_selected_entry(
         &self,
         new_name: String,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let selected_entry = {
-            let ui_guard = self.lock_ui();
-            let fs_guard = self.lock_fs();
-            let active_pane = fs_guard.active_pane();
+        // Snapshot selected index without holding FS+UI together
+        let selected_idx: Option<usize> = {
+            let ui = self.lock_ui();
+            ui.selected
+        };
 
-            if let Some(selected_idx) = ui_guard.selected {
-                active_pane.entries.get(selected_idx).cloned()
+        // Snapshot parent dir and entry id under FS lock
+        let (id, parent_dir): (u64, PathBuf) = if let Some(idx) = selected_idx {
+            let fs = self.lock_fs();
+            let pane = fs.active_pane();
+            if let Some(entry) = pane.entries.get(idx) {
+                (entry.id, pane.cwd.clone())
             } else {
                 return Ok(());
             }
+        } else {
+            return Ok(());
         };
 
-        if let Some(entry) = selected_entry
-            && let Some(obj_info) = self.metadata.get_by_id(entry.id)
-        {
-            let old_path = obj_info.path.as_ref();
-            let new_path = old_path
-                .parent()
-                .unwrap_or_else(|| std::path::Path::new("."))
-                .join(&new_name);
+        let Some(obj) = self.metadata.get_by_id(id) else {
+            return Ok(());
+        };
+        let old_path = PathBuf::from(obj.path.as_ref());
+        let new_path = old_path
+            .parent()
+            .unwrap_or(parent_dir.as_path())
+            .join(&new_name);
 
-            // Use spawn_blocking to avoid blocking the async runtime
-            let old_path_clone = old_path.to_path_buf();
-            let new_path_clone = new_path.clone();
-            let result = tokio::task::spawn_blocking(move || {
-                std::fs::rename(&old_path_clone, &new_path_clone)
-            })
-            .await?;
+        let ren_res = task::spawn_blocking({
+            let old_path = old_path.clone();
+            let new_path = new_path.clone();
+            move || std::fs::rename(&old_path, &new_path)
+        })
+        .in_current_span()
+        .await;
 
-            match result {
-                Ok(_) => {
-                    if let Ok(mut ui_guard) = self.ui_state.try_lock() {
-                        ui_guard.show_info(format!("Renamed to: {}", new_name));
-                    }
-                    self.reload_directory().await?;
+        match ren_res {
+            Ok(Ok(())) => {
+                // Invalidate old path to prevent stale metadata
+                self.metadata.invalidate(&old_path);
+
+                if let Ok(mut ui) = self.ui_state.try_lock() {
+                    ui.show_info(format!("Renamed to: {new_name}"));
                 }
-                Err(e) => {
-                    if let Ok(mut ui_guard) = self.ui_state.try_lock() {
-                        ui_guard.show_error(format!("Failed to rename: {}", e));
-                    }
+                self.reload_directory().await?;
+            }
+            Ok(Err(e)) => {
+                if let Ok(mut ui) = self.ui_state.try_lock() {
+                    ui.show_error(format!("Failed to rename: {e}"));
+                }
+            }
+            Err(join_err) => {
+                if let Ok(mut ui) = self.ui_state.try_lock() {
+                    ui.show_error(format!("Rename task error: {join_err}"));
                 }
             }
         }
@@ -447,7 +536,7 @@ impl SharedState {
         {
             let mut ui_guard = self.lock_ui();
             ui_guard.selected = Some(0);
-            ui_guard.mark_dirty(crate::model::ui_state::Component::All);
+            ui_guard.mark_dirty(Component::All);
         }
 
         // Perform directory scanning and populate entries
@@ -504,80 +593,145 @@ impl SharedState {
     }
 
     /// Scan directory and update entries using the metadata manager
+    ///
+    /// - Bounded concurrency (CONCURRENCY)
+    /// - Precomputed sort keys (no registry lookups in comparator)
+    /// - No locks held across `.await`
+    /// - Tracing with ENTER/EXIT + entry_count
+    #[instrument(
+        skip(self),
+        fields(
+            operation_type = "directory_scan",
+            path = %path.display(),
+            entry_count = field::Empty
+        )
+    )]
     pub async fn scan_directory_and_update_entries(
         &self,
-        path: &std::path::Path,
+        path: &Path,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let mut entries: Vec<crate::model::object_registry::SortableEntry> = Vec::new();
+        const CONCURRENCY: usize = 16;
 
-        // Read directory entries using tokio::fs for async operation
-        let mut read_dir = tokio::fs::read_dir(path).await?;
+        // Read show_hidden flag once
+        let show_hidden: bool = { self.lock_ui().show_hidden };
 
-        while let Some(entry) = read_dir.next_entry().await? {
-            let entry_path = entry.path();
+        // Snapshot previous ids before clearing entries
+        let prev_ids: std::collections::HashSet<u64> = {
+            let fs = self.lock_fs();
+            fs.active_pane().entries.iter().map(|e| e.id).collect()
+        };
 
-            // Skip hidden files for now (could be configurable later)
-            if let Some(file_name) = entry_path.file_name()
-                && file_name.to_string_lossy().starts_with('.')
+        // --- Phase 0: flip UI/FS into "loading" without holding locks across .await ---
+        {
+            let mut fs = self.lock_fs();
+            let pane = fs.active_pane_mut();
+            pane.is_loading = true;
+            pane.entries.clear();
+            // Avoid confusing keyboard nav while loading
+            pane.selected = None;
+        }
+        {
+            let mut ui = self.lock_ui();
+            ui.mark_dirty(Component::All);
+        }
+
+        // --- Phase 1: collect candidate paths (async, sequential read_dir) ---
+        let mut rd = tokio::fs::read_dir(path).await?;
+        let mut paths: Vec<PathBuf> = Vec::with_capacity(256);
+
+        while let Some(entry) = rd.next_entry().await? {
+            let p = entry.path();
+
+            // Skip hidden files unless show_hidden is enabled
+            if !show_hidden
+                && let Some(name) = p.file_name()
+                && name.to_string_lossy().starts_with('.')
             {
                 continue;
             }
 
-            // Create ObjectInfo from path and insert into metadata manager
-            match crate::fs::object_info::ObjectInfo::from_path_async(&entry_path).await {
-                Ok(object_info) => {
-                    // Insert into metadata manager and get SortableEntry
-                    let (_object_id, sortable_entry) = self.metadata.insert(object_info);
-                    entries.push(sortable_entry);
-                }
-                Err(e) => {
-                    // Log error but continue with other entries
-                    tracing::debug!(
-                        "Failed to create ObjectInfo for {}: {}",
-                        entry_path.display(),
-                        e
-                    );
-                }
-            }
+            paths.push(p);
         }
 
-        // Sort entries: directories first, then alphabetically
-        entries.sort_by(|a, b| {
-            let a_info = self.metadata.get_by_id(a.id);
-            let b_info = self.metadata.get_by_id(b.id);
+        // --- Phase 2: build ObjectInfo concurrently, insert into registry, capture sort keys ---
+        #[derive(Debug)]
+        struct KeyedEntry {
+            entry: SortableEntry,
+            is_dir: bool,
+            name_key: CompactString,
+        }
 
-            match (a_info, b_info) {
-                (Some(a_obj), Some(b_obj)) => {
-                    if a_obj.is_dir && !b_obj.is_dir {
-                        std::cmp::Ordering::Less
-                    } else if !a_obj.is_dir && b_obj.is_dir {
-                        std::cmp::Ordering::Greater
-                    } else {
-                        a_obj.name.cmp(&b_obj.name)
+        let metadata: Arc<MetadataManager> = self.metadata.clone();
+        let keyed: Vec<KeyedEntry> = stream::iter(paths.into_iter())
+            .map(|p: PathBuf| {
+                let metadata: Arc<MetadataManager> = metadata.clone();
+                async move {
+                    match ObjectInfo::from_path_async(&p).await {
+                        Ok(info) => {
+                            let is_dir = info.is_dir;
+                            let name_key = info.name.to_ascii_lowercase();
+                            let (_id, sortable) = metadata.insert(info);
+                            Ok::<KeyedEntry, ()>(KeyedEntry {
+                                entry: sortable,
+                                is_dir,
+                                name_key,
+                            })
+                        }
+                        Err(e) => {
+                            tracing::debug!("Failed to create ObjectInfo for {}: {e}", p.display());
+                            Err(())
+                        }
                     }
                 }
-                (Some(_), None) => std::cmp::Ordering::Less,
-                (None, Some(_)) => std::cmp::Ordering::Greater,
-                (None, None) => std::cmp::Ordering::Equal,
-            }
+            })
+            .buffer_unordered(CONCURRENCY)
+            .filter_map(|res| async move { res.ok() })
+            .collect()
+            .await;
+
+        // --- Phase 3: sort ---
+        let mut keyed: Vec<KeyedEntry> = keyed;
+        keyed.sort_by(|a, b| match (a.is_dir, b.is_dir) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => a.name_key.cmp(&b.name_key),
         });
 
-        // Update FS state with the new entries
+        let entries: Vec<SortableEntry> = keyed.into_iter().map(|k| k.entry).collect();
+
+        // Record final count on the span for tracing/analytics
+        Span::current().record("entry_count", entries.len() as i64);
+
+        // Compute new id set for pruning before publishing
+        let new_ids: std::collections::HashSet<u64> = entries.iter().map(|e| e.id).collect();
+        let dir_id = self.metadata.dir_id_for_path(path);
+
+        // --- Phase 4: publish results back to FS/UI ---
         {
-            let mut fs_guard = self.lock_fs();
-            let active_pane = fs_guard.active_pane_mut();
-            active_pane.set_entries(entries);
-            active_pane.is_loading = false;
+            let mut fs: std::sync::MutexGuard<'_, FSState> = self.lock_fs();
+            let pane: &mut PaneState = fs.active_pane_mut();
+            pane.set_entries(entries);
+            pane.is_loading = false;
+            if !pane.entries.is_empty() {
+                pane.selected = Some(0);
+            }
+        }
+        {
+            let mut ui = self.lock_ui();
+            ui.mark_dirty(Component::All);
         }
 
-        // Mark UI as dirty to trigger re-render
+        // Update dir index and prune stale entries (best-effort, after UI publish)
         {
-            let mut ui_guard = self.lock_ui();
-            ui_guard.mark_dirty(crate::model::ui_state::Component::All);
+            self.metadata.update_dir_index(dir_id, &new_ids);
+            let stale: std::collections::HashSet<u64> =
+                prev_ids.difference(&new_ids).copied().collect();
+            if !stale.is_empty() {
+                self.metadata.prune_stale_entries(&stale, dir_id);
+            }
         }
 
         tracing::info!("Directory scan completed for: {}", path.display());
-
         Ok(())
     }
 }

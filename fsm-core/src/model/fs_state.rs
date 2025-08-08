@@ -208,11 +208,13 @@ impl PaneState {
         if let Some(selected) = self.selected {
             if selected < self.scroll_offset {
                 self.scroll_offset = selected;
-            } else if selected >= (self.scroll_offset + self.viewport_height)
-                && self.viewport_height > 0
+            } else if self.viewport_height > 0
+                && selected >= (self.scroll_offset + self.viewport_height)
             {
-                // Guard against underflow when viewport_height is small
-                self.scroll_offset = selected.saturating_add(self.viewport_height - 1);
+                // Bring the selected item into view at the bottom
+                self.scroll_offset = selected
+                    .saturating_add(1)
+                    .saturating_sub(self.viewport_height);
             }
         }
     }
@@ -321,29 +323,27 @@ impl PaneState {
     pub fn sort_entries(&mut self) {
         match self.sort {
             EntrySort::NameAsc => {
-                self.entries
-                    .sort_by(|a: &SortableEntry, b: &SortableEntry| -> Ordering {
-                        if a.is_dir && !b.is_dir {
-                            Ordering::Less
-                        } else if !a.is_dir && b.is_dir {
-                            Ordering::Greater
-                        } else {
-                            a.sort_name_hash.cmp(&b.sort_name_hash)
-                        }
-                    });
+                self.entries.sort_by(|a, b| {
+                    if a.is_dir && !b.is_dir {
+                        Ordering::Less
+                    } else if !a.is_dir && b.is_dir {
+                        Ordering::Greater
+                    } else {
+                        a.name_key.cmp(&b.name_key)
+                    }
+                });
             }
 
             EntrySort::NameDesc => {
-                self.entries
-                    .sort_by(|a: &SortableEntry, b: &SortableEntry| -> Ordering {
-                        if a.is_dir && !b.is_dir {
-                            Ordering::Less
-                        } else if !a.is_dir && b.is_dir {
-                            Ordering::Greater
-                        } else {
-                            b.sort_name_hash.cmp(&a.sort_name_hash)
-                        }
-                    });
+                self.entries.sort_by(|a, b| {
+                    if a.is_dir && !b.is_dir {
+                        Ordering::Less
+                    } else if !a.is_dir && b.is_dir {
+                        Ordering::Greater
+                    } else {
+                        b.name_key.cmp(&a.name_key)
+                    }
+                });
             }
 
             EntrySort::SizeAsc => {
@@ -459,11 +459,10 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    #[expect(clippy::cast_possible_truncation, reason = "Expected")]
     fn dummy_entry(id: u64) -> SortableEntry {
         SortableEntry {
             id,
-            sort_name_hash: id as u32,
+            name_key: compact_str::CompactString::new(format!("{id}")),
             size: 0,
             modified: 0,
             is_dir: false,

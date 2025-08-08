@@ -287,7 +287,48 @@ impl ObjectInfo {
     pub async fn from_path_async(path: &Path) -> Result<Self, CoreError> {
         let meta: Metadata = tokio_fs::symlink_metadata(path).await?;
 
-        Self::from_meta(path, &meta)
+        let ftype: FileType = meta.file_type();
+        let is_dir: bool = ftype.is_dir();
+        let is_link: bool = ftype.is_symlink();
+
+        let name: CompactString =
+            CompactString::new(path.file_name().and_then(OsStr::to_str).unwrap_or(""));
+
+        let ext: Option<CompactString> = if ftype.is_file() {
+            path.extension()
+                .and_then(OsStr::to_str)
+                .map(|s: &str| -> CompactString { CompactString::new(s.to_lowercase()) })
+        } else {
+            None
+        };
+
+        let size: u64 = if is_dir { 0 } else { meta.len() };
+
+        // Async directory entry counting
+        let items: u64 = if is_dir {
+            let mut rd = tokio_fs::read_dir(path).await?;
+            let mut count: u64 = 0;
+            while let Some(_entry) = rd.next_entry().await? {
+                count = count.saturating_add(1);
+            }
+            count
+        } else {
+            0
+        };
+
+        let mod_time: SystemTime = meta.modified().unwrap_or(UNIX_EPOCH);
+
+        Ok(Self {
+            path: Arc::new(path.to_path_buf()),
+            modified: mod_time,
+            name,
+            extension: ext,
+            size,
+            items_count: items,
+            is_dir,
+            is_symlink: is_link,
+            metadata_loaded: true,
+        })
     }
 
     // Internal builder shared by both entry points.
@@ -315,7 +356,7 @@ impl ObjectInfo {
 
         // Load directory item count immediately for UI display
         let items: u64 = if is_dir {
-            fs::read_dir(&path).map_or(0, |read_dir| read_dir.count() as u64)
+            fs::read_dir(path).map_or(0, |read_dir| read_dir.count() as u64)
         } else {
             0
         };
@@ -346,7 +387,33 @@ impl ObjectInfo {
     async fn from_light_async(light: LightObjectInfo) -> Result<Self, CoreError> {
         let meta: Metadata = tokio_fs::symlink_metadata(&*light.path).await?;
 
-        Self::from_light_common(light, &meta)
+        let size: u64 = if light.is_dir { 0 } else { meta.len() };
+
+        // Count directory items using async read_dir (non-blocking)
+        let items: u64 = if light.is_dir {
+            let mut rd = tokio_fs::read_dir(&*light.path).await?;
+            let mut count: u64 = 0;
+            while let Some(_entry) = rd.next_entry().await? {
+                count = count.saturating_add(1);
+            }
+            count
+        } else {
+            0
+        };
+
+        let mod_time: SystemTime = meta.modified().unwrap_or(UNIX_EPOCH);
+
+        Ok(Self {
+            path: light.path,
+            modified: mod_time,
+            name: light.name,
+            extension: light.extension,
+            size,
+            items_count: items,
+            is_dir: light.is_dir,
+            is_symlink: light.is_symlink,
+            metadata_loaded: true,
+        })
     }
 
     // Shared helper for sync/async promotions.

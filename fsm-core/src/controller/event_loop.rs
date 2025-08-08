@@ -11,6 +11,7 @@
 //! - Performance monitoring and resource management
 //! - Extensive logging and debugging support
 
+use crate::controller::actions::{Action, InputPromptType};
 use crate::fs::dir_scanner::ScanUpdate;
 use crate::model::app_state::AppState;
 use crate::model::command_palette::CommandAction;
@@ -22,10 +23,6 @@ use crate::model::ui_state::{
 };
 use crate::tasks::file_ops_task::{FileOperation, FileOperationTask};
 use crate::tasks::search_task::RawSearchResult;
-use crate::{
-    controller::actions::{Action, InputPromptType},
-    logging::ProfilingData,
-};
 use crossterm::event::{Event as TermEvent, EventStream, KeyCode, KeyModifiers};
 use futures::StreamExt;
 use std::path::PathBuf;
@@ -33,7 +30,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::process::Command;
 use tokio::sync::mpsc;
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc::Sender;
 use tokio_util::sync::CancellationToken;
 use tracing::{Span, debug, info, span::Entered, trace, warn};
 
@@ -92,9 +89,9 @@ pub enum TaskResult {
 /// Enhanced event loop with performance monitoring and advanced features
 pub struct EventLoop {
     pub app: Arc<SharedState>,
-    task_rx: mpsc::UnboundedReceiver<TaskResult>,
+    task_rx: mpsc::Receiver<TaskResult>,
     event_stream: EventStream,
-    action_rx: mpsc::UnboundedReceiver<Action>,
+    action_rx: mpsc::Receiver<Action>,
     // Performance monitoring
     event_count: u64,
     last_performance_check: Instant,
@@ -105,8 +102,8 @@ impl EventLoop {
     /// Create new enhanced event loop with performance monitoring
     pub fn new(
         app: Arc<SharedState>,
-        task_rx: mpsc::UnboundedReceiver<TaskResult>,
-        action_rx: mpsc::UnboundedReceiver<Action>,
+        task_rx: mpsc::Receiver<TaskResult>,
+        action_rx: mpsc::Receiver<Action>,
     ) -> Self {
         info!("Initializing enhanced event loop controller with performance monitoring");
         Self {
@@ -151,9 +148,7 @@ impl EventLoop {
 
         // Log performance warnings with profiling data
         if time_ms > 16.0 {
-            // 60fps threshold - collect profiling data for slow events
-            let profiling_data: ProfilingData =
-                ProfilingData::collect_profiling_data(None, processing_time);
+            // Event profiling removed - lean logging approach
 
             // Check channel queue lengths for diagnostic info
             let task_queue_len: usize = self.task_rx.len();
@@ -162,7 +157,6 @@ impl EventLoop {
             info!(
                 marker = "PERF_SLOW_EVENT",
                 operation_type = "event_processing",
-                duration_ns = profiling_data.operation_duration_ns.unwrap_or(0),
                 task_queue_len = task_queue_len,
                 action_queue_len = action_queue_len,
                 "Slow event processing: {:.2}ms (avg: {:.2}ms) [task_q:{}, action_q:{}]",
@@ -1160,6 +1154,17 @@ impl EventLoop {
                 let mut ui_guard = self.app.lock_ui();
                 ui_guard.toggle_show_hidden();
                 ui_guard.mark_dirty(Component::All);
+                drop(ui_guard);
+
+                // Rescan current directory to reflect hidden toggle
+                let current_dir = {
+                    let fs = self.app.lock_fs();
+                    fs.active_pane().cwd.clone()
+                };
+                let app = self.app.clone();
+                tokio::spawn(async move {
+                    let _ = app.scan_directory_and_update_entries(&current_dir).await;
+                });
             }
             Action::SimulateLoading => {
                 debug!("Simulating loading state");
@@ -1267,22 +1272,26 @@ impl EventLoop {
 
     async fn dispatch_command_action(&self, action: Action) {
         match action {
-            Action::CreateFile => {
-                info!("Creating new file (command-driven)");
-                if let Err(e) = self.app.create_file().await {
-                    warn!("Failed to create file: {}", e);
-                    let mut ui_guard = self.app.lock_ui();
-                    ui_guard.show_error(format!("Failed to create file: {}", e));
-                }
-            }
-            Action::CreateDirectory => {
-                info!("Creating new directory (command-driven)");
-                if let Err(e) = self.app.create_directory().await {
-                    warn!("Failed to create directory: {}", e);
-                    let mut ui_guard = self.app.lock_ui();
-                    ui_guard.show_error(format!("Failed to create directory: {}", e));
-                }
-            }
+            // Action::CreateFile => {
+            //     info!("Creating new file (command-driven)");
+            //     if let Err(e) = self
+            //         .app
+            //         .create_file_with_name("placeholder.txt".to_owned())
+            //         .await
+            //     {
+            //         warn!("Failed to create file: {}", e);
+            //         let mut ui_guard = self.app.lock_ui();
+            //         ui_guard.show_error(format!("Failed to create file: {}", e));
+            //     }
+            // }
+            // Action::CreateDirectory => {
+            //     info!("Creating new directory (command-driven)");
+            //     if let Err(e) = self.app.create_directory_("placeholder".to_owned()).await {
+            //         warn!("Failed to create directory: {}", e);
+            //         let mut ui_guard = self.app.lock_ui();
+            //         ui_guard.show_error(format!("Failed to create directory: {}", e));
+            //     }
+            // }
             Action::CreateFileWithName(name) => {
                 info!("Creating new file '{}' (command-driven)", name);
                 if let Err(e) = self.app.create_file_with_name(name).await {
@@ -2119,6 +2128,6 @@ impl EventLoop {
 
 // Helper struct to group task dependencies
 struct TaskDependencies {
-    task_tx: UnboundedSender<TaskResult>,
+    task_tx: Sender<TaskResult>,
     app_handle: Arc<tokio::sync::Mutex<AppState>>,
 }

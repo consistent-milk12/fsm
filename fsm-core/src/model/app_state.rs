@@ -59,8 +59,8 @@ pub struct AppState {
     pub metadata: Arc<MetadataManager>,
 
     // --- Communication Channels ---
-    pub task_tx: mpsc::UnboundedSender<TaskResult>,
-    pub action_tx: mpsc::UnboundedSender<Action>,
+    pub task_tx: mpsc::Sender<TaskResult>,
+    pub action_tx: mpsc::Sender<Action>,
 
     // --- Business Logic State ---
     /// Marked files/directories by path for batch operations
@@ -87,8 +87,8 @@ impl AppState {
     pub fn new(
         config: Arc<Config>,
         metadata: Arc<MetadataManager>,
-        task_tx: mpsc::UnboundedSender<TaskResult>,
-        action_tx: mpsc::UnboundedSender<Action>,
+        task_tx: mpsc::Sender<TaskResult>,
+        action_tx: mpsc::Sender<Action>,
     ) -> Self {
         Self {
             // Core Configuration and Services

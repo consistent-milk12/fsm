@@ -3,6 +3,7 @@
 //!
 use crate::fs::object_info::ObjectInfo;
 use ahash::{AHasher, RandomState};
+use compact_str::CompactString;
 use dashmap::{DashMap, mapref::one::Ref};
 use std::{
     hash::{Hash, Hasher},
@@ -14,12 +15,9 @@ pub type ObjectId = u64;
 
 ///
 /// Lightweight sortable entry with pre-computed sort keys
-/// 74% memory reduction vs `ObjectInfo`, zero registry lookups
-/// during sort
+/// Deterministic, lexicographic sorting via lowercase name key
 ///
-/// Total: 29 bytes (74% reduction from 112 bytes)
-///
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct SortableEntry {
     /// 8 bytes - registry lookup key
     pub id: ObjectId,
@@ -30,12 +28,11 @@ pub struct SortableEntry {
     /// 8 bytes - `SystemTime` as millis
     pub modified: u64,
 
-    /// 4 bytes - fast name comparison
-    pub sort_name_hash: u32,
+    /// Lowercase comparable name for deterministic sort
+    pub name_key: CompactString,
 
     /// 1 byte - directories first
     pub is_dir: bool,
-    // 3 bytes padding (optimized from 7 bytes)
 }
 
 impl SortableEntry {
@@ -46,18 +43,17 @@ impl SortableEntry {
     )]
     #[must_use]
     pub fn from_object_info(info: &ObjectInfo, id: ObjectId) -> Self {
-        let mut hasher: AHasher = AHasher::default();
-        info.name.hash(&mut hasher);
-
         let timestamp: u64 = info
             .modified
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as u64;
 
+        let name_key: CompactString = CompactString::new(info.name.to_ascii_lowercase());
+
         Self {
             id,
-            sort_name_hash: hasher.finish() as u32,
+            name_key,
             size: info.size,
             modified: timestamp,
             is_dir: info.is_dir,
@@ -111,7 +107,7 @@ impl ObjectRegistry {
         id
     }
 
-    /// Extensding insert for sorting support
+    /// Extended insert for sorting support
     #[must_use]
     pub fn insert_with_sortable(&self, info: ObjectInfo) -> (ObjectId, SortableEntry) {
         let id: u64 = Self::generate_id(&info.path);

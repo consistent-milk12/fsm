@@ -5,8 +5,8 @@
 //! Handles copy, move, and rename operations asynchronously to prevent UI
 //! blocking during large file operations.
 
+use crate::error::AppError;
 use crate::{AppState, controller::event_loop::TaskResult};
-use crate::{config::Config, error::AppError, logging::ProfilingData};
 use std::{
     fs::Metadata,
     io::{Error, ErrorKind},
@@ -19,7 +19,7 @@ use tokio::{
     fs::ReadDir,
     sync::{
         Mutex,
-        mpsc::{self, error::SendError},
+        mpsc::{self},
     },
 };
 use tokio_util::sync::CancellationToken;
@@ -76,7 +76,7 @@ impl BufferPool {
 pub struct FileOperationTask {
     pub operation_id: String,
     pub operation: FileOperation,
-    pub task_tx: mpsc::UnboundedSender<TaskResult>,
+    pub task_tx: mpsc::Sender<TaskResult>,
     pub cancel_token: CancellationToken,
     pub app: Arc<Mutex<AppState>>,
 }
@@ -126,7 +126,7 @@ impl FileOperationTask {
     /// Create new file operation task with unique ID
     pub fn new(
         operation: FileOperation,
-        task_tx: mpsc::UnboundedSender<TaskResult>,
+        task_tx: mpsc::Sender<TaskResult>,
         cancel_token: CancellationToken,
         app: Arc<Mutex<AppState>>,
     ) -> Self {
@@ -144,7 +144,7 @@ impl FileOperationTask {
         use FileOperation::{Copy, Move, Rename};
 
         let start_time = Instant::now();
-        let start_memory_kb = ProfilingData::get_current_memory_kb();
+        // Memory profiling removed - lean logging approach
 
         // Check for cancellation before starting
         if self.cancel_token.is_cancelled() {
@@ -211,14 +211,8 @@ impl FileOperationTask {
             }
         };
 
-        // Calculate final profiling data using new API
-        let duration: Duration = start_time.elapsed();
-        let config: Config = Config::load().await.unwrap_or_default();
-        let _profiling_data: ProfilingData = ProfilingData::collect_profiling_data_conditional(
-            start_memory_kb,
-            duration,
-            &config.profiling,
-        );
+        // File operation profiling removed - lean logging approach
+        let _duration: Duration = start_time.elapsed();
 
         // Send completion result regardless of success/failure
         let completion_result: TaskResult = TaskResult::FileOperationComplete {
@@ -226,7 +220,11 @@ impl FileOperationTask {
             result: result.clone(),
         };
 
-        let _send_result: Result<(), SendError<TaskResult>> = self.task_tx.send(completion_result);
+        // Send completion result with backpressure handling
+        if self.task_tx.try_send(completion_result).is_err() {
+            // Channel full - task queue at capacity, log warning but continue
+            tracing::warn!("Task completion channel full - result may be delayed");
+        }
 
         // Cleanup operation from UI state
         // Note: This is a compatibility wrapper since the task still uses Mutex<AppState>
@@ -322,11 +320,11 @@ impl FileOperationTask {
             throughput_bps: throughput,
         };
 
-        self.task_tx
-            .send(progress_result)
-            .map_err(|e: SendError<TaskResult>| {
-                Error::new(ErrorKind::BrokenPipe, format!("Async send error: {e}"))
-            })?;
+        // Send progress result with backpressure handling
+        if self.task_tx.try_send(progress_result).is_err() {
+            // Progress updates can be dropped if channel is full - not critical
+            // This prevents blocking the file operation when UI is busy
+        }
 
         Ok(())
     }
