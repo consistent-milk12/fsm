@@ -110,7 +110,7 @@ impl App {
         let ui_state: UIState = UIState::default();
 
         // Bounded channels with appropriate capacity for production use
-        const TASK_CHANNEL_CAPACITY: usize = 64;    // Task completion notifications  
+        const TASK_CHANNEL_CAPACITY: usize = 64; // Task completion notifications  
         const ACTION_CHANNEL_CAPACITY: usize = 128; // UI actions and updates
 
         let (task_tx, task_rx) = mpsc::channel::<TaskResult>(TASK_CHANNEL_CAPACITY);

@@ -43,7 +43,7 @@ pub struct DeprecatedSharedStateGuard<'a> {
 /// - metadata: Lock-free DashMap access via Arc (no mutex needed)
 ///
 /// ## 🔒 **MANDATORY GLOBAL LOCK ORDERING - DEADLOCK PREVENTION**
-/// 
+///
 /// **CRITICAL**: When acquiring multiple locks, ALWAYS follow this order:
 /// ```
 /// 1. FS_STATE  →  2. UI_STATE  →  3. APP_STATE
@@ -139,7 +139,7 @@ impl SharedState {
     }
 
     /// Lock FS state (for navigation operations)
-    /// 
+    ///
     /// ⚠️  **LOCK ORDER**: When acquiring multiple locks, acquire FS_STATE FIRST
     pub fn lock_fs(&self) -> std::sync::MutexGuard<'_, FSState> {
         self.fs_state.lock().unwrap()
