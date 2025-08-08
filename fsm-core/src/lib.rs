@@ -128,7 +128,7 @@ pub mod tasks {
 
 pub mod plugins;
 
-pub mod util;
+pub mod profiling;
 
 pub use error::AppError;
 

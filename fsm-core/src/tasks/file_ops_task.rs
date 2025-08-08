@@ -23,7 +23,6 @@ use tokio::{
     },
 };
 use tokio_util::sync::CancellationToken;
-use uuid::Uuid;
 
 use bytes::BytesMut;
 use std::sync::OnceLock;
@@ -131,7 +130,7 @@ impl FileOperationTask {
         app: Arc<Mutex<AppState>>,
     ) -> Self {
         Self {
-            operation_id: Uuid::new_v4().to_string(),
+            operation_id: nanoid::nanoid!(),
             operation,
             task_tx,
             cancel_token,

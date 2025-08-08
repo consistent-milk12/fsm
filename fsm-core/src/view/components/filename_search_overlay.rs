@@ -1,6 +1,7 @@
 //! High-performance filename search overlay — ratatui 0.29 + moka 0.12
 
 use crate::{fs::object_info::ObjectInfo, model::shared_state::SharedState, view::theme};
+use ahash::AHashSet;
 use moka::sync::Cache;
 use ratatui::{
     Frame,
@@ -8,10 +9,9 @@ use ratatui::{
     style::{Modifier, Style},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
 };
-use rustc_hash::{FxBuildHasher, FxHashSet};
+// use rustc_hash::{FxBuildHasher, FxHashSet};
 use std::{
     borrow::Cow,
-    collections::HashSet,
     path::{Path, PathBuf},
     rc::Rc,
     sync::Arc,
@@ -302,11 +302,16 @@ impl FileNameSearchOverlay {
     )]
     fn draw_results(&self, f: &mut Frame<'_>, shared_state: &SharedState, stat: Rect, lst: Rect) {
         let cache_start: Instant = Instant::now();
+
+        // Avoid holding the UI lock across cache.get_or to prevent self-deadlocks
+        let input_key: String = {
+            let ui = shared_state.lock_ui();
+            ui.input.clone()
+        };
+
         let ce: Arc<CacheEntry> = self
             .cache
-            .get_or(&shared_state.lock_ui().input, || -> CacheEntry {
-                Self::build(shared_state)
-            });
+            .get_or(&input_key, || -> CacheEntry { Self::build(shared_state) });
         let cache_time: Duration = cache_start.elapsed();
 
         trace!(
@@ -471,7 +476,7 @@ impl FileNameSearchOverlay {
             "Building cache entry for search"
         );
 
-        let mut seen: HashSet<PathBuf, FxBuildHasher> = FxHashSet::default();
+        let mut seen = AHashSet::default();
         let mut items: Vec<String> = Vec::new();
         let mut local_count: i32 = 0;
         let mut recursive_count: i32 = 0;
@@ -501,10 +506,33 @@ impl FileNameSearchOverlay {
             }
         }
 
-        // Process recursive search results
-        for entry in &shared_state.lock_ui().filename_search_results {
-            if let Some(obj_info) = shared_state.metadata.get_by_id(entry.id) {
-                process_entry(&obj_info, false);
+        // Process recursive search results from background filename search
+        {
+            // Collect all entries that need direct processing to avoid borrow checker issues
+            let mut direct_entries = Vec::new();
+            for entry in &shared_state.lock_ui().filename_search_results {
+                if let Some(obj_info) = shared_state.metadata.get_by_id(entry.id) {
+                    process_entry(&obj_info, false);
+                } else {
+                    // Fall back to processing SortableEntry directly (for background search results)
+                    if entry.name_key.to_lowercase().contains(&term) {
+                        direct_entries.push(entry.clone());
+                    }
+                }
+            }
+            
+            // Process direct entries after closure usage
+            for entry in direct_entries {
+                if seen.insert(PathBuf::from(&entry.name_key)) {
+                    let display_text = if entry.is_dir {
+                        format!("{}/", entry.name_key)
+                    } else {
+                        entry.name_key.to_string()
+                    };
+
+                    items.push(display_text);
+                    recursive_count += 1;
+                }
             }
         }
 

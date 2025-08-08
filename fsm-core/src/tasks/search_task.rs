@@ -11,7 +11,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use ansi_to_tui::IntoText;
 use compact_str::CompactString;
 use ratatui::text::Text;
 use tokio::{
@@ -281,10 +280,9 @@ pub fn search_task(
         while let Ok(Some(line)) = reader.next_line().await {
             if !line.trim().is_empty() {
                 output_lines.push(line.clone());
-                match line.as_bytes().to_vec().into_text() {
-                    Ok(parsed_text) => parsed_lines.push(parsed_text),
-                    Err(_) => parsed_lines.push(Text::raw(line)),
-                }
+                // Convert to ratatui Text without requiring ansi-to-tui; strip ANSI codes for clean display
+                let clean = RawSearchResult::strip_ansi_codes(&line);
+                parsed_lines.push(Text::raw(clean.to_string()));
             }
         }
 

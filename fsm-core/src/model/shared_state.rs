@@ -734,4 +734,82 @@ impl SharedState {
         tracing::info!("Directory scan completed for: {}", path.display());
         Ok(())
     }
+
+    /// Perform background filename search with task tracking
+    pub fn filename_search(&self, pattern: &str) -> Result<(), Box<dyn std::error::Error>> {
+        use crate::tasks::filename_search_task::FilenameSearchTask;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let trimmed_pattern = pattern.trim();
+        if trimmed_pattern.is_empty() {
+            return Ok(());
+        }
+
+        // Get current directory
+        let current_dir = self.lock_fs().active_pane().cwd.clone();
+        
+        // Generate task ID
+        let task_id = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+
+        // Clear previous results
+        {
+            let mut ui_guard = self.lock_ui();
+            ui_guard.filename_search_results.clear();
+        }
+
+        // Get channels from AppState and create unbounded versions for the search task
+        let (task_tx, action_tx) = {
+            let app_guard = self.lock_app();
+            let bounded_task_tx = app_guard.task_tx.clone();
+            let bounded_action_tx = app_guard.action_tx.clone();
+            drop(app_guard);
+            
+            // Create unbounded channels that forward to the bounded ones
+            let (unbounded_task_tx, mut task_rx) = tokio::sync::mpsc::unbounded_channel();
+            let (unbounded_action_tx, mut action_rx) = tokio::sync::mpsc::unbounded_channel();
+            
+            // Spawn forwarding tasks
+            tokio::spawn(async move {
+                while let Some(task_result) = task_rx.recv().await {
+                    if bounded_task_tx.send(task_result).await.is_err() {
+                        break;
+                    }
+                }
+            });
+            
+            tokio::spawn(async move {
+                while let Some(action) = action_rx.recv().await {
+                    if bounded_action_tx.send(action).await.is_err() {
+                        break;
+                    }
+                }
+            });
+            
+            (unbounded_task_tx, unbounded_action_tx)
+        };
+
+        // Create temporary cache and registry instances for the search task
+        // TODO: Update filename search task to use MetadataManager directly
+        let cache = Arc::new(crate::cache::cache_manager::ObjectInfoCache::with_config(
+            self.config.cache.clone()
+        ));
+        let registry = Arc::new(crate::model::object_registry::ObjectRegistry::new());
+
+        // Spawn background search task
+        FilenameSearchTask::filename_search_task(
+            task_id,
+            trimmed_pattern.to_string(),
+            current_dir,
+            task_tx,
+            action_tx,
+            cache,
+            registry,
+        );
+
+        tracing::info!("Started filename search for pattern: '{}' (task_id: {})", trimmed_pattern, task_id);
+        Ok(())
+    }
 }

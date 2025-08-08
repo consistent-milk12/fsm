@@ -32,12 +32,11 @@ anyhow = { workspace = true }
 
 # Utilities and system info
 nanoid = { workspace = true }
-uuid = { workspace = true }
 
 bytesize = { workspace = true }
 sysinfo = { workspace = true }
 directories = { workspace = true }
-walkdir = { workspace = true }
+
 
 # Logging and tracing
 tracing = { workspace = true }
@@ -50,29 +49,15 @@ humantime-serde = { workspace = true }
 
 # Performance and data structures
 moka = { workspace = true }
-dashmap = { workspace = true, features = ["inline", "serde", "typesize"] }
+dashmap = { workspace = true }
 compact_str = { workspace = true }
 smallvec = { workspace = true }
 once_cell = { workspace = true }
 itoa = { workspace = true }
-regex = { workspace = true }
-hashbrown = { workspace = true }
-slab = { workspace = true }
-lru = { workspace = true }
-rustc-hash = { workspace = true }
 enum-map = { workspace = true }
 
 # Additional utilities
-ansi-to-tui = { workspace = true }
 strip-ansi-escapes = { workspace = true }
-tempfile = { workspace = true }
-criterion = { workspace = true, features = [
-    "async",
-    "async_futures",
-    "async_tokio",
-    "html_reports",
-    "csv_output",
-] }
 
 # Memory
 memchr = { workspace = true }
@@ -82,7 +67,13 @@ simd-json = { workspace = true, features = ["serde"] }
 
 # Parallel Processing
 rayon = { workspace = true }
-sys-info.workspace = true
+
+# Profiling dependencies (optional)
+csv = { version = "1.3", optional = true }
+
+[features]
+default = []
+profiling = ["csv"]
 
 [[bin]]
 name = "fsm"

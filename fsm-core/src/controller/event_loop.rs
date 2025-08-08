@@ -1354,10 +1354,15 @@ impl EventLoop {
         match action {
             Action::FileNameSearch(pattern) => {
                 info!("Starting filename search for pattern: '{}'", pattern);
-                let mut ui_guard = self.app.lock_ui();
-                // Call a method on SharedState or directly update UI state as needed
-                ui_guard.set_last_query(Some(pattern));
-                ui_guard.mark_dirty(Component::All);
+                if let Err(e) = self.app.filename_search(&pattern) {
+                    warn!("Failed to start filename search: {}", e);
+                    let mut ui_guard = self.app.lock_ui();
+                    ui_guard.show_error(format!("Failed to start filename search: {}", e));
+                } else {
+                    let mut ui_guard = self.app.lock_ui();
+                    ui_guard.set_last_query(Some(pattern));
+                    ui_guard.mark_dirty(Component::All);
+                }
             }
             Action::ContentSearch(pattern) => {
                 info!("Starting content search for pattern: '{}'", pattern);

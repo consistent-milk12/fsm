@@ -82,12 +82,21 @@ struct App {
     shutdown: Arc<Notify>,
     last_memory_check: Instant,
     _tracer_guard: WorkerGuard,
+    #[cfg(feature = "profiling")]
+    _profiling_guard: fsm_core::profiling::ProfileGuard,
 }
 
 impl App {
     /// Initialize the application with all necessary components
     async fn new() -> Result<Self> {
         let tracer_guard: WorkerGuard = init_logging_with_level("TRACE").await?;
+
+        // Initialize profiling system
+        #[cfg(feature = "profiling")]
+        let profiling_guard = fsm_core::profiling::init_profiling();
+        
+        #[cfg(feature = "profiling")]
+        tracing::info!("Profiling system initialized - collecting Arc architecture metrics");
 
         Tracer::info!("Starting File Manager TUI");
 
@@ -165,6 +174,8 @@ impl App {
             shutdown,
             last_memory_check: Instant::now(),
             _tracer_guard: tracer_guard,
+            #[cfg(feature = "profiling")]
+            _profiling_guard: profiling_guard,
         })
     }
 
@@ -326,40 +337,42 @@ impl App {
         if now.duration_since(self.last_memory_check).as_secs() >= 5 {
             self.last_memory_check = now;
 
-            match sys_info::mem_info() {
-                Ok(mem_info) => {
-                    let available_mb: u64 = mem_info.avail / 1024; // Convert KB to MB
-                    let total_mb: u64 = mem_info.total / 1024;
-                    let used_percent: f64 =
-                        ((total_mb - available_mb) as f64 / total_mb as f64) * 100.0;
+            let mut sys = sysinfo::System::new();
+            sys.refresh_memory();
 
-                    // Log memory warnings based on available memory
-                    if available_mb < 100 {
-                        // Less than 100MB available
-                        Tracer::warn!(
-                            "Critical memory usage: Only {}MB available ({}% used)",
-                            available_mb,
-                            used_percent as u32
-                        );
-                    } else if available_mb < 500 {
-                        // Less than 500MB available
-                        Tracer::info!(
-                            "High memory usage: {}MB available ({}% used)",
-                            available_mb,
-                            used_percent as u32
-                        );
-                    } else if used_percent > 80.0 {
-                        Tracer::debug!(
-                            "Memory usage: {}MB available ({}% used)",
-                            available_mb,
-                            used_percent as u32
-                        );
-                    }
-                }
+            let total_mb: u64 = sys.total_memory() / 1024 / 1024; // Convert bytes to MB
+            let available_mb: u64 = sys.available_memory() / 1024 / 1024;
+            let used_mb: u64 = sys.used_memory() / 1024 / 1024;
+            let used_percent: f64 = (used_mb as f64 / total_mb as f64) * 100.0;
 
-                Err(e) => {
-                    Tracer::debug!("Failed to get memory info: {}", e);
-                }
+            // Record metrics for profiling if enabled
+            #[cfg(feature = "profiling")]
+            {
+                // Use profiling macro to record memory checkpoint
+                fsm_core::profile_memory_checkpoint!(&self._profiling_guard, "system_memory_check");
+            }
+
+            // Log memory warnings based on available memory
+            if available_mb < 100 {
+                // Less than 100MB available
+                Tracer::warn!(
+                    "Critical memory usage: Only {}MB available ({}% used)",
+                    available_mb,
+                    used_percent as u32
+                );
+            } else if available_mb < 500 {
+                // Less than 500MB available
+                Tracer::info!(
+                    "High memory usage: {}MB available ({}% used)",
+                    available_mb,
+                    used_percent as u32
+                );
+            } else if used_percent > 80.0 {
+                Tracer::debug!(
+                    "Memory usage: {}MB available ({}% used)",
+                    available_mb,
+                    used_percent as u32
+                );
             }
         }
     }

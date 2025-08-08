@@ -433,6 +433,8 @@ pub struct JsonLayer {
     system: Arc<LoggingSystem>,
     span_storage: DashMap<TraceId, SpanData>,
     profiling_config: ProfilingConfig,
+    #[cfg(feature = "profiling")]
+    profile_collector: Arc<crate::profiling::ProfileCollector>,
 }
 
 impl JsonLayer {
@@ -442,7 +444,15 @@ impl JsonLayer {
             system,
             span_storage: DashMap::new(),
             profiling_config,
+            #[cfg(feature = "profiling")]
+            profile_collector: Arc::new(crate::profiling::ProfileCollector::new()),
         }
+    }
+
+    /// Get the profile collector (when profiling feature is enabled)
+    #[cfg(feature = "profiling")]
+    pub fn profile_collector(&self) -> Arc<crate::profiling::ProfileCollector> {
+        self.profile_collector.clone()
     }
 
     fn should_emit_span_event(level: Level) -> bool {
